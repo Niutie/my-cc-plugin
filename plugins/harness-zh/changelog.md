@@ -11,6 +11,30 @@
 
 ---
 
+## v0.1.1 — 2026-05-06 — PLUGIN_ROOT 探测修复（首次装载暴露的 bug）
+
+1 commit（`38c799b`）：
+
+- **`38c799b`** — `/harness-zh:init` §A.0 + `/harness-zh:update` §1 的 fallback 探测改用 `plugin.json` 扫描，替代失效的 `find -name harness-zh`
+
+### 触发场景
+
+solo-dev 首次在 `~/plugin-test` 跑 `/plugin install harness-zh@my-cc-plugin` 后，未跑 `/harness-zh:init`（先误以为 install 会自动部署）。但更深一层 bug：即便跑 init，§A.0 的 `find ~/.claude -type d -name harness-zh` fallback 在 Claude Code **实际**的安装布局下找到的是版本子目录的**父级**（`~/.claude/plugins/cache/my-cc-plugin/harness-zh/`），里面没 commands/ scripts/ 等 — 实际文件在 `harness-zh/0.1.0/` 下。
+
+### 修法
+
+两遍扫 `plugin.json`：
+1. 第一遍优先 `cache/<marketplace>/<plugin>/<version>/`（官方版本化安装路径）
+2. 第二遍 fallback 到任意命中（含 `marketplaces/<...>/plugins/<plugin>/` git-clone 副本）
+
+匹配条件：plugin.json 内含 `"name": "harness-zh"`。
+
+### 验证
+
+在 zhenhua 实际安装路径上跑通 — 解析到 `/Users/zhenhuazhu/.claude/plugins/cache/my-cc-plugin/harness-zh/0.1.0`，含 commands/ 和 41 个 scripts。
+
+---
+
 ## v0.1.0 — 2026-05-06 — 初始 plugin 提取
 
 5 commits（commit `65148b1` → `2f782ae`）：
