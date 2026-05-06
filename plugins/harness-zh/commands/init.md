@@ -107,20 +107,18 @@ for f in architecture.md answer-policy.md changelog.md test-stage-triggers.yaml;
     deploy "$PLUGIN_ROOT/$f" ".claude/harness/$f"
 done
 
-# 子目录递归
+# 子目录递归（用 find + process substitution 替代 shopt+glob — 兼容 bash 与 zsh，
+# 且不会因空子目录在 zsh 默认 NOMATCH 下中止脚本）
 for sub in scripts conventions prompt-suffixes prompt-templates git-hooks; do
-    shopt -s nullglob
-    for src in "$PLUGIN_ROOT/$sub"/*; do
-        [ -f "$src" ] || continue
-        deploy "$src" ".claude/harness/$sub/$(basename "$src")"
-    done
+    while IFS= read -r src; do
+        [ -n "$src" ] && deploy "$src" ".claude/harness/$sub/$(basename "$src")"
+    done < <(find "$PLUGIN_ROOT/$sub" -maxdepth 1 -type f 2>/dev/null)
 done
 
 # commands（单层，只 .md）
-for src in "$PLUGIN_ROOT/commands"/*.md; do
-    [ -f "$src" ] || continue
-    deploy "$src" ".claude/commands/$(basename "$src")"
-done
+while IFS= read -r src; do
+    [ -n "$src" ] && deploy "$src" ".claude/commands/$(basename "$src")"
+done < <(find "$PLUGIN_ROOT/commands" -maxdepth 1 -type f -name '*.md' 2>/dev/null)
 ```
 
 把 `$INSTALLED / $UNCHANGED / $UPDATED` 绑定上下文，§A.6 报告时引用。
