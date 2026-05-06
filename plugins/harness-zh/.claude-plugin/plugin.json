@@ -1,6 +1,6 @@
 {
   "name": "harness-zh",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "BMad-based sprint orchestration harness for solo-dev + AI workflows (zhenhua's flavor). Provides /harness-zh:run, /harness-zh:run-test, /harness-zh:init, /harness-zh:update commands plus shared scripts, conventions, and prompt suffixes.",
   "author": {
     "name": "zhenhua zhu"
@@ -8,6 +8,6 @@
   "homepage": "https://github.com/Niutie/my-cc-plugin",
   "repository": "https://github.com/Niutie/my-cc-plugin",
   "dependencies": [
-    { "name": "codex", "version": "*" }
+    { "name": "codex", "marketplace": "openai-codex", "version": "*" }
   ]
 }

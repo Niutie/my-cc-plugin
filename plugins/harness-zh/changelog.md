@@ -11,6 +11,40 @@
 
 ---
 
+## v0.1.2 — 2026-05-06 — 跨 marketplace 依赖语法修复
+
+### 触发场景
+
+solo-dev 跑 `/plugin install harness-zh@my-cc-plugin` 报错：
+
+> Plugin "harness-zh@my-cc-plugin" is already installed — 1 dependency still unresolved: codex@my-cc-plugin.
+
+### 根因
+
+`plugin.json` 的 `dependencies` 用了 `{name: "codex", version: "*"}` 简写。Claude Code 默认把 `{name: "codex"}` 解析为 `codex@<当前 marketplace>` —— 即 `codex@my-cc-plugin`。但 codex 实际在 `openai-codex` marketplace，my-cc-plugin 里没有 codex plugin，所以 dep 永远 unresolved。
+
+### 修法
+
+**plugin.json** 用对象格式显式指定 marketplace：
+
+```json
+"dependencies": [
+  { "name": "codex", "marketplace": "openai-codex", "version": "*" }
+]
+```
+
+**marketplace.json** 加白名单（跨 marketplace 依赖默认禁，必须根 marketplace 显式 opt-in）：
+
+```json
+"allowCrossMarketplaceDependenciesOn": ["openai-codex"]
+```
+
+### 注意
+
+用户装 harness-zh 前必须已 `claude plugin marketplace add openai/codex-plugin-cc`（让 Claude Code 知道 openai-codex marketplace 存在）。README 已列为前置；此处用 plugin.json 硬声明做兜底（自动检查 / 报错引导）。
+
+---
+
 ## v0.1.1 — 2026-05-06 — PLUGIN_ROOT 探测修复（首次装载暴露的 bug）
 
 1 commit（`38c799b`）：
