@@ -11,6 +11,43 @@
 
 ---
 
+## v0.1.7 — 2026-05-06 — §A.4 git hook 安装加非 git 仓库自适应（AskUserQuestion 半自动 init）
+
+### 触发
+
+solo-dev 在 `~/plugin-test`（非 git 目录）跑 `/harness-zh:init`，§A.4 install_git_hooks.sh 退出 128 (fatal: not a git repository)，被 LLM 智能降级为 WARN 通过。但 solo-dev 反馈"是不是也需要自动帮忙 init 一下"。
+
+### 设计权衡
+
+`git init` 完全无脑自动有 4 类 case 需要处理：
+
+| 场景 | 自动 init 是否安全 |
+|---|---|
+| 已在 git 仓库（含 parent 有 .git/ 的子目录） | N/A — 不该 init |
+| 干净空目录 / 全新项目 | ✓ 合理 |
+| solo-dev 错进了 scratch 目录 | ✗ 不该悄悄 init |
+| 嵌套 — parent 已是 git 仓库 | ✗ 嵌套 repo 是 anti-pattern |
+
+直接 silent auto-init blast radius 不为零（场景 3、4），不能这么做。
+
+### 修
+
+`commands/init.md` §A.4 重构成 3 个分支：
+
+- **§A.4.a** `git rev-parse --is-inside-work-tree` 退出 0（已在 git 工作树）→ 直接装 hook（与 v0.1.6 行为相同）
+- **§A.4.b** 退出非 0（不在任何 git 仓库内）→ 用 `AskUserQuestion` 询问 solo-dev：
+  - 选 Yes → `git init` + 装 hook
+  - 选 No → WARN 跳过，提示"手工 git init 后跑 install_git_hooks.sh"
+- **§A.4.c** paranoia 防护：嵌套 repo 触发不该出现的状态时 halt
+
+### 注意
+
+- `git rev-parse --is-inside-work-tree` 检测同时覆盖 "当前目录是 repo 根" + "当前目录是 repo 子目录"；不需要单独 check parent
+- AskUserQuestion 是 LLM 调用的 tool，markdown command 直接 instruct LLM 调用即可（不需要 interactive shell）
+- 选 No 时退出码 0（成功），仅 WARN — 与现有"hook 装失败不阻断主流程"原则一致
+
+---
+
 ## v0.1.6 — 2026-05-06 — BMad 安装文档基于实测更新（5 模块 + 66 skills + 4 输出目录）
 
 ### 触发

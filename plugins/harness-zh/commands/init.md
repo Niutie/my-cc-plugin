@@ -160,6 +160,16 @@ fi
 
 ### A.4 装 git hooks
 
+先检测当前目录是否在 git 工作树内：
+
+```bash
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 && echo "in_git=yes" || echo "in_git=no"
+```
+
+#### A.4.a `in_git=yes`（已在 git 仓库 — 含 parent 有 .git/ 的子目录场景）
+
+直接跑 installer：
+
 ```bash
 bash .claude/harness/scripts/install_git_hooks.sh
 HOOKS_EXIT=$?
@@ -168,6 +178,20 @@ HOOKS_EXIT=$?
 按退出码处理：
 - `HOOKS_EXIT=0` → 进 §A.5
 - `HOOKS_EXIT=1`（用户已设 `core.hooksPath`，installer 拒装避免 silent no-op）→ 把 installer 的 stderr verbatim 贴给用户作 **WARN**，**不 halt**（资产已部署，hook 装失败不阻断主流程；solo-dev 看 WARN 自决）
+
+#### A.4.b `in_git=no`（当前目录不在任何 git 仓库内）
+
+**用 `AskUserQuestion` 询问 solo-dev**（不要悄悄 `git init`，blast radius 不为零 — 用户可能在 scratch 目录）：
+
+> 当前目录 `<pwd>` 不是 git 仓库 — 无法安装 pre-commit hook。是否在此目录跑 `git init` 初始化新仓库？
+
+选项：
+- **A) Yes, 初始化** → 跑 `git init`（**仅当**前一步 `in_git=no` 且 `pwd` 是项目根 — solo-dev 已通过 AskUserQuestion 显式同意）→ 然后跑 `bash .claude/harness/scripts/install_git_hooks.sh` → 按 §A.4.a 处理 exit code
+- **B) No, 跳过** → emit **WARN**：「资产已部署，git pre-commit hook 跳过；solo-dev 后续如想装，手工跑 `git init && bash .claude/harness/scripts/install_git_hooks.sh`」→ 进 §A.5
+
+#### A.4.c 边界：嵌套 repo 自动防护（若上述 A.4.b 选 Yes 但实际 `in_git=yes` 时，本分支不会进；这是 paranoia）
+
+如果 `in_git=yes` 但用户**仍**触发了"我想 init 一个新 repo"的请求（不该走到这里），**halt** + 提示「当前已在 git 仓库 `<repo-root>` 内，再 `git init` 会建嵌套 repo（不推荐）。退出 §A.4」。
 
 ### A.5 BMad artifacts 检测 → 流程分叉
 
