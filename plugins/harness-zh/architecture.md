@@ -1,12 +1,95 @@
 # ${project_display_name} Harness 自动化架构
 
-> **Harness 通用化**：本文档读 [`../.claude/harness/harness-project-config.yaml`](../.claude/harness/harness-project-config.yaml) 解析 `${project_display_name}` 等占位符；clone harness 到任意新项目时改该 yaml 即生效。详 §十一「通用化与项目 config」。
+> **分发模型**：harness-zh 以 Claude Code plugin 形式分发（仓库 [`Niutie/my-cc-plugin`](https://github.com/Niutie/my-cc-plugin)）。每个项目通过 `/harness-zh:init` 把 plugin 资产投递到 `.claude/harness/` + `.claude/commands/`；详 §〇「Plugin 分发模型」。原"clone harness 到新项目"机制（§十一）已由 plugin 自动化替代，§十一 保留作 yaml schema 与字段提取设计的动机记录。
 >
-> 本文档描述 4 份 chore spec（C10 / C11 / C12 / test-harness-bootstrap）全部落地后的**目标态**完整 harness 工作流。
->
-> 设计于 2026-05-03 solo-dev × Claude Opus 4.7 对话；commit `3d3aaa5` 立 4 份 chore spec。
+> **占位符替换**：本文档读 [`harness-project-config.yaml`](harness-project-config.yaml)（部署到项目侧 `.claude/harness/` 的副本）解析 `${project_display_name}` 等占位符；新项目跑 `/harness-zh:init` + BMad workflow 后该 yaml 自动填充。
 >
 > 本文档是 harness 元设计的**单一权威来源**——后续讨论"harness 自动化怎么走"先 reference 本文。
+
+---
+
+## 〇、Plugin 分发模型
+
+### 〇.1 三层架构（marketplace → plugin store → project）
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│            GitHub: Niutie/my-cc-plugin (private)                 │
+│                                                                  │
+│  .claude-plugin/marketplace.json  (列 plugin 清单)               │
+│  README.md                                                       │
+│  plugins/harness-zh/                                             │
+│    ├─ .claude-plugin/plugin.json                                 │
+│    ├─ commands/   ← init / update / run / run-test (.md)         │
+│    ├─ scripts/    ← harness 运行时脚本（~40 个）                 │
+│    ├─ conventions/ + prompt-suffixes/ + prompt-templates/        │
+│    ├─ git-hooks/pre-commit                                       │
+│    ├─ templates/harness-project-config.yaml.template             │
+│    └─ architecture.md / answer-policy.md / changelog.md          │
+└─────────────────────┬────────────────────────────────────────────┘
+                      │ /plugin marketplace add Niutie/my-cc-plugin
+                      │ /plugin install harness-zh@my-cc-plugin
+                      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│   ~/.claude/plugins/<...>/harness-zh/  (Claude Code plugin store)│
+└─────────────────────┬────────────────────────────────────────────┘
+                      │ /harness-zh:init  (一次/项目)
+                      │ /harness-zh:update  (plugin 升级后)
+                      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                       <user-project>/                            │
+│  .claude/harness/                                                │
+│    ├─ scripts/ + conventions/ + prompt-suffixes/ + ...           │
+│    ├─ git-hooks/pre-commit                                       │
+│    ├─ harness-project-config.yaml ← 项目特定，update 不覆盖     │
+│    ├─ architecture.md / answer-policy.md / changelog.md          │
+│    └─ test-stage-triggers.yaml                                   │
+│  .claude/commands/                                               │
+│    └─ init.md / update.md / run.md / run-test.md                 │
+│  .git/hooks/pre-commit ← install_git_hooks.sh 装                 │
+│  _bmad-output/  (用户跑 BMad workflow 后产出，harness 读)        │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 〇.2 为什么是 asset deployer 而不是 runtime container
+
+理论上 plugin 可以让 commands 直接通过 `${CLAUDE_PLUGIN_ROOT}` 引用 plugin 内资产，runtime 无需项目副本。**但实际撞两堵墙**：
+
+1. **Git pre-commit hook** 在 git 上下文跑（非 Claude Code），`${CLAUDE_PLUGIN_ROOT}` 不可用 → hook 必须用 project-relative 路径
+2. **Markdown slash-command bash 块** 在 commands 上下文（per [Anthropic plugins docs](https://code.claude.com/docs/en/plugins.md)）**不保证**注入 `${CLAUDE_PLUGIN_ROOT}` —— 该变量明确文档化于 hooks 上下文，commands 上下文未提及
+
+所以 harness-zh 走"plugin = 源；project = 部署副本"模式：
+- Plugin 是 source of truth（marketplace 唯一升级路径）
+- Project 是 deployed copy（runtime 实际操作的对象）
+- Sync 通过 `/harness-zh:update`（cmp + backup + overwrite，不丢用户本地修改）
+
+代价：每个项目带一份资产副本（增加少量磁盘占用）；好处：所有现有路径引用（`.claude/harness/scripts/...` 等）零改动可用，git hook + markdown command bash 都跑得了。
+
+### 〇.3 四个命令的分工
+
+| 命令 | 职责 | 何时跑 |
+|---|---|---|
+| `/harness-zh:init` | 首次 bootstrap — mkdir 项目目录 → 探测 plugin path → cmp/backup/overwrite copy 资产 → 投放 yaml template（仅当不存在）→ 装 git hooks → 检测 BMad → 齐则进 §十一 14 字段提取 / 缺则报告引导 | 1 次/项目；后续 BMad 补齐后可重跑（merge 模式补填 yaml 空字段） |
+| `/harness-zh:update` | 升级后刷资产 — 同 init 部署逻辑但**不**投 yaml、**不**跑 BMad 提取；只 sync `.claude/harness/*` + `.claude/commands/*` + 重装 git hooks | 每次 `/plugin marketplace update my-cc-plugin` 后 |
+| `/harness-zh:run` | runtime sprint loop — 详 §一-§五 | 日常开发主入口 |
+| `/harness-zh:run-test` | runtime test sub-loop — 详 §一 | 由 run 触发或手工 |
+
+### 〇.4 与 §十一「通用化与项目 config」的关系
+
+§十一 设计于 plugin 化之前，描述"clone harness 到新项目 + 改 5 必填字段 + 自填 extra map"的通用化方案。
+
+- **用户层流程**已被 plugin 模型替代：不再 clone 文件，而是装 plugin + 跑 `/harness-zh:init`
+- **底层数据契约**（14 字段 mapping、merge 模式 / `--dry-run` / `--force`、yaml schema）未变 —— `/harness-zh:init` §0-§6 直接复用 §十一 设计的提取逻辑
+
+§十一 保留作设计动机 + schema 文档；运行机制以本节 + [`commands/init.md`](commands/init.md) + [`commands/update.md`](commands/update.md) 为准。
+
+### 〇.5 依赖
+
+`plugin.json` 声明的硬依赖（缺则装 harness-zh 时 Claude Code halt）：
+- **`codex`**（marketplace `openai-codex`）— 提供 `/codex:rescue` 用于 §一 stage 3 对抗 review
+
+未声明 plugin dep 但**前置必需**（README 列）：
+- **BMad workflow toolset**（`/bmad-create-prd`、`/bmad-create-story`、`/bmad-dev-story`、`/bmad-retrospective` 等 ~30 命令）— 因为 BMad 在多数环境是项目 `.claude/skills/bmad-*` 形式而非 Claude Code plugin，无法用 `dependencies` 字段声明；缺则 `/harness-zh:init` §A.5 检测会报 "BMad artifacts 缺失" 早结束
 
 ---
 
