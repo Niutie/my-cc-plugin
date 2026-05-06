@@ -171,18 +171,42 @@ HOOKS_EXIT=$?
 
 ### A.5 BMad artifacts 检测 → 流程分叉
 
-**MUST-EXIST 列表**（与 §1 helper `run_sprint_init_check_prereq.sh` 一致）：
+**4 类概念产物 — 单文件或 sharded 任一形式都接受**（与 §1 helper `run_sprint_init_check_prereq.sh` 一致）：
+
+| # | 概念产物 | 接受的形式 | 来源 BMad 命令 |
+|---|---|---|---|
+| 1 | product-brief | `product-brief*.md`（BMad 上游会带项目名后缀，如 `product-brief-aegis.md`）| `/bmad:product-brief` |
+| 2 | prd | 单文件 `prd.md` **或** sharded 目录 `prd/`（跑过 `/bmad:shard-doc`） | `/bmad:prd` |
+| 3 | architecture | 单文件 `architecture.md` **或** sharded 目录 `architecture/`（跑过 `/bmad:shard-doc`） | `/bmad:architecture` |
+| 4 | sprint-status | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） | `/bmad:sprint-planning` |
 
 ```bash
 BMAD_READY=1
-for f in \
-    _bmad-output/planning-artifacts/product-brief.md \
-    _bmad-output/planning-artifacts/prd.md \
-    _bmad-output/planning-artifacts/architecture/tech-stack.md \
-    _bmad-output/planning-artifacts/architecture/repo-structure.md \
-    _bmad-output/implementation-artifacts/sprint-status.yaml; do
-    [ -f "$f" ] || { BMAD_READY=0; break; }
-done
+MISSING_LABELS=""
+
+# 1) product-brief: glob 匹配（BMad 上游文件名带项目后缀）
+if ! ls _bmad-output/planning-artifacts/product-brief*.md >/dev/null 2>&1; then
+    BMAD_READY=0
+    MISSING_LABELS="${MISSING_LABELS}  - product-brief*.md（请跑 /bmad:product-brief）\n"
+fi
+
+# 2) prd: 单文件 OR sharded 目录
+if [ ! -f _bmad-output/planning-artifacts/prd.md ] && [ ! -d _bmad-output/planning-artifacts/prd ]; then
+    BMAD_READY=0
+    MISSING_LABELS="${MISSING_LABELS}  - prd.md（或 prd/ sharded 目录；请跑 /bmad:prd）\n"
+fi
+
+# 3) architecture: 单文件 OR sharded 目录
+if [ ! -f _bmad-output/planning-artifacts/architecture.md ] && [ ! -d _bmad-output/planning-artifacts/architecture ]; then
+    BMAD_READY=0
+    MISSING_LABELS="${MISSING_LABELS}  - architecture.md（或 architecture/ sharded 目录；请跑 /bmad:architecture）\n"
+fi
+
+# 4) sprint-status.yaml: 路径固定
+if [ ! -f _bmad-output/implementation-artifacts/sprint-status.yaml ]; then
+    BMAD_READY=0
+    MISSING_LABELS="${MISSING_LABELS}  - sprint-status.yaml（请跑 /bmad:sprint-planning）\n"
+fi
 ```
 
 ### A.6 资产部署统计（不论 BMad ready 与否都打印）
@@ -202,15 +226,20 @@ done
   ```
   ⚠️ BMad planning artifacts 未齐 — 跳过 yaml 字段提取
 
-  【缺失文件】
-    - <逐条列出 §A.5 检测中第一个 missing 的文件>
+  【缺失】
+  $MISSING_LABELS
 
   【下一步】
-    请按下列顺序跑 BMad planning workflow：
-      /bmad-product-brief    → product-brief.md
+    首次使用 BMad（项目根没 _bmad/ 目录）先装 + init：
+      npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code
+      /bmad:workflow-init
+
+    然后按下列顺序跑 BMad planning workflow：
+      /bmad:product-brief    → product-brief-<name>.md
       /bmad:prd              → prd.md
-      /bmad:architecture     → architecture/tech-stack.md + repo-structure.md
+      /bmad:architecture     → architecture.md（默认单文件；可选 /bmad:shard-doc 切片）
       /bmad:sprint-planning  → sprint-status.yaml
+
     完成后**重跑** /harness-zh:init —— 检测到 BMad 齐后会自动进入 yaml 字段提取流程。
 
   yaml 当前状态：<bootstrapped from template；尚未填字段 | preserved existing；上次填的字段保留>
@@ -248,20 +277,19 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 **按退出码处理**：
 - **0**：进 §2
-- **2**：BMad planning artifacts 缺失。**halt**：把 helper 的 stderr verbatim 贴给用户，TaskCreate 标 `cancelled`，退出。**不**继续读 BMad / 不写 yaml。引导文本（helper 已硬编码 Q4）含具体 BMad skill 名（`/bmad-product-brief` / `/bmad:prd` / `/bmad:architecture`）。
+- **2**：BMad planning artifacts 缺失。**halt**：把 helper 的 stderr verbatim 贴给用户，TaskCreate 标 `cancelled`，退出。**不**继续读 BMad / 不写 yaml。引导文本（helper 内硬编码）含具体 BMad slash 命令（`/bmad:product-brief` / `/bmad:prd` / `/bmad:architecture`）。
 - **3**：sprint-status.yaml 缺失。**halt**：引导跑 `/bmad:sprint-planning`，TaskCreate 标 `cancelled`，退出。
 - **其它**：halt + 报告 helper exit code（参数错误 / 内部错误 — 不应发生）。
 
-**MUST-EXIST 清单**（helper 内）：
-1. `_bmad-output/planning-artifacts/product-brief.md`
-2. `_bmad-output/planning-artifacts/prd.md`
-3. `_bmad-output/planning-artifacts/architecture/tech-stack.md`
-4. `_bmad-output/planning-artifacts/architecture/repo-structure.md`
-5. `_bmad-output/implementation-artifacts/sprint-status.yaml`
+**MUST-EXIST 清单**（helper 内 — 单文件或 sharded 任一形式接受）：
+1. `_bmad-output/planning-artifacts/product-brief*.md`（glob — 上游会带项目名后缀）
+2. `_bmad-output/planning-artifacts/prd.md` **或** `prd/` 目录（sharded 形式）
+3. `_bmad-output/planning-artifacts/architecture.md` **或** `architecture/` 目录（sharded 形式）
+4. `_bmad-output/implementation-artifacts/sprint-status.yaml`
 
 **NICE-TO-HAVE**（缺则相关字段静默用默认；不阻流）：
-- `architecture/i18n.md` / `architecture/nfrs.md` / `architecture/proxy*.md`
-- `testing-strategy.md`
+- 若 architecture sharded：`architecture/i18n.md` / `architecture/nfrs.md` / `architecture/proxy*.md` / `architecture/testing-strategy.md`
+- 若 architecture 单文件：上述内容作为章节嵌入 `architecture.md`，§2 提取时按章节标题 grep 即可
 
 ---
 
@@ -269,14 +297,21 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 按下表逐字段读 BMad markdown + 用**语义检索**（Q1）提取值。**不**依赖固定锚点（如 `## Frontend`）—— BMad-generated markdown 段标题 / 段位置不严格固定（中英文 / 编号前缀 / 同义词都可能漂移）。LLM 用 Read 工具读对应文件全文 + 按"提取语义提示"找信息。
 
+> **Source 列约定**：BMad 上游默认产**单文件** `architecture.md`（含 tech-stack / repo-structure / i18n / nfrs / proxy 等章节）；用户跑 `/bmad:shard-doc` 后切片成 `architecture/tech-stack.md` 等 sharded 形式。下表"BMad source"列写的是**sharded 形式的逻辑路径**；LLM 实际读取时按以下顺序 fallback：
+>
+> 1. 先看 sharded 路径（`_bmad-output/planning-artifacts/architecture/<name>.md`）是否存在 → 存在就读
+> 2. 不存在 → 读单文件 `architecture.md` 全文，按对应章节标题（"Tech Stack" / "Repo Structure" / "Internationalization" / "NFRs" / "Proxy" / "Testing Strategy"）grep 段落
+>
+> 同样地，`product-brief*.md` 是 glob 模式（上游会带项目名后缀如 `product-brief-aegis.md`）；`prd.md` / `prd/` 也按"单文件优先 → 否则读 sharded 目录"。
+
 | # | yaml field | BMad source | 提取语义提示 | 失败 fallback |
 |---|---|---|---|---|
-| 1 | `project_display_name` | `product-brief.md` 或 `prd.md` | 找产品名 / 项目代号 / 产品定位段第一句 | `'TODO: project name'` + WARN |
-| 2 | `container_orchestrator` | `architecture/tech-stack.md` | 找容器编排技术（docker-compose / k8s / podman / nerdctl-compose） | `'docker-compose'` + WARN |
-| 3 | `frontend_framework` | `architecture/tech-stack.md` | 找前端框架（Next.js / SvelteKit / Remix / Astro 含版本） | `'TODO: frontend framework'` + WARN |
-| 4 | `backend_languages` (list) | `architecture/tech-stack.md` | 找后端语言列表（Go / Python / TypeScript / Rust 含版本） | `['TypeScript']` + WARN |
-| 5 | `e2e_framework` | `architecture/tech-stack.md` 或 `testing-strategy.md` | 找端到端测试框架（Playwright / Cypress / WebdriverIO） | `'Playwright'` + WARN |
-| 6 | `extra.frontend_dir` | `architecture/repo-structure.md` | 找前端代码顶层目录名 | `'frontend'` + WARN |
+| 1 | `project_display_name` | `product-brief*.md` 或 `prd.md` | 找产品名 / 项目代号 / 产品定位段第一句 | `'TODO: project name'` + WARN |
+| 2 | `container_orchestrator` | `architecture/tech-stack.md` 或 `architecture.md §tech-stack` | 找容器编排技术（docker-compose / k8s / podman / nerdctl-compose） | `'docker-compose'` + WARN |
+| 3 | `frontend_framework` | `architecture/tech-stack.md` 或 `architecture.md §tech-stack` | 找前端框架（Next.js / SvelteKit / Remix / Astro 含版本） | `'TODO: frontend framework'` + WARN |
+| 4 | `backend_languages` (list) | `architecture/tech-stack.md` 或 `architecture.md §tech-stack` | 找后端语言列表（Go / Python / TypeScript / Rust 含版本） | `['TypeScript']` + WARN |
+| 5 | `e2e_framework` | `architecture/tech-stack.md` 或 `architecture.md §testing-strategy` | 找端到端测试框架（Playwright / Cypress / WebdriverIO） | `'Playwright'` + WARN |
+| 6 | `extra.frontend_dir` | `architecture/repo-structure.md` 或 `architecture.md §repo-structure` | 找前端代码顶层目录名 | `'frontend'` + WARN |
 | 7 | `extra.e2e_test_subdir` | `architecture/repo-structure.md` 或 `testing-strategy.md` | 找 e2e 测试目录路径（相对前端目录或仓库根） | `'tests/e2e'` + WARN |
 | 8 | `extra.container_count` | `architecture/tech-stack.md` 或 `deploy/` 段 | 找服务容器数量（整数） | `0` + WARN |
 | 9 | `extra.i18n_locales` (list) | `architecture/i18n.md`（NICE-TO-HAVE） | 找前端国际化语种代码列表（zh-CN / en-US 等） | `['en-US']` + WARN |

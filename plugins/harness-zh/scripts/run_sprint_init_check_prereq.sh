@@ -6,20 +6,22 @@
 # 输入：
 #   --root <path>     项目根目录（默认 HARNESS_REPO_ROOT）；test 用 mktemp dir override
 #
-# 检查清单（spec MUST-EXIST 段）：
-#   _bmad-output/planning-artifacts/product-brief.md
-#   _bmad-output/planning-artifacts/prd.md
-#   _bmad-output/planning-artifacts/architecture/tech-stack.md
-#   _bmad-output/planning-artifacts/architecture/repo-structure.md
-#   _bmad-output/implementation-artifacts/sprint-status.yaml
+# 检查清单（4 类概念产物 — 单文件或 sharded 任一形式接受；与 /harness-zh:init §A.5 一致）：
+#   1) product-brief: glob 匹配 _bmad-output/planning-artifacts/product-brief*.md
+#      （BMad 上游会带项目名后缀，如 product-brief-aegis.md）
+#   2) prd: 单文件 _bmad-output/planning-artifacts/prd.md
+#         或 sharded 目录 _bmad-output/planning-artifacts/prd/
+#   3) architecture: 单文件 _bmad-output/planning-artifacts/architecture.md
+#         或 sharded 目录 _bmad-output/planning-artifacts/architecture/
+#   4) sprint-status: _bmad-output/implementation-artifacts/sprint-status.yaml（路径固定）
 #
 # 输出：
 #   stdout：JSON 一行（{"all_present": bool, "missing_planning": [...], "missing_sprint_status": bool}）
-#   stderr：halt 时按 missing 项印引导文本（硬编码 BMad skill 名 — Q4）
+#   stderr：halt 时按 missing 项印引导文本（带 BMad slash 命令名 — 全冒号形式）
 #
 # 退出码：
 #   0  — 全部 MUST-EXIST 在位
-#   2  — 至少 1 个 BMad planning artifact 缺失（→ stderr 引导跑 /bmad-product-brief / /bmad:prd / /bmad:architecture）
+#   2  — 至少 1 个 BMad planning artifact 缺失（→ stderr 引导跑 /bmad:product-brief / /bmad:prd / /bmad:architecture）
 #   3  — sprint-status.yaml 缺失（→ stderr 引导跑 /bmad:sprint-planning）
 #   4  — 同时缺 planning + sprint-status；优先报 planning（exit 2）
 #   1  — 参数错误 / 内部错误
@@ -38,7 +40,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help)
-            sed -nE 's/^# ?//p' "$0" | head -30
+            sed -nE 's/^# ?//p' "$0" | head -40
             exit 0
             ;;
         *)
@@ -58,26 +60,30 @@ if [ ! -d "$ROOT" ]; then
     exit 1
 fi
 
-# 4 BMad planning MUST-EXIST + 引导 skill 名（Q4 硬编码）
-declare -a PLANNING_CHECKS=(
-    "_bmad-output/planning-artifacts/product-brief.md|/bmad-product-brief"
-    "_bmad-output/planning-artifacts/prd.md|/bmad:prd"
-    "_bmad-output/planning-artifacts/architecture/tech-stack.md|/bmad:architecture"
-    "_bmad-output/planning-artifacts/architecture/repo-structure.md|/bmad:architecture"
-)
-SPRINT_STATUS_REL="_bmad-output/implementation-artifacts/sprint-status.yaml"
-
+# 4 个概念产物 + 引导命令（全冒号形式 — 与 BMad-METHOD 上游对齐）
 declare -a MISSING_PLANNING=()
 declare -a MISSING_GUIDANCE=()
-for entry in "${PLANNING_CHECKS[@]}"; do
-    rel="${entry%%|*}"
-    skill="${entry##*|}"
-    if [ ! -f "$ROOT/$rel" ]; then
-        MISSING_PLANNING+=("$rel")
-        MISSING_GUIDANCE+=("$skill")
-    fi
-done
 
+# 1) product-brief: glob 匹配（BMad 上游 product-brief-{project}.md）
+if ! ls "$ROOT/_bmad-output/planning-artifacts/product-brief"*.md >/dev/null 2>&1; then
+    MISSING_PLANNING+=("_bmad-output/planning-artifacts/product-brief*.md")
+    MISSING_GUIDANCE+=("/bmad:product-brief")
+fi
+
+# 2) prd: 单文件 OR sharded 目录
+if [ ! -f "$ROOT/_bmad-output/planning-artifacts/prd.md" ] && [ ! -d "$ROOT/_bmad-output/planning-artifacts/prd" ]; then
+    MISSING_PLANNING+=("_bmad-output/planning-artifacts/prd.md (或 prd/ sharded 目录)")
+    MISSING_GUIDANCE+=("/bmad:prd")
+fi
+
+# 3) architecture: 单文件 OR sharded 目录
+if [ ! -f "$ROOT/_bmad-output/planning-artifacts/architecture.md" ] && [ ! -d "$ROOT/_bmad-output/planning-artifacts/architecture" ]; then
+    MISSING_PLANNING+=("_bmad-output/planning-artifacts/architecture.md (或 architecture/ sharded 目录)")
+    MISSING_GUIDANCE+=("/bmad:architecture")
+fi
+
+# 4) sprint-status.yaml: 路径固定
+SPRINT_STATUS_REL="_bmad-output/implementation-artifacts/sprint-status.yaml"
 MISSING_SPRINT_STATUS="false"
 if [ ! -f "$ROOT/$SPRINT_STATUS_REL" ]; then
     MISSING_SPRINT_STATUS="true"
@@ -93,7 +99,9 @@ json_array() {
         else
             out="$out, "
         fi
-        out="$out\"$item\""
+        local esc="${item//\\/\\\\}"
+        esc="${esc//\"/\\\"}"
+        out="$out\"$esc\""
     done
     out="$out]"
     printf '%s' "$out"
@@ -121,6 +129,10 @@ if [ "${#MISSING_PLANNING[@]}" -gt 0 ]; then
         echo "  - $ROOT/$SPRINT_STATUS_REL" >&2
         echo "    请先跑 /bmad:sprint-planning 生成 sprint backlog" >&2
     fi
+    echo "" >&2
+    echo "💡 首次使用 BMad（项目根没 _bmad/ 目录）先：" >&2
+    echo "    npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code" >&2
+    echo "    /bmad:workflow-init" >&2
     exit 2
 fi
 

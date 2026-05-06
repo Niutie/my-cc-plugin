@@ -11,6 +11,41 @@
 
 ---
 
+## v0.1.3 — 2026-05-06 — 对齐 BMad-METHOD 上游（命令名 + 路径）
+
+### 触发
+
+`/harness-zh:init` 早结束文案里硬编码了：
+
+- `/bmad-product-brief`（连字符 — 旧命令命名约定）
+- `_bmad-output/planning-artifacts/architecture/tech-stack.md` + `repo-structure.md`（sharded 路径）
+- 跑 BMad install 没指引
+
+但 BMad-METHOD 上游（github.com/bmad-code-org/BMAD-METHOD）当前实际：
+
+- 命令统一冒号形式：`/bmad:product-brief` / `/bmad:prd` / `/bmad:architecture` 等
+- architecture 默认产**单文件** `architecture.md`（含 tech-stack / repo-structure / nfrs / i18n / proxy 等章节）；只有跑过 `/bmad:shard-doc` 才切片到 subdir
+- product-brief 文件名带项目后缀（`product-brief-{project_name}.md`）
+- 5 模块：BMM / BMB / TEA / CIS / BMGD，前 4 个 harness-zh 都用得上，BMGD（game dev）不需要
+- 装法：`npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code` + `/bmad:workflow-init`
+
+### 修
+
+| 位置 | 改动 |
+|---|---|
+| `commands/init.md` §A.5 | 检测改"4 类概念产物，单文件或 sharded 任一形式接受"；MISSING 列表精简到产物级别（不逐文件） |
+| `commands/init.md` §A.7 早结束文案 | `/bmad-` → `/bmad:`；产物路径用单文件名（默认形式）；加 `npx bmad-method install` + `/bmad:workflow-init` 引导 |
+| `commands/init.md` §1 描述 + MUST-EXIST 文本清单 | 同步上述变化 |
+| `commands/init.md` §2 字段提取表 | 加前置说明（"sharded 路径优先 → fallback 读单文件章节"）；前 6 行 source 列加"或 architecture.md §section"备选 |
+| `scripts/run_sprint_init_check_prereq.sh` | PLANNING_CHECKS 数组 → 4 个内联 if-else 块（支持 glob / 单文件 OR sharded 目录）；GUIDANCE 命令名全冒号；末尾加"首次使用 BMad" install + workflow-init 提示 |
+| `README.md` BMad prereq 段 | 增加 5 模块对照表（BMGD 标 "Skip"）；改 install 命令为 `npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code`；增加 `/bmad:workflow-init` 首次步骤 |
+
+### 注意
+
+§2 字段提取表只更新了前 6 行的 source 列（加 "或 architecture.md §section" 备选）；后 10 行（i18n / nfrs / proxy / project_context / fullstack_review_steps）仍按 sharded 路径写但 LLM 在 §2 跑提取时会按表前的"sharded 优先 → fallback 单文件章节"自适应，不阻流。
+
+---
+
 ## v0.1.2 — 2026-05-06 — 跨 marketplace 依赖语法修复
 
 ### 触发场景

@@ -20,12 +20,35 @@ A 5-stage TDD-flavored development loop (`/harness-zh:run`) plus test-automation
 
 harness-zh **orchestrates** other tools and requires the following installed in your environment:
 
-#### 1. BMad workflow toolset
+#### 1. BMad-METHOD toolset
 
-Provides `/bmad-create-prd`, `/bmad:architecture`, `/bmad-create-story`, `/bmad-dev-story`, `/bmad-retrospective`, and ~30 other slash commands. May be installed two ways:
+[BMad-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) provides `/bmad:product-brief`, `/bmad:prd`, `/bmad:architecture`, `/bmad:create-story`, `/bmad:dev-story`, `/bmad:retrospective`, `/bmad:sprint-planning`, and ~30 other slash commands across 5 modules:
 
-- **As a Claude Code plugin** (recommended for cross-project reuse) — install per BMad project's instructions
-- **As project-resident skills** under `.claude/skills/bmad-*/` (typical when BMad was set up via `bmad-setup` workflow)
+| Module | Purpose | Required for harness-zh? |
+|---|---|---|
+| **BMM** (Method) | Core PM workflow — PRD / architecture / story / sprint planning | **Required** |
+| **BMB** (Builder) | Custom agent / workflow authoring | Recommended |
+| **TEA** (Test Architect) | Risk-driven test strategy + atdd / trace / nfr / ci | Recommended |
+| **CIS** (Creative Intelligence) | Brainstorming / design thinking / storytelling / innovation | Recommended |
+| **BMGD** (Game Dev Studio) | Unity / Unreal / Godot game-dev workflows | **Skip** unless game-dev project |
+
+**Install** (Node.js v20+, Python 3.10+, `uv` required):
+
+```bash
+# 推荐：装 4 个核心模块（除 game-dev studio 外都装）
+npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code
+
+# 或交互式（首次推荐 — 会问要装哪些模块）
+npx bmad-method install
+```
+
+`--tools claude-code` 让 BMad 把 skills 写到项目的 `.claude/skills/bmad-*/` —— harness-zh 期望的也是这个布局（项目-resident skills，而非独立 plugin）。装完后**首次**使用 BMad 还要跑：
+
+```
+/bmad:workflow-init
+```
+
+来初始化项目侧的 `_bmad/` 配置目录。
 
 Without BMad, the planning artifacts (`_bmad-output/planning-artifacts/`) that `/harness-zh:init` depends on cannot be generated.
 
