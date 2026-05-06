@@ -232,9 +232,9 @@ fi
   $MISSING_LABELS
 
   【下一步】
-    首次使用 BMad（项目根没 _bmad/ 目录）先装 + init：
+    首次使用 BMad（项目根没 _bmad/ 目录）先装：
       npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code
-      /bmad:workflow-init     # 注：workflow-init 只有冒号形式
+    （installer 会自动建 _bmad/ 配置目录 + 写 .claude/skills/bmad-*/，不需要额外 init 步骤）
 
     然后按下列顺序跑 BMad planning workflow：
       /bmad-product-brief         → product-brief-<name>.md

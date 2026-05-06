@@ -42,13 +42,7 @@ npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code
 npx bmad-method install
 ```
 
-`--tools claude-code` 让 BMad 把 skills 写到项目的 `.claude/skills/bmad-*/` —— harness-zh 期望的也是这个布局（项目-resident skills，而非独立 plugin）。装完后**首次**使用 BMad 还要跑：
-
-```
-/bmad:workflow-init
-```
-
-来初始化项目侧的 `_bmad/` 配置目录。
+`--tools claude-code` 让 BMad 把 skills 写到项目的 `.claude/skills/bmad-*/`，installer 同时**自动**建 `_bmad/` 配置目录（`config.toml` + 各模块 yaml）—— 这就是 harness-zh 期望的布局（项目-resident skills），**不需要**额外的 init 步骤。装完后直接跑 `/bmad-product-brief` 等命令即可。
 
 Without BMad, the planning artifacts (`_bmad-output/planning-artifacts/`) that `/harness-zh:init` depends on cannot be generated.
 

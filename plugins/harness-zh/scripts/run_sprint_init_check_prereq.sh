@@ -131,12 +131,13 @@ if [ "${#MISSING_PLANNING[@]}" -gt 0 ]; then
         echo "    请先跑 /bmad-sprint-planning 生成 sprint backlog" >&2
     fi
     echo "" >&2
-    echo "💡 首次使用 BMad（项目根没 _bmad/ 目录）先：" >&2
+    echo "💡 首次使用 BMad（项目根没 _bmad/ 目录）先装：" >&2
     echo "    npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code" >&2
-    echo "    /bmad:workflow-init     # 注：workflow-init 只有冒号形式" >&2
+    echo "    （installer 自动建 _bmad/ 配置 + 写 .claude/skills/bmad-*/，无需额外 init）" >&2
     echo "" >&2
     echo "📝 BMad 命令名说明：上述 /bmad-<name> 形式直接对应 .claude/skills/bmad-<name>/；" >&2
-    echo "   colon 别名 /bmad:<name> 通常也可（少数较新命令如 workflow-init 仅 colon 形式）。" >&2
+    echo "   colon 别名 /bmad:<name> 通常也可（少数较新命令如 /bmad:research、" >&2
+    echo "   /bmad:tech-spec 仅 colon 形式）。" >&2
     exit 2
 fi
 
