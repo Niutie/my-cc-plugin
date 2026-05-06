@@ -1,0 +1,15 @@
+{
+  "name": "my-cc-plugin",
+  "owner": {
+    "name": "zhenhua zhu"
+  },
+  "description": "Personal Claude Code plugin marketplace.",
+  "plugins": [
+    {
+      "name": "harness",
+      "source": "./plugins/harness",
+      "description": "BMad-based sprint orchestration harness for solo-dev + AI workflows.",
+      "version": "0.1.0"
+    }
+  ]
+}

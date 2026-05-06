@@ -1,0 +1,131 @@
+# Harness project config — 项目特定字段单一来源
+#
+# clone harness 到任意新项目时，**只需改本文件 5 必填字段** + 自填 extra map，
+# 其它 harness 元文档（CLAUDE.md / harness-architecture.md /
+# .claude/commands/run-{sprint,test-sprint}.md）通过引用本 yaml 占位符自适应。
+#
+# 5 必填字段（缺一警告 + 占位 fallback；不阻 harness 启动）：
+#   project_display_name      — 项目展示名（CLAUDE.md / harness-architecture.md 头部）
+#   container_orchestrator    — docker-compose / k8s / podman / nerdctl-compose
+#   frontend_framework        — Next.js 16 / SvelteKit 2 / Remix 2 / Astro 4
+#   backend_languages         — list（Go 1.23 / Python 3.12 / TypeScript / Rust ...）
+#   e2e_framework             — Playwright / Cypress / WebdriverIO / Selenium
+#
+# extra: map 给项目特定字段（如代理 addon / i18n locales / 资源约束 / 测试目录），
+# eval_test_stage_triggers.sh 引用 ${frontend_dir} / ${e2e_test_subdir} 等键替换
+# test-stage-triggers.yaml 内占位符。
+
+project_display_name: 'Aegis AI Audit'
+container_orchestrator: 'docker-compose'
+frontend_framework: 'Next.js 16'
+backend_languages:
+  - 'Go 1.23'
+  - 'Python 3.12'
+  - 'TypeScript'
+e2e_framework: 'Playwright'
+
+# Artifact 输出根目录（相对仓库根；harness_config.py / read_harness_config.sh 读）
+# 默认值 = 大多数项目沿用；新项目可改为 'docs/specs' 等。
+artifacts_root: '_bmad-output/implementation-artifacts'
+
+# ----------------------------------------------------------------------------
+# extra — 项目特定扩展字段（可选；任何 harness 文档 / 评估脚本可引用 ${key}）
+# ----------------------------------------------------------------------------
+extra:
+  # frontend / e2e 路径（test-stage-triggers.yaml 占位用）
+  frontend_dir: 'console-web'
+  e2e_test_subdir: 'tests/e2e'
+
+  # 容器栈规模（CLAUDE.md / harness-architecture.md 引用）
+  container_count: 7
+
+  # 路由架构（前端国际化）
+  i18n_locales:
+    - 'zh-CN'
+    - 'en-US'
+  routing_pattern: 'Next.js i18n routing'
+
+  # 网关插件 / 代理 addon（项目独有）
+  proxy_addon: 'mitmproxy'
+
+  # 资源约束（NFR52 baseline — solo-dev 单节点尺寸）
+  sandbox_constraint: '4C/8GB single-node'
+  resource_baseline: '4C/8GB'
+
+  # 后端服务模块（harness-architecture.md 引用）
+  backend_modules:
+    - 'console-api'
+    - 'pipeline'
+    - 'proxy'
+
+  # Path classifier — harness-state.py group_worktree_changes() 用，按改动文件
+  # 路径打 label 桶。新项目按本栈结构改 regex；空 list 合法（全归 "other" 桶）。
+  path_classifiers:
+    - label: 'backend Go source'
+      regex: '^console-api/(?!.*_test\.go$)'
+    - label: 'backend Go tests'
+      regex: '^console-api/.*_test\.go$|^tests/integration/'
+    - label: 'backend SQL/migrations'
+      regex: '^console-api/.*\.sql$|^console-api/internal/migrations/'
+    - label: 'backend i18n'
+      regex: '^console-api/locales/'
+    - label: 'frontend TS source'
+      regex: '^console-web/src/(?!.*\.test\.)'
+    - label: 'frontend TS tests'
+      regex: '^console-web/(tests|e2e)/'
+    - label: 'frontend i18n'
+      regex: '^console-web/locales/'
+    - label: 'frontend config'
+      regex: '^console-web/(eslint|vitest|next|package|pnpm|tsconfig)'
+    - label: 'proxy/Go'
+      regex: '^proxy/'
+    - label: 'infra/deploy'
+      regex: '^(deploy|docker-compose|Justfile|scripts/)'
+    - label: 'docs/spec'
+      regex: '^docs/'
+
+  # Verification 引导命令（harness-state.py resume-prompt 引用；多行 | 块标量）
+  verification_commands: |
+    go vet/build/test ./console-api/...
+    pnpm --filter console-web typecheck/test/lint --max-warnings=0/build
+
+  # ----------------------------------------------------------------------------
+  # 项目语境（subagent 决策时用 — harness-prompt-suffix.py 注入到代答政策块）
+  # ----------------------------------------------------------------------------
+  # 项目特定的产品定位 + 关键决策原则，每个 subagent 在按 answer-policy.md 自决
+  # 时需要这段语境作为决策依据。clone 到新项目后改这段（或经 /run-sprint-init
+  # 从 BMad product-brief.md / prd.md 自动提取）。多行 | 块标量。
+  project_context: |
+    智盾 AI 审计平台：
+    - 开发模型：单人 + AI 协作开发（无团队、无独立 QA 资源）
+    - 目标客户：中型企业 IT 部门，不懂 AI 安全，痛点是"看不见"
+    - 交付形态：仅私有化部署，不做 SaaS
+    - OSS 优先：能用 OSS 集成就不要自研
+    - i18n-ready：架构 / 目录 / API / UI 从第一行代码起按 i18n-ready 设计，禁止 hard-code 文案
+    - MVP 即正式版基线：v0.2+ / v1.0+ 只能是真增量；不允许"MVP 简化版 + 后期重写"
+    - 合规优先于工程便利：合规类约束是硬骨头；"≤N 容器/MB"类 NFR 是引导线，必要时可超过
+    - 产品自给自足：监控 / 看板 / 统计 / 告警内置在产品里；不要求中型企业 IT 自带 Prometheus / Grafana / SIEM
+
+  # ----------------------------------------------------------------------------
+  # 全栈贯通 review checklist（dev-story Q6 — harness-prompt-suffix.py stage 2 注入）
+  # ----------------------------------------------------------------------------
+  # 项目核心数据写入 / 序列化 / 渲染 / i18n 路径列表。dev agent 在引入新审计字段
+  # 时按这份清单逐项端到端追溯，每项答 ✓ / N/A / deferred-to-FU-X.Y.Z。
+  # 每项 = {label: 短描述, file_path: 具体文件路径}；list 长度任意（不强制 7 条）。
+  # clone 到新项目后改这份清单（或经 /run-sprint-init 从 BMad architecture/*.md
+  # 推断核心写入路径自动填充）。
+  fullstack_review_steps:
+    - label: '字段定义'
+      file_path: 'proxy/addon/sink/types.go::AuditEvent'
+    - label: '写入路径'
+      file_path: 'proxy/addon/buildevent.go'
+    - label: '序列化'
+      file_path: 'console-api/internal/audit/opensearch_writer.go::buildOpenSearchDoc'
+    - label: 'mapping'
+      file_path: 'console-api/internal/storage/mappings.go::AuditTemplateBody'
+    - label: 'hash chain canonical 验证'
+      file_path: 'console-api/internal/audit/canonical_pin_story_*_test.go'
+    - label: 'i18n key'
+      file_path: 'console-web/src/locales/zh-CN.json + en-US.json'
+    - label: '前端详情页渲染（chip / column / filter）'
+      file_path: 'console-web 详情页'

@@ -1,0 +1,130 @@
+# Test stage triggers — condition-driven yaml for /run-test-sprint
+#
+# Single source of truth for "which testarch skill 应该跑" — 覆盖全 9 个
+# bmad-testarch skill。run-test-sprint 主流程**首步**调
+# `eval_test_stage_triggers.sh <story-key> <spec-path>` 读本 yaml + 项目 config，
+# 输出 JSON `{"t1": bool, "t3": bool, ...}` 决定 stage 跑或 skip。
+#
+# Trigger 类型 enum：
+#   always              — 每次 invoke 都触发
+#   once_per_project    — 仅当目标产物不存在时触发（幂等）
+#   per_story           — 每条 story 触发一次（spec 存在即触发）
+#   keyword_match       — story spec 内含 conditions.keywords 任一关键词时触发
+#   threshold           — 数量阈值（spec count 等）跨过时触发
+#   pattern_match       — 仓库内匹配某 file pattern 且数量跨阈值（如 ≥3 共享 helper）
+#   any_match           — 多 condition 之 OR（first_e2e_spec / per_epic_done 等）
+#   manual_only         — 永不自动触发；只有 solo-dev 显式调用才跑
+#
+# 占位 ${VAR} 由 eval_test_stage_triggers.sh 从 harness-project-config.yaml
+# 读取替换：${frontend_dir} / ${e2e_test_subdir} / ${KEY} / ${EPIC}。
+#
+# fail-open 准则：若本 yaml 损坏 / 字段缺失 → eval 脚本走 defaults 段 + WARN
+# stderr，**不**阻 run-test-sprint 主流程（与 stage 5.5 graceful skip 同款）。
+#
+# 跨项目 clone：本 yaml 跟 harness-project-config.yaml 一起复制即可工作；
+# 项目特定路径（frontend_dir / e2e_test_subdir）由 project config extra map 提供。
+
+# ----------------------------------------------------------------------------
+# defaults — 兜底；当 yaml 损坏 / project config 缺失 / 单 skill 配置缺字段时
+# eval 脚本回退到这里。"开 T1/T3/T4 + 其它 skip" 是开箱即用的安全保守集。
+# ----------------------------------------------------------------------------
+defaults:
+  fallback_skills:
+    test-design: true       # T1
+    framework:    false     # T2 (留 v0.2+ — bootstrap.sh 已 init)
+    atdd:         true      # T3
+    automate:     true      # T4 (basic per-story e2e 实跑)
+    nfr:          false     # T5
+    trace:        false     # T6
+    ci:           false
+    test-review:  false
+    teach:        false
+
+# ----------------------------------------------------------------------------
+# skills — 9 个 testarch skill 的触发逻辑
+# ----------------------------------------------------------------------------
+skills:
+
+  test-design:
+    stage: T1
+    trigger: once_per_project
+    description: epic 级别 risk-based 测试设计；幂等（产物已存在则 skip）
+    conditions:
+      target_artifact: '${artifacts_root}/test_artifacts/epic-${EPIC}-test-design.md'
+
+  framework:
+    stage: T2
+    trigger: once_per_project
+    description: framework lock check；bootstrap.sh 已落（首次跑 e2e 前装 e2e_framework）
+    conditions:
+      target_artifact: '${frontend_dir}/node_modules/@playwright/test'
+
+  atdd:
+    stage: T3
+    trigger: per_story
+    description: 每条 story 跑一次；产物 atdd-checklist + spec.ts 红相
+    conditions:
+      target_artifact: '${artifacts_root}/test_artifacts/${KEY}.atdd-checklist.md'
+
+  automate:
+    stage: T4
+    trigger: per_story
+    description: e2e 实跑；basic per-story e2e（非 dedupe 重构 — 后者由 dedupe_pattern_threshold 进阶触发）
+    conditions:
+      target_artifact: '${artifacts_root}/test_artifacts/${KEY}-test-result.json'
+      dedupe_shared_helper_threshold: 3
+      dedupe_pattern: '${frontend_dir}/${e2e_test_subdir}/*.spec.ts'
+
+  nfr:
+    stage: T5
+    trigger: keyword_match
+    description: 故事 spec 含 NFR / 性能 / 安全 / 容量类关键词时触发
+    conditions:
+      keywords:
+        - performance
+        - load
+        - chaos
+        - security
+        - reliability
+        - sizing
+        - NFR
+        - benchmark
+        - latency
+        - throughput
+
+  trace:
+    stage: T6
+    trigger: keyword_match
+    description: 合规 / 审计类关键词触发；或 atdd green ≥5 per epic（追溯阈值）
+    conditions:
+      keywords:
+        - compliance
+        - audit
+        - gate
+        - regulatory
+        - traceability
+        - SOC2
+        - ISO27001
+      atdd_green_count_per_epic_threshold: 5
+
+  ci:
+    stage: T-ci
+    trigger: any_match
+    description: 首次 e2e spec 或 epic 收尾时触发；配 CI quality pipeline
+    conditions:
+      first_e2e_spec_pattern: '${frontend_dir}/${e2e_test_subdir}/*.spec.ts'
+      per_epic_done: true
+
+  test-review:
+    stage: T-review
+    trigger: threshold
+    description: 测试套件规模到达阈值时触发评分
+    conditions:
+      e2e_spec_count_threshold: 50
+      pattern: '${frontend_dir}/${e2e_test_subdir}/*.spec.ts'
+
+  teach:
+    stage: T-teach
+    trigger: manual_only
+    description: 永不自动触发；只有 solo-dev 显式调用才跑
+    conditions: {}
