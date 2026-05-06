@@ -233,8 +233,9 @@ fi
 
   【下一步】
     首次使用 BMad（项目根没 _bmad/ 目录）先装：
-      npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code
-    （installer 会自动建 _bmad/ 配置目录 + 写 .claude/skills/bmad-*/，不需要额外 init 步骤）
+      npx bmad-method install                                  # 交互式：全选 5 模块（core/bmm/bmb/cis/tea）+ 选 Claude Code 集成
+      # 或 npx bmad-method install --modules core,bmm,bmb,cis,tea --tools claude-code --yes
+    （installer 会自动建 _bmad/ 配置 + 写 .claude/skills/bmad-*/，无需额外 init 步骤）
 
     然后按下列顺序跑 BMad planning workflow：
       /bmad-product-brief         → product-brief-<name>.md

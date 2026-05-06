@@ -132,7 +132,8 @@ if [ "${#MISSING_PLANNING[@]}" -gt 0 ]; then
     fi
     echo "" >&2
     echo "💡 首次使用 BMad（项目根没 _bmad/ 目录）先装：" >&2
-    echo "    npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code" >&2
+    echo "    npx bmad-method install                         # 交互式（推荐，全选 5 模块）" >&2
+    echo "    或 npx bmad-method install --modules core,bmm,bmb,cis,tea --tools claude-code --yes" >&2
     echo "    （installer 自动建 _bmad/ 配置 + 写 .claude/skills/bmad-*/，无需额外 init）" >&2
     echo "" >&2
     echo "📝 BMad 命令名说明：上述 /bmad-<name> 形式直接对应 .claude/skills/bmad-<name>/；" >&2

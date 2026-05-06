@@ -11,6 +11,40 @@
 
 ---
 
+## v0.1.6 — 2026-05-06 — BMad 安装文档基于实测更新（5 模块 + 66 skills + 4 输出目录）
+
+### 触发
+
+solo-dev 在 `~/HaiAn MCTS` 跑了一遍 `npx bmad-method install` 把实际交互流程贴回来。对照之前的 README + helper 文案，发现几处不准：
+
+1. **模块数从 4 改 5** — agent 调研漏了 `BMad Core` 模块（v6.6.0），它跟 BMM 是分开的两个模块（`_bmad/core/config.yaml` + `_bmad/bmm/config.yaml`）。`--modules bmm,bmb,tea,cis` 漏 core，应该是 `core,bmm,bmb,cis,tea`。
+2. **Skills 数从"~30"改"~66"** — 实测 `claude-code configured: 66 skills → .claude/skills`。
+3. **输出目录有 4 个**（不是 2 个） — installer 实际创建：
+   - `_bmad-output/planning-artifacts/`
+   - `_bmad-output/implementation-artifacts/`
+   - `_bmad-output/test-artifacts/`（TEA 模块产物落点 — 之前没提）
+   - `docs/`（project knowledge）
+4. **legacy 提醒** — installer 检测旧 `~/.codex/prompts/bmad-*.md` 并打印 `rm -rf` 清理命令；README 加一段说明。
+5. **模块版本号** — README 里加版本快照（BMM v6.6.0 / BMB v1.7.0 / CIS v0.2.0（早期）/ TEA v1.15.1）。
+6. **non-interactive 安装命令** — `--directory` + `--yes` flag 加上才能跑 CI 模式。
+
+### 修
+
+| 位置 | 改动 |
+|---|---|
+| `README.md` BMad 段模块表 | 4 → 5 模块；加 BMad Core 行（v6.6.0）；CIS 标早期版本 v0.2 |
+| `README.md` install 段 | 重写：重点放在**交互式安装的提示与默认回答对照表**（用户实测的 8 个交互 prompt 逐条列出推荐回答）；非交互式版降级为附加的"一键脚本"（CI 用）|
+| `README.md` 删 legacy 清理段 | 老版 BMad 残留是 BMad installer 自己提示用户清理的事，与 harness-zh 无关，删 |
+| `commands/init.md` §A.7 早结束文案 | install 命令同步：`npx bmad-method install` 主推；非交互一键脚本作 alt |
+| `scripts/run_sprint_init_check_prereq.sh` stderr footer | 同上 |
+
+### 注意
+
+- 交互安装时**必须选 Claude Code 作为 integration**，否则 skills 不会写到 `.claude/skills/`，harness-zh 后续 `/bmad-*` 命令调度会失败
+- CIS v0.2.0 是 early 版本（README 标"early"），ABI 可能未稳定；harness-zh 当前不依赖 CIS 命令（主要 brainstorming / 设计思维类，非 sprint loop 必需），降级为 Recommended 而非 Required
+
+---
+
 ## v0.1.5 — 2026-05-06 — 删除多余的 `/bmad:workflow-init` 引导
 
 ### 触发

@@ -22,27 +22,53 @@ harness-zh **orchestrates** other tools and requires the following installed in 
 
 #### 1. BMad-METHOD toolset
 
-[BMad-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) provides `/bmad-product-brief`, `/bmad-create-prd`, `/bmad-create-architecture`, `/bmad-create-story`, `/bmad-dev-story`, `/bmad-retrospective`, `/bmad-sprint-planning`, and ~30 other slash commands across 5 modules. Most commands also have a colon-form alias (e.g. `/bmad:prd` ≡ `/bmad-create-prd`); a few newer/meta commands (`/bmad:workflow-init`, `/bmad:research`, `/bmad:tech-spec`) are colon-only.
+[BMad-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) provides `/bmad-product-brief`, `/bmad-create-prd`, `/bmad-create-architecture`, `/bmad-create-story`, `/bmad-dev-story`, `/bmad-retrospective`, `/bmad-sprint-planning`, and **~66 other skills** across 5+ modules. Most commands also have a colon-form alias (e.g. `/bmad:prd` ≡ `/bmad-create-prd`); a few newer/meta commands (`/bmad:research`, `/bmad:tech-spec`) are colon-only.
 
-| Module | Purpose | Required for harness-zh? |
-|---|---|---|
-| **BMM** (Method) | Core PM workflow — PRD / architecture / story / sprint planning | **Required** |
-| **BMB** (Builder) | Custom agent / workflow authoring | Recommended |
-| **TEA** (Test Architect) | Risk-driven test strategy + atdd / trace / nfr / ci | Recommended |
-| **CIS** (Creative Intelligence) | Brainstorming / design thinking / storytelling / innovation | Recommended |
-| **BMGD** (Game Dev Studio) | Unity / Unreal / Godot game-dev workflows | **Skip** unless game-dev project |
+| Module | Latest version | Purpose | Required for harness-zh? |
+|---|---|---|---|
+| **BMad Core** | v6.6.0 | Shared utilities + cross-module config used by all other modules | **Required** (auto pulled by BMM) |
+| **BMM** (Method) | v6.6.0 | Core PM workflow — PRD / architecture / story / sprint planning | **Required** |
+| **BMB** (Builder) | v1.7.0 | Custom agent / workflow authoring | Recommended |
+| **CIS** (Creative Innovation Suite) | v0.2.0 (early) | Brainstorming / design thinking / storytelling / innovation | Recommended |
+| **TEA** (Test Architect) | v1.15.1 | Risk-driven test strategy + atdd / trace / nfr / ci | Recommended |
+| **BMGD** (Game Dev Studio) | (community) | Unity / Unreal / Godot game-dev workflows | **Skip** unless game-dev project |
 
-**Install** (Node.js v20+, Python 3.10+, `uv` required):
+(Versions snapshot 2026-05-06; installer always shows current latest.)
+
+**Install**（Node.js v20+，`uv` 可选）— 交互式（推荐）：
 
 ```bash
-# 推荐：装 4 个核心模块（除 game-dev studio 外都装）
-npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code
-
-# 或交互式（首次推荐 — 会问要装哪些模块）
+cd /path/to/your/project
 npx bmad-method install
 ```
 
-`--tools claude-code` 让 BMad 把 skills 写到项目的 `.claude/skills/bmad-*/`，installer 同时**自动**建 `_bmad/` 配置目录（`config.toml` + 各模块 yaml）—— 这就是 harness-zh 期望的布局（项目-resident skills），**不需要**额外的 init 步骤。装完后直接跑 `/bmad-product-brief` 等命令即可。
+按提示回答（默认值都是合理的，敲回车即可）：
+
+| 提示 | 推荐回答 |
+|---|---|
+| Installation directory | 当前项目路径（默认即可） |
+| Select official modules | **全选 5 个**：BMad Core / BMM / BMB / CIS / TEA（默认就是；不要勾 BMGD 除非做游戏开发） |
+| Browse community modules? | No |
+| Install from a custom source? | No |
+| Ready to install? | Yes |
+| Integrate with | **Claude Code** （必选，否则 skills 不写到 `.claude/skills/`） |
+| Module configuration | Express Setup（推荐快速默认） |
+| What should agents call you? | 你的名字 |
+| What is your project called? | 项目名（会写到 `_bmad/bmm/config.yaml` 的 `project_name`） |
+| What language should agents use? | Chinese / English |
+| Where should output files be saved? | `_bmad-output`（默认即可，harness-zh 也用这个路径） |
+
+装完得到 ~66 skills + 4 个输出目录（`planning-artifacts/` / `implementation-artifacts/` / `test-artifacts/` / `docs/`） + `_bmad/` 配置目录。**不需要**额外的 init 步骤，直接跑 `/bmad-product-brief` 等命令即可。
+
+非交互（CI / 自动化），一键脚本：
+
+```bash
+npx bmad-method install \
+  --directory "$PWD" \
+  --modules core,bmm,bmb,cis,tea \
+  --tools claude-code \
+  --yes
+```
 
 Without BMad, the planning artifacts (`_bmad-output/planning-artifacts/`) that `/harness-zh:init` depends on cannot be generated.
 
