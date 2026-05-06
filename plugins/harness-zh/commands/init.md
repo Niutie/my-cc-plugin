@@ -195,43 +195,45 @@ HOOKS_EXIT=$?
 
 ### A.5 BMad artifacts 检测 → 流程分叉
 
-**4 类概念产物 — 单文件或 sharded 任一形式都接受**（与 §1 helper `run_sprint_init_check_prereq.sh` 一致）：
+**3 类必需产物 + 1 类可选产物**（每类**单文件或 sharded 目录任一形式都完全支持**，与 §1 helper `run_sprint_init_check_prereq.sh` 一致）：
 
-| # | 概念产物 | 接受的形式 | 来源 BMad 命令 |
-|---|---|---|---|
-| 1 | product-brief | `product-brief*.md`（BMad 上游会带项目名后缀，如 `product-brief-aegis.md`）| `/bmad-product-brief` |
-| 2 | prd | 单文件 `prd.md` **或** sharded 目录 `prd/`（跑过 `/bmad-shard-doc`） | `/bmad-create-prd` |
-| 3 | architecture | 单文件 `architecture.md` **或** sharded 目录 `architecture/`（跑过 `/bmad-shard-doc`） | `/bmad-create-architecture` |
-| 4 | sprint-status | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） | `/bmad-sprint-planning` |
+| # | 概念产物 | 必需性 | 接受的形式 | 来源 BMad 命令 |
+|---|---|---|---|---|
+| 1 | prd | **必需** | 单文件 `prd.md`（默认形式）**或** sharded 目录 `prd/`（跑过 `/bmad-shard-doc`） | `/bmad-create-prd` |
+| 2 | architecture | **必需** | 单文件 `architecture.md`（默认形式）**或** sharded 目录 `architecture/`（跑过 `/bmad-shard-doc`） | `/bmad-create-architecture` |
+| 3 | sprint-status | **必需** | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） | `/bmad-sprint-planning` |
+| 4 | product-brief | **可选**（不阻流；缺则 §2 字段 1/15 用 prd.md 兜底 + WARN） | `product-brief*.md`（BMad 上游会带项目名后缀，如 `product-brief-aegis.md`） | `/bmad-product-brief` |
+
+> **重要：单文件 vs sharded 是 BMad 上游的两种合法布局，harness-zh 完全支持任一**。BMad 默认产单文件 `prd.md` / `architecture.md`；只有用户额外跑 `/bmad-shard-doc` 才会切到 sharded 形式。**不要**把任一种当成"次选"——LLM 在 §2 提取字段时按"先看 sharded 路径是否存在 → 不存在则读单文件全文按章节 grep"自适应。
 
 > **BMad 命令两形式说明**：BMad 装好后大多数命令同时有 `/bmad-<name>` (skill 直射) 与 `/bmad:<name>` (workflow 别名) 两种形式，功能等价。本指南用 hyphen 形式（更直接对应 `.claude/skills/bmad-<name>/`）；若你环境里 hyphen 形式没识别，换冒号形式 `/bmad:<name>` 即可。少数较新/meta 命令（`/bmad:workflow-init`、`/bmad:research`、`/bmad:tech-spec`）只有冒号形式。
 
 ```bash
-BMAD_READY=1
-MISSING_LABELS=""
+BMAD_READY=1                # 仅 3 个必需产物决定是否进 §0+ 提取
+MISSING_LABELS=""           # 必需缺失项
+WARN_LABELS=""              # 可选缺失项（不阻流）
 
-# 1) product-brief: glob 匹配（BMad 上游文件名带项目后缀）
-if ! ls _bmad-output/planning-artifacts/product-brief*.md >/dev/null 2>&1; then
-    BMAD_READY=0
-    MISSING_LABELS="${MISSING_LABELS}  - product-brief*.md（请跑 /bmad-product-brief）\n"
-fi
-
-# 2) prd: 单文件 OR sharded 目录
+# 1) prd: 单文件 OR sharded 目录（必需）
 if [ ! -f _bmad-output/planning-artifacts/prd.md ] && [ ! -d _bmad-output/planning-artifacts/prd ]; then
     BMAD_READY=0
     MISSING_LABELS="${MISSING_LABELS}  - prd.md（或 prd/ sharded 目录；请跑 /bmad-create-prd）\n"
 fi
 
-# 3) architecture: 单文件 OR sharded 目录
+# 2) architecture: 单文件 OR sharded 目录（必需）
 if [ ! -f _bmad-output/planning-artifacts/architecture.md ] && [ ! -d _bmad-output/planning-artifacts/architecture ]; then
     BMAD_READY=0
     MISSING_LABELS="${MISSING_LABELS}  - architecture.md（或 architecture/ sharded 目录；请跑 /bmad-create-architecture）\n"
 fi
 
-# 4) sprint-status.yaml: 路径固定
+# 3) sprint-status.yaml: 路径固定（必需）
 if [ ! -f _bmad-output/implementation-artifacts/sprint-status.yaml ]; then
     BMAD_READY=0
     MISSING_LABELS="${MISSING_LABELS}  - sprint-status.yaml（请跑 /bmad-sprint-planning）\n"
+fi
+
+# 4) product-brief: glob 匹配（可选 — 不影响 BMAD_READY）
+if ! ls _bmad-output/planning-artifacts/product-brief*.md >/dev/null 2>&1; then
+    WARN_LABELS="${WARN_LABELS}  - product-brief*.md（可选；缺则 project_display_name / project_context 从 prd.md 兜底提取）\n"
 fi
 ```
 
@@ -250,10 +252,13 @@ fi
 - **`BMAD_READY=0`** → emit 早结束块（下方），TaskCreate 标 `completed`，退出 0：
 
   ```
-  ⚠️ BMad planning artifacts 未齐 — 跳过 yaml 字段提取
+  ⚠️ BMad 必需 planning artifacts 未齐 — 跳过 yaml 字段提取
 
-  【缺失】
+  【必需缺失】
   $MISSING_LABELS
+
+  【可选缺失（不阻流，仅信息）】
+  $WARN_LABELS  ← 仅当有 WARN 内容时显示此段
 
   【下一步】
     首次使用 BMad（项目根没 _bmad/ 目录）先装：
@@ -262,15 +267,15 @@ fi
     （installer 会自动建 _bmad/ 配置 + 写 .claude/skills/bmad-*/，无需额外 init 步骤）
 
     然后按下列顺序跑 BMad planning workflow：
-      /bmad-product-brief         → product-brief-<name>.md
-      /bmad-create-prd            → prd.md
-      /bmad-create-architecture   → architecture.md（默认单文件；可选 /bmad-shard-doc 切片）
-      /bmad-sprint-planning       → sprint-status.yaml
+      /bmad-create-prd            → prd.md（必需）
+      /bmad-create-architecture   → architecture.md（必需，默认单文件；可选 /bmad-shard-doc 切片）
+      /bmad-sprint-planning       → sprint-status.yaml（必需）
+      /bmad-product-brief         → product-brief-<name>.md（**可选**；不跑也能进 yaml 提取）
 
-    （命令名也可写 /bmad:product-brief / /bmad:prd / /bmad:architecture / /bmad:sprint-planning —
+    （命令名也可写 /bmad:prd / /bmad:architecture / /bmad:sprint-planning / /bmad:product-brief —
       hyphen 与 colon 形式功能等价，按你环境的 skill 习惯选）
 
-    完成后**重跑** /harness-zh:init —— 检测到 BMad 齐后会自动进入 yaml 字段提取流程。
+    完成后**重跑** /harness-zh:init —— 检测到 3 个必需产物齐后即进入 yaml 字段提取（product-brief 不必有）。
 
   yaml 当前状态：<bootstrapped from template；尚未填字段 | preserved existing；上次填的字段保留>
   ```
@@ -307,17 +312,17 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 **按退出码处理**：
 - **0**：进 §2
-- **2**：BMad planning artifacts 缺失。**halt**：把 helper 的 stderr verbatim 贴给用户，TaskCreate 标 `cancelled`，退出。**不**继续读 BMad / 不写 yaml。引导文本（helper 内硬编码）含具体 BMad 命令（`/bmad-product-brief` / `/bmad-create-prd` / `/bmad-create-architecture`；hyphen 形式 — colon 别名也可）。
+- **2**：BMad **必需** planning artifacts 缺失。**halt**：把 helper 的 stderr verbatim 贴给用户，TaskCreate 标 `cancelled`，退出。**不**继续读 BMad / 不写 yaml。引导文本（helper 内硬编码）含具体 BMad 命令（`/bmad-create-prd` / `/bmad-create-architecture`；hyphen 形式 — colon 别名也可）。
 - **3**：sprint-status.yaml 缺失。**halt**：引导跑 `/bmad-sprint-planning`（或 `/bmad:sprint-planning`），TaskCreate 标 `cancelled`，退出。
 - **其它**：halt + 报告 helper exit code（参数错误 / 内部错误 — 不应发生）。
 
 **MUST-EXIST 清单**（helper 内 — 单文件或 sharded 任一形式接受）：
-1. `_bmad-output/planning-artifacts/product-brief*.md`（glob — 上游会带项目名后缀）
-2. `_bmad-output/planning-artifacts/prd.md` **或** `prd/` 目录（sharded 形式）
-3. `_bmad-output/planning-artifacts/architecture.md` **或** `architecture/` 目录（sharded 形式）
-4. `_bmad-output/implementation-artifacts/sprint-status.yaml`
+1. `_bmad-output/planning-artifacts/prd.md` **或** `prd/` 目录（sharded 形式）
+2. `_bmad-output/planning-artifacts/architecture.md` **或** `architecture/` 目录（sharded 形式）
+3. `_bmad-output/implementation-artifacts/sprint-status.yaml`
 
-**NICE-TO-HAVE**（缺则相关字段静默用默认；不阻流）：
+**NICE-TO-HAVE**（缺则 WARN 不阻流；相关字段用 fallback）：
+- `_bmad-output/planning-artifacts/product-brief*.md`（glob — 上游会带项目名后缀；缺则 §2 字段 1/15 用 prd.md 兜底）
 - 若 architecture sharded：`architecture/i18n.md` / `architecture/nfrs.md` / `architecture/proxy*.md` / `architecture/testing-strategy.md`
 - 若 architecture 单文件：上述内容作为章节嵌入 `architecture.md`，§2 提取时按章节标题 grep 即可
 
@@ -327,12 +332,19 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 按下表逐字段读 BMad markdown + 用**语义检索**（Q1）提取值。**不**依赖固定锚点（如 `## Frontend`）—— BMad-generated markdown 段标题 / 段位置不严格固定（中英文 / 编号前缀 / 同义词都可能漂移）。LLM 用 Read 工具读对应文件全文 + 按"提取语义提示"找信息。
 
-> **Source 列约定**：BMad 上游默认产**单文件** `architecture.md`（含 tech-stack / repo-structure / i18n / nfrs / proxy 等章节）；用户跑 `/bmad:shard-doc` 后切片成 `architecture/tech-stack.md` 等 sharded 形式。下表"BMad source"列写的是**sharded 形式的逻辑路径**；LLM 实际读取时按以下顺序 fallback：
+> **Source 列读法 — 单文件 / sharded 两种形式都是 BMad 合法默认布局**：
 >
-> 1. 先看 sharded 路径（`_bmad-output/planning-artifacts/architecture/<name>.md`）是否存在 → 存在就读
-> 2. 不存在 → 读单文件 `architecture.md` 全文，按对应章节标题（"Tech Stack" / "Repo Structure" / "Internationalization" / "NFRs" / "Proxy" / "Testing Strategy"）grep 段落
+> - **单文件形式**（BMad 上游 `/bmad-create-architecture` 默认产出）：`architecture.md` 含 tech-stack / repo-structure / i18n / nfrs / proxy / testing-strategy 等章节；LLM 用 Read 读全文按章节标题（"Tech Stack" / "Repo Structure" / 等）grep 对应段落
+> - **Sharded 形式**（用户跑过 `/bmad-shard-doc` 后切片）：`architecture/tech-stack.md` 等独立子文件；LLM 用 Read 直读对应子文件
 >
-> 同样地，`product-brief*.md` 是 glob 模式（上游会带项目名后缀如 `product-brief-aegis.md`）；`prd.md` / `prd/` 也按"单文件优先 → 否则读 sharded 目录"。
+> 下表"BMad source"列写法 `architecture/tech-stack.md` 或 `architecture.md §tech-stack` 表达同一信息的两种存储形式。LLM 提取时按以下顺序探测：
+>
+> 1. 检查 sharded 路径 `_bmad-output/planning-artifacts/architecture/<name>.md` 是否存在 → 存在则读子文件
+> 2. 否则读单文件 `_bmad-output/planning-artifacts/architecture.md` 全文 → 按章节标题 grep
+>
+> **两种形式都是一等公民**，没有"主选"和"次选"之分。BMad 默认产单文件，sharded 是用户主动选择的次态；harness-zh 对二者无偏好。
+>
+> 同样地，`product-brief*.md` 是 glob 模式（BMad 上游产出文件名带项目后缀如 `product-brief-aegis.md`，是 BMad 设计如此，不是 typo）；`prd.md` / `prd/` 也按"单文件优先 → 否则读 sharded 目录"。
 
 | # | yaml field | BMad source | 提取语义提示 | 失败 fallback |
 |---|---|---|---|---|

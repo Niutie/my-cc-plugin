@@ -11,6 +11,42 @@
 
 ---
 
+## v0.1.8 — 2026-05-06 — product-brief 降级可选 + 单文件 architecture.md 表述清晰化
+
+### 触发
+
+solo-dev 在 `~/HaiAn MCTS`（已跑过 BMad，有 prd.md + architecture.md 单文件 + sprint-status.yaml）跑 `/harness-zh:init`，被错报"BMad 未齐"早结束：
+
+1. **product-brief.md 误判**：项目没跑过 `/bmad-product-brief`（BMad 上游 product-brief 本就是可选环节），但我把它列为 MUST-EXIST hard fail，导致 BMAD_READY=0
+2. **architecture.md 单文件 LLM 误读**：spec 里写"单文件或 sharded 都接受"，但 LLM 仍报告"需要 split form" —— spec 表述偏 sharded 形式作为"主选"，单文件作为"fallback"，措辞误导
+
+### 修
+
+#### product-brief 降级为可选
+
+`commands/init.md` §A.5 + `scripts/run_sprint_init_check_prereq.sh`：
+
+- product-brief 从 MUST-EXIST 移到 NICE-TO-HAVE 类别
+- 缺失只进 `OPTIONAL_MISSING` 数组（WARN 不 fail），不影响 BMAD_READY
+- helper JSON 输出加 `optional_missing` 字段
+- §A.7 早结束文案分两段：【必需缺失】（阻流）+【可选缺失】（仅信息）
+- §2 字段 1（project_display_name）已有"product-brief.md 或 prd.md"双源，缺 product-brief 自然 fallback 到 prd.md 提取项目名
+
+#### 单文件 vs sharded 表述对等
+
+`commands/init.md` §A.5 表 + §2 字段表前置说明：
+
+- 明确写 "**单文件 / sharded 是 BMad 上游的两种合法布局**"（不是"主选/次选"）
+- §2 表前置说明加粗 "**两种形式都是一等公民，没有'主选'和'次选'之分**"
+- 单文件读取协议：用 Read 读全文按章节标题（"Tech Stack" / "Repo Structure" / "NFRs" / "i18n" / "Proxy" / "Testing Strategy"）grep 段落
+- BMad 默认产单文件（不跑 `/bmad-shard-doc` 就一直是单文件） — 这是 majority case，要求 split 等于强迫用户额外动作
+
+### 注意
+
+升到 v0.1.8 后跑 init 在 `~/HaiAn MCTS` 应该能进 §0+ 字段提取（3 必需都齐：prd ✓ architecture ✓ sprint-status ✓；product-brief 缺会 WARN 但不阻）。
+
+---
+
 ## v0.1.7 — 2026-05-06 — §A.4 git hook 安装加非 git 仓库自适应（AskUserQuestion 半自动 init）
 
 ### 触发

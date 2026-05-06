@@ -6,14 +6,14 @@
 # 输入：
 #   --root <path>     项目根目录（默认 HARNESS_REPO_ROOT）；test 用 mktemp dir override
 #
-# 检查清单（4 类概念产物 — 单文件或 sharded 任一形式接受；与 /harness-zh:init §A.5 一致）：
-#   1) product-brief: glob 匹配 _bmad-output/planning-artifacts/product-brief*.md
-#      （BMad 上游会带项目名后缀，如 product-brief-aegis.md）
-#   2) prd: 单文件 _bmad-output/planning-artifacts/prd.md
+# 检查清单（3 必需 + 1 可选；单文件或 sharded 任一形式接受；与 /harness-zh:init §A.5 一致）：
+#   1) prd（必需）: 单文件 _bmad-output/planning-artifacts/prd.md
 #         或 sharded 目录 _bmad-output/planning-artifacts/prd/
-#   3) architecture: 单文件 _bmad-output/planning-artifacts/architecture.md
+#   2) architecture（必需）: 单文件 _bmad-output/planning-artifacts/architecture.md
 #         或 sharded 目录 _bmad-output/planning-artifacts/architecture/
-#   4) sprint-status: _bmad-output/implementation-artifacts/sprint-status.yaml（路径固定）
+#   3) sprint-status（必需）: _bmad-output/implementation-artifacts/sprint-status.yaml（路径固定）
+#   4) product-brief（**可选**）: glob 匹配 _bmad-output/planning-artifacts/product-brief*.md
+#         （BMad 上游会带项目名后缀；缺则只 WARN 不 fail，project_display_name 从 prd.md 兜底）
 #
 # 输出：
 #   stdout：JSON 一行（{"all_present": bool, "missing_planning": [...], "missing_sprint_status": bool}）
@@ -60,27 +60,30 @@ if [ ! -d "$ROOT" ]; then
     exit 1
 fi
 
-# 4 个概念产物 + 引导命令（hyphen 形式 — 与 .claude/skills/bmad-* 直接对应；
-# colon 别名 /bmad:<name> 通常也可，部分命令带 "create-" 前缀差异；详见 stderr 注脚）
+# 3 必需产物（缺即 fail）+ 1 可选产物（缺仅 WARN）
+# 命令名 hyphen 形式 — 与 .claude/skills/bmad-* 直接对应；
+# colon 别名 /bmad:<name> 通常也可（部分带 "create-" 前缀差异；详见 stderr 注脚）
 declare -a MISSING_PLANNING=()
 declare -a MISSING_GUIDANCE=()
+declare -a OPTIONAL_MISSING=()
+declare -a OPTIONAL_GUIDANCE=()
 
-# 1) product-brief: glob 匹配（BMad 上游 product-brief-{project}.md）
-if ! ls "$ROOT/_bmad-output/planning-artifacts/product-brief"*.md >/dev/null 2>&1; then
-    MISSING_PLANNING+=("_bmad-output/planning-artifacts/product-brief*.md")
-    MISSING_GUIDANCE+=("/bmad-product-brief")
-fi
-
-# 2) prd: 单文件 OR sharded 目录
+# 1) prd: 单文件 OR sharded 目录（必需）
 if [ ! -f "$ROOT/_bmad-output/planning-artifacts/prd.md" ] && [ ! -d "$ROOT/_bmad-output/planning-artifacts/prd" ]; then
     MISSING_PLANNING+=("_bmad-output/planning-artifacts/prd.md (或 prd/ sharded 目录)")
     MISSING_GUIDANCE+=("/bmad-create-prd")
 fi
 
-# 3) architecture: 单文件 OR sharded 目录
+# 2) architecture: 单文件 OR sharded 目录（必需）
 if [ ! -f "$ROOT/_bmad-output/planning-artifacts/architecture.md" ] && [ ! -d "$ROOT/_bmad-output/planning-artifacts/architecture" ]; then
     MISSING_PLANNING+=("_bmad-output/planning-artifacts/architecture.md (或 architecture/ sharded 目录)")
     MISSING_GUIDANCE+=("/bmad-create-architecture")
+fi
+
+# 4) product-brief: glob 匹配（**可选** — 不进 MISSING_PLANNING，只进 OPTIONAL_MISSING）
+if ! ls "$ROOT/_bmad-output/planning-artifacts/product-brief"*.md >/dev/null 2>&1; then
+    OPTIONAL_MISSING+=("_bmad-output/planning-artifacts/product-brief*.md (可选 — 缺则字段 1/15 从 prd.md 兜底)")
+    OPTIONAL_GUIDANCE+=("/bmad-product-brief")
 fi
 
 # 4) sprint-status.yaml: 路径固定
@@ -113,15 +116,16 @@ if [ "${#MISSING_PLANNING[@]}" -gt 0 ] || [ "$MISSING_SPRINT_STATUS" = "true" ];
     ALL_PRESENT="false"
 fi
 
-printf '{"all_present": %s, "missing_planning": %s, "missing_sprint_status": %s}\n' \
+printf '{"all_present": %s, "missing_planning": %s, "missing_sprint_status": %s, "optional_missing": %s}\n' \
     "$ALL_PRESENT" \
     "$(json_array "${MISSING_PLANNING[@]+"${MISSING_PLANNING[@]}"}")" \
-    "$MISSING_SPRINT_STATUS"
+    "$MISSING_SPRINT_STATUS" \
+    "$(json_array "${OPTIONAL_MISSING[@]+"${OPTIONAL_MISSING[@]}"}")"
 
 # stderr 引导 + exit code
 if [ "${#MISSING_PLANNING[@]}" -gt 0 ]; then
     echo "" >&2
-    echo "❌ BMad planning artifacts MUST-EXIST 缺失 ${#MISSING_PLANNING[@]} 项 — /harness-zh:init halt" >&2
+    echo "❌ BMad **必需** planning artifacts 缺失 ${#MISSING_PLANNING[@]} 项 — /harness-zh:init halt" >&2
     for i in "${!MISSING_PLANNING[@]}"; do
         echo "  - $ROOT/${MISSING_PLANNING[$i]}" >&2
         echo "    请先跑 ${MISSING_GUIDANCE[$i]} 生成该产物" >&2
@@ -129,6 +133,13 @@ if [ "${#MISSING_PLANNING[@]}" -gt 0 ]; then
     if [ "$MISSING_SPRINT_STATUS" = "true" ]; then
         echo "  - $ROOT/$SPRINT_STATUS_REL" >&2
         echo "    请先跑 /bmad-sprint-planning 生成 sprint backlog" >&2
+    fi
+    if [ "${#OPTIONAL_MISSING[@]}" -gt 0 ]; then
+        echo "" >&2
+        echo "💭 可选缺失（不阻流，仅信息）：" >&2
+        for i in "${!OPTIONAL_MISSING[@]}"; do
+            echo "  - $ROOT/${OPTIONAL_MISSING[$i]}" >&2
+        done
     fi
     echo "" >&2
     echo "💡 首次使用 BMad（项目根没 _bmad/ 目录）先装：" >&2
