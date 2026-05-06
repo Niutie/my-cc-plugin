@@ -1,18 +1,201 @@
 ---
-description: Harness clone-time 一次性初始化 — 从 BMad planning artifacts 提取 14 字段写入 harness-project-config.yaml（merge 模式；--dry-run 预览；--force 覆盖带二次确认）
+description: Harness 项目 bootstrap — 投递 plugin 资产到 .claude/harness/ + .claude/commands/ + 装 git hooks；若 BMad planning artifacts 已齐则继续从中提取 14 字段填 harness-project-config.yaml（merge 模式；--dry-run 预览；--force 覆盖二次确认）
 ---
 
-# /harness-zh:init — Harness 项目 config 初始化
+# /harness-zh:init — Harness 项目 bootstrap + config 初始化
 
-你是这个 init 的**主 orchestrator**。当用户触发 `/harness-zh:init`，你必须按以下手册顺序执行 §0–§6，把 `.claude/harness/harness-project-config.yaml` 14 字段（11 描述 + 3 派生）从 BMad planning artifacts 自动同步。
+你是这个 init 的**主 orchestrator**。当用户触发 `/harness-zh:init`，按 **§A → §0 → §6** 顺序执行：先把 plugin 资产投递到用户项目（§A），再按 BMad artifacts 是否齐全（§A.5 检测）决定是否进 §0+ 跑 yaml 字段提取流程。
 
-**触发场景**：① clone harness 到全新项目（空 yaml + 完整 BMad 产物）；② mid-project 启用 harness（部分 yaml 已填 + 完整 BMad）。
+**触发场景**：
+1. 新项目装 plugin 后**首次** init（资产未部署 + 可能无 BMad）
+2. clone 到全新项目 + 已跑完 BMad（资产未部署 + 完整 BMad）
+3. mid-project 启用 harness（资产部分部署 + 部分 yaml 已填 + 完整 BMad）
+4. plugin 升级后（**建议改用** `/harness-zh:update` —— 只刷资产不动 yaml）
 
 **与 `/harness-zh:run` / `/harness-zh:run-test` 共享的行为契约**：
 
-- **代答政策**：本命令不调度 BMad/codex 子 agent，直接由主 agent 读 BMad markdown + 写 yaml；无 prompt 后缀注入步骤。决策若不显然 → 按 `.claude/harness/answer-policy.md` 自决，不发问。
-- **进度可视化**：用 TaskCreate 建任务 `Sprint Init: <project_display_name>`（启动时 in_progress；§6 完成时 completed）。
+- **代答政策**：本命令不调度 BMad/codex 子 agent，直接由主 agent 操作文件系统 + 读 BMad markdown + 写 yaml；无 prompt 后缀注入步骤。决策若不显然 → 按 `.claude/harness/answer-policy.md` 自决，不发问。
+- **进度可视化**：用 TaskCreate 建任务 `Harness Init: <project_display_name>`（§A.0 启动时 in_progress；§6 完成或 §A.7 早结束时 completed）。
 - **不自动 commit yaml（Q6）**：§6 报告完成后**不**调 `git add` / `git commit`；让 solo-dev review yaml 后自决。
+- **资产部署幂等**：§A 用 cmp 比较内容；相同则 unchanged，不同则备份后覆盖（沿用 `install_git_hooks.sh` 模式 — 不丢用户本地修改）。
+- **yaml 永不被资产投递覆盖**：`harness-project-config.yaml` 若已存在，§A.3 不动它；只在文件缺失时从 template 投放。
+
+---
+
+## A. Plugin Asset Deployment（首部 — 项目资产投递）
+
+### A.0 探测 plugin 安装路径
+
+按下列顺序尝试，命中即用，全部 miss 则 halt：
+
+```bash
+# 1) Claude Code 注入的 env 变量（hooks 上下文一定有；commands 上下文不保证 — 试一下）
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || PLUGIN_ROOT=""
+
+# 2) 标准 Claude Code plugin 安装位置扫描
+if [ -z "$PLUGIN_ROOT" ]; then
+    PLUGIN_ROOT="$(find ~/.claude -type d -name harness-zh -path '*plugins*' 2>/dev/null | head -1)"
+fi
+
+# 3) 都没命中 → halt
+if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT" ]; then
+    cat >&2 <<EOF
+ERROR: 无法定位 harness-zh plugin 安装目录
+       已尝试: \${CLAUDE_PLUGIN_ROOT}, ~/.claude/plugins/**/harness-zh/
+       请确认 plugin 已通过以下流程装载：
+         /plugin marketplace add <owner>/my-cc-plugin
+         /plugin install harness-zh@my-cc-plugin
+EOF
+    exit 1
+fi
+echo "PLUGIN_ROOT=$PLUGIN_ROOT"
+```
+
+把 `$PLUGIN_ROOT` 绑定到对话上下文，§A.2 之后所有 cp 用它做源路径。
+
+### A.1 创建项目侧目标目录
+
+```bash
+mkdir -p .claude/harness/{scripts,conventions,prompt-suffixes,prompt-templates,git-hooks}
+mkdir -p .claude/commands
+```
+
+### A.2 资产投递（cmp + backup + overwrite 幂等）
+
+**Source → Dest 配对表**：
+
+| Plugin source | Project dest |
+|---|---|
+| `$PLUGIN_ROOT/architecture.md` | `.claude/harness/architecture.md` |
+| `$PLUGIN_ROOT/answer-policy.md` | `.claude/harness/answer-policy.md` |
+| `$PLUGIN_ROOT/changelog.md` | `.claude/harness/changelog.md` |
+| `$PLUGIN_ROOT/test-stage-triggers.yaml` | `.claude/harness/test-stage-triggers.yaml` |
+| `$PLUGIN_ROOT/scripts/*` | `.claude/harness/scripts/` |
+| `$PLUGIN_ROOT/conventions/*` | `.claude/harness/conventions/` |
+| `$PLUGIN_ROOT/prompt-suffixes/*` | `.claude/harness/prompt-suffixes/` |
+| `$PLUGIN_ROOT/prompt-templates/*` | `.claude/harness/prompt-templates/` |
+| `$PLUGIN_ROOT/git-hooks/*` | `.claude/harness/git-hooks/` |
+| `$PLUGIN_ROOT/commands/*.md` | `.claude/commands/` |
+
+**单文件投递逻辑**（沿用 `install_git_hooks.sh` 模式）：
+
+```bash
+TS="$(date +%Y%m%d-%H%M%S)"
+INSTALLED=0; UNCHANGED=0; UPDATED=0
+
+deploy() {
+    local src="$1" dst="$2"
+    if [ ! -f "$dst" ]; then
+        cp "$src" "$dst"
+        [ -x "$src" ] && chmod +x "$dst"
+        echo "installed: $dst"
+        INSTALLED=$((INSTALLED + 1))
+    elif cmp -s "$src" "$dst"; then
+        UNCHANGED=$((UNCHANGED + 1))
+    else
+        cp "$dst" "$dst.bak.$TS"
+        cp "$src" "$dst"
+        [ -x "$src" ] && chmod +x "$dst"
+        echo "updated:   $dst (backup → $(basename "$dst").bak.$TS)"
+        UPDATED=$((UPDATED + 1))
+    fi
+}
+
+# 顶层文件
+for f in architecture.md answer-policy.md changelog.md test-stage-triggers.yaml; do
+    deploy "$PLUGIN_ROOT/$f" ".claude/harness/$f"
+done
+
+# 子目录递归
+for sub in scripts conventions prompt-suffixes prompt-templates git-hooks; do
+    shopt -s nullglob
+    for src in "$PLUGIN_ROOT/$sub"/*; do
+        [ -f "$src" ] || continue
+        deploy "$src" ".claude/harness/$sub/$(basename "$src")"
+    done
+done
+
+# commands（单层，只 .md）
+for src in "$PLUGIN_ROOT/commands"/*.md; do
+    [ -f "$src" ] || continue
+    deploy "$src" ".claude/commands/$(basename "$src")"
+done
+```
+
+把 `$INSTALLED / $UNCHANGED / $UPDATED` 绑定上下文，§A.6 报告时引用。
+
+### A.3 投放 yaml（仅当不存在 — 永不覆盖既有 yaml）
+
+```bash
+YAML_DST=".claude/harness/harness-project-config.yaml"
+if [ ! -f "$YAML_DST" ]; then
+    cp "$PLUGIN_ROOT/templates/harness-project-config.yaml.template" "$YAML_DST"
+    YAML_BOOTSTRAPPED=1
+else
+    YAML_BOOTSTRAPPED=0
+fi
+```
+
+**绝对不能**覆盖既有 yaml — 含 solo-dev 已填的项目字段（mid-project / 升级场景必须 preserve）。
+
+### A.4 装 git hooks
+
+```bash
+bash .claude/harness/scripts/install_git_hooks.sh
+HOOKS_EXIT=$?
+```
+
+按退出码处理：
+- `HOOKS_EXIT=0` → 进 §A.5
+- `HOOKS_EXIT=1`（用户已设 `core.hooksPath`，installer 拒装避免 silent no-op）→ 把 installer 的 stderr verbatim 贴给用户作 **WARN**，**不 halt**（资产已部署，hook 装失败不阻断主流程；solo-dev 看 WARN 自决）
+
+### A.5 BMad artifacts 检测 → 流程分叉
+
+**MUST-EXIST 列表**（与 §1 helper `run_sprint_init_check_prereq.sh` 一致）：
+
+```bash
+BMAD_READY=1
+for f in \
+    _bmad-output/planning-artifacts/product-brief.md \
+    _bmad-output/planning-artifacts/prd.md \
+    _bmad-output/planning-artifacts/architecture/tech-stack.md \
+    _bmad-output/planning-artifacts/architecture/repo-structure.md \
+    _bmad-output/implementation-artifacts/sprint-status.yaml; do
+    [ -f "$f" ] || { BMAD_READY=0; break; }
+done
+```
+
+### A.6 资产部署统计（不论 BMad ready 与否都打印）
+
+```
+【资产部署】
+  - $INSTALLED installed / $UNCHANGED unchanged / $UPDATED updated（含 backup）
+  - yaml: <bootstrapped from template | preserved existing>
+  - git hooks: <installed / unchanged | WARN: core.hooksPath ...>
+```
+
+### A.7 BMad ready 分叉
+
+- **`BMAD_READY=1`** → emit "BMad artifacts 齐 → 进入 §0 字段提取流程"，进 §0
+- **`BMAD_READY=0`** → emit 早结束块（下方），TaskCreate 标 `completed`，退出 0：
+
+  ```
+  ⚠️ BMad planning artifacts 未齐 — 跳过 yaml 字段提取
+
+  【缺失文件】
+    - <逐条列出 §A.5 检测中第一个 missing 的文件>
+
+  【下一步】
+    请按下列顺序跑 BMad planning workflow：
+      /bmad-product-brief    → product-brief.md
+      /bmad:prd              → prd.md
+      /bmad:architecture     → architecture/tech-stack.md + repo-structure.md
+      /bmad:sprint-planning  → sprint-status.yaml
+    完成后**重跑** /harness-zh:init —— 检测到 BMad 齐后会自动进入 yaml 字段提取流程。
+
+  yaml 当前状态：<bootstrapped from template；尚未填字段 | preserved existing；上次填的字段保留>
+  ```
 
 ---
 
