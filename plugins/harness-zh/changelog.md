@@ -11,6 +11,46 @@
 
 ---
 
+## v0.1.9 — 2026-05-06 — 跨整个 plugin tree 全量审计 dual-form (sharded / 单文件) 兼容性
+
+### 触发
+
+solo-dev 提醒"prd / ux-design / architecture 都存在分片和不分片，都兼容了吗"。v0.1.3-v0.1.8 已修 §A.5 detection + §2 字段表 + helper script，但全量审计发现还有几处遗漏。
+
+### 全量审计结果
+
+| 文件 | 引用 BMad sharded 路径？ | 修法 |
+|---|---|---|
+| `commands/init.md` §A.5 | ✓ 已 dual-form（v0.1.3-v0.1.8） | — |
+| `commands/init.md` §2 字段表 | ✓ 已 dual-form（前 6 行；后续行 LLM 按表前置说明 fallback） | — |
+| `scripts/run_sprint_init_check_prereq.sh` | ✓ 已 dual-form（v0.1.8） | — |
+| `architecture.md` §十一 (plugin 设计文档) | ✗ MUST-EXIST 表 + 字段 mapping 表都写 sharded 形式为唯一 | **修：表格扩成 dual-form；加 ux-design / epics 未引用的说明段** |
+| `scripts/run_retro_self_audit.sh` | ✗ 6 处 hardcode sharded 子文件路径（A5/A8/B4/B9/C2/C6） | **修：加 `find_bmad_doc` helper + 6 处替换** |
+| `scripts/run_sprint_init_test.sh` | ✗ test fixture 用 sharded + assert product-brief MUST-EXIST | 暂留（脚本是 self-test，用户不跑；下版本统一更新） |
+| `prompt-templates/data-visibility-review-template.md` | ⚠️ 引用 sharded 子文件 | 暂留（template 是项目特定，clone 时 solo-dev 自决） |
+
+### ux-design 和 epics
+
+`grep -r 'ux-design\|epics'` 在 plugin 任何运行时文件（commands/scripts/prompt-suffixes/templates）**均无命中**。harness-zh 当前不读 ux-design / epics 任何形式（信息从 sprint-status.yaml + prd.md + architecture.md 间接获取）。所以"兼容 vs 不兼容"对 ux-design / epics 无意义。
+
+将来若加 hard ref（比如 story creation 注入 UX 上下文），需同步在 §A.5 加可选检测 + §2 加字段映射 + 用 `find_bmad_doc` 风格 helper。本版只在 architecture.md §十一 加说明段记录这个决策。
+
+### 修
+
+| 位置 | 改动 |
+|---|---|
+| `architecture.md` §十一 prereq gate 表 | 4 行 hardcoded MUST-EXIST → 4 行概念产物（必需/可选 + 单文件/sharded 接受形式） |
+| `architecture.md` §十一 14 字段 mapping 表 | source 列加"或 architecture.md §section"形式作单文件 channel；加表头说明 |
+| `architecture.md` §十一 加说明段 | ux-design / epics 当前未引用；如未来加引用需走同样的 dual-form pattern |
+| `scripts/run_retro_self_audit.sh` | 加 `find_bmad_doc` helper（顶部，sharded → 单文件 fallback 的通用解析器）；6 处 check 函数（check_A5 / A8 / B4 / B9 / C2 / C6）替换 hardcode 路径为 helper 调用 |
+
+### 注意
+
+- `find_bmad_doc` 单文件回退是近似（grep 跨整个父文件而非仅章节），但 retro audit grep 模式都很特异（"NFR52 baseline" / "RBAC 业务层数据可见性收敛 pattern" 等），跨章节假阳性风险低
+- `run_retro_self_audit.sh` 头部 banner 已标 PROJECT-SPECIFIC（A1..C12 是 Aegis 实际 retro action items），新项目本就要重写 check 函数体；本版只是把"如果你保留这套 scaffolding 但项目用单文件 BMad"场景从 silent 失效升级为正确兼容
+
+---
+
 ## v0.1.8 — 2026-05-06 — product-brief 降级可选 + 单文件 architecture.md 表述清晰化
 
 ### 触发

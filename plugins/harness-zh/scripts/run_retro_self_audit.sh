@@ -26,6 +26,34 @@
 
 set -euo pipefail
 
+# ============================================================================
+# find_bmad_doc — Dual-form (sharded vs single-file) BMad artifact resolver
+#
+# BMad 上游 prd / architecture 产物存在两种合法布局：
+#   - 单文件：prd.md / architecture.md（BMad 默认）
+#   - Sharded：prd/<sub>.md / architecture/<sub>.md（用户跑 /bmad-shard-doc 后）
+#
+# 各 check_XN() 函数读 BMad sub-file 时用本 helper：
+#   doc="$(find_bmad_doc 'prd/non-functional-requirements.md' 'prd.md')"
+#   [ -z "$doc" ] && { echo "missing"; return; }
+#   grep ... "$doc"
+#
+# 单文件回退是近似 — grep 模式跨整个 prd.md 而非仅 NFR 章节，可能产生
+# 假阳性，但 retro audit 的 grep 模式都很特异（"NFR52 baseline"、
+# "RBAC 业务层数据可见性" 等），实际 cross-section 撞车风险低。
+#
+# 退出：echo 第一个存在的路径；都不存在则 echo 空字符串
+# ============================================================================
+find_bmad_doc() {
+    local sharded="${ROOT}/_bmad-output/planning-artifacts/$1"
+    local single="${ROOT}/_bmad-output/planning-artifacts/$2"
+    if [ -f "$sharded" ]; then
+        echo "$sharded"
+    elif [ -f "$single" ]; then
+        echo "$single"
+    fi
+}
+
 if [ "$#" -lt 1 ]; then
     echo "Usage: $0 <prev_epic_num>" >&2
     exit 2
@@ -95,8 +123,9 @@ check_A4() {
     fi
 }
 check_A5() {
-    local nfr="${ROOT}/_bmad-output/planning-artifacts/prd/non-functional-requirements.md"
-    if [ ! -f "$nfr" ]; then echo "| A5 | NFR52 baseline 拍板 | unknown | NFR file missing |"; return; fi
+    local nfr
+    nfr="$(find_bmad_doc 'prd/non-functional-requirements.md' 'prd.md')"
+    if [ -z "$nfr" ]; then echo "| A5 | NFR52 baseline 拍板 | unknown | NFR file missing |"; return; fi
     local todo
     todo="$(grep -cE 'TODO|<待实测>|TBD|待操作员|retrospective 阶段拍板' "$nfr" 2>/dev/null || true)"
     todo="${todo:-0}"
@@ -123,11 +152,12 @@ check_A7() {
     fi
 }
 check_A8() {
-    local f="${ROOT}/_bmad-output/planning-artifacts/architecture/index.md"
-    if [ -f "$f" ] && grep -qE '^## D-decisions 总索引' "$f"; then
-        echo "| A8 | architecture/index.md D-decisions 索引 | done | index.md ## D-decisions 总索引 段 |"
+    local f
+    f="$(find_bmad_doc 'architecture/index.md' 'architecture.md')"
+    if [ -n "$f" ] && grep -qE '^## D-decisions 总索引' "$f"; then
+        echo "| A8 | architecture index D-decisions 索引 | done | $(basename "$f") ## D-decisions 总索引 段 |"
     else
-        echo "| A8 | architecture/index.md D-decisions 索引 | pending | index.md 缺 D-decisions 总索引段 |"
+        echo "| A8 | architecture index D-decisions 索引 | pending | architecture index/section 缺 D-decisions 总索引段 |"
     fi
 }
 
@@ -157,8 +187,9 @@ check_B3() {
     fi
 }
 check_B4() {
-    local f="${ROOT}/_bmad-output/planning-artifacts/architecture/implementation-patterns-consistency-rules.md"
-    if [ -f "$f" ] && grep -qE 'RBAC 业务层数据可见性收敛 pattern' "$f"; then
+    local f
+    f="$(find_bmad_doc 'architecture/implementation-patterns-consistency-rules.md' 'architecture.md')"
+    if [ -n "$f" ] && grep -qE 'RBAC 业务层数据可见性收敛 pattern' "$f"; then
         echo "| B4 | RBAC 业务层数据可见性 review checklist | done | IPC rules 段 |"
     else
         echo "| B4 | RBAC 业务层数据可见性 review checklist | partial | pattern 未沉淀 |"
@@ -193,8 +224,9 @@ check_B8() {
 }
 check_B9() {
     # B9 引用 A1+A4+A5
-    local nfr="${ROOT}/_bmad-output/planning-artifacts/prd/non-functional-requirements.md"
-    if [ -f "$nfr" ] && grep -qE 'NFR52 baseline = |NFR52 retrospective 拍板' "$nfr"; then
+    local nfr
+    nfr="$(find_bmad_doc 'prd/non-functional-requirements.md' 'prd.md')"
+    if [ -n "$nfr" ] && grep -qE 'NFR52 baseline = |NFR52 retrospective 拍板' "$nfr"; then
         echo "| B9 | A1 + A4 + A5 兑现合并 | done | NFR52 拍板 + sizing 实测 + admin_init 测试 |"
     else
         echo "| B9 | A1 + A4 + A5 兑现合并 | pending | NFR52 拍板未落地（依赖 A5） |"
@@ -213,8 +245,9 @@ check_C1() {
 check_C2() {
     local sl="${ROOT}/.claude/harness/scripts/check_spec_length.sh"
     local ed="${ROOT}/.claude/harness/scripts/extract_d_decisions.sh"
-    local idx="${ROOT}/_bmad-output/planning-artifacts/architecture/index.md"
-    if [ -x "$sl" ] && [ -x "$ed" ] && grep -qE '^## D-decisions 总索引' "$idx" 2>/dev/null; then
+    local idx
+    idx="$(find_bmad_doc 'architecture/index.md' 'architecture.md')"
+    if [ -x "$sl" ] && [ -x "$ed" ] && [ -n "$idx" ] && grep -qE '^## D-decisions 总索引' "$idx" 2>/dev/null; then
         echo "| C2 | D-decisions sharded extract + spec 800 hard | done | check_spec_length.sh + extract_d_decisions.sh + index 总索引 |"
     else
         echo "| C2 | D-decisions sharded extract + spec 800 hard | partial | 部分子项落地 |"
@@ -251,8 +284,9 @@ check_C5() {
 }
 check_C6() {
     # C6 = A1+A4+A5 合并兑现
-    local nfr="${ROOT}/_bmad-output/planning-artifacts/prd/non-functional-requirements.md"
-    if [ -f "$nfr" ] && grep -qE 'NFR52 baseline = ' "$nfr"; then
+    local nfr
+    nfr="$(find_bmad_doc 'prd/non-functional-requirements.md' 'prd.md')"
+    if [ -n "$nfr" ] && grep -qE 'NFR52 baseline = ' "$nfr"; then
         echo "| C6 | A1+A4+A5 baseline decisions bundle | done | NFR52 拍板已落 |"
     else
         echo "| C6 | A1+A4+A5 baseline decisions bundle | pending | NFR52 拍板未落 |"

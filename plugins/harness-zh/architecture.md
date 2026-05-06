@@ -633,36 +633,39 @@ C-path-externalization 落地后，三类项目特定值从脚本硬编码移出
 /harness-zh:init --force       # 覆盖既有值（含手改字段）；先列 "field: old → new" + 二次确认
 ```
 
-**Prerequisite gate（MUST-EXIST 严格 — Q4 决策）**：
+**Prerequisite gate（3 必需 + 1 可选 — 单文件 / sharded 任一形式都接受）**：
 
-| 文件 | 缺失行为 | 引导 BMad skill |
+| 概念产物 | 必需性 | 接受的形式 | 引导 BMad skill |
+|---|---|---|---|
+| prd | **必需** | 单文件 `prd.md` 或 sharded `prd/` 目录 | `/bmad-create-prd`（亦 `/bmad:prd`） |
+| architecture | **必需** | 单文件 `architecture.md` 或 sharded `architecture/` 目录 | `/bmad-create-architecture`（亦 `/bmad:architecture`） |
+| sprint-status | **必需** | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） | `/bmad-sprint-planning` |
+| product-brief | **可选**（缺仅 WARN，不阻流）| `product-brief*.md`（glob — 上游含项目名后缀） | `/bmad-product-brief` |
+
+> **单文件 vs sharded 都是 BMad 上游合法布局**：BMad 默认产单文件 `prd.md` / `architecture.md`；用户跑 `/bmad-shard-doc` 后切到 sharded 形式。harness-zh 对二者无偏好。
+>
+> ux-design / epics 等其他 BMad 产物（`ux-design-specification.md` 单文件 vs `ux-design-specification/` sharded、`epics.md` vs `epics/`）当前**未在 harness-zh 任何运行时路径引用**（不在 §A.5 检测、不在 §2 字段提取、不在 retro 审计）；信息从 sprint-status.yaml + prd.md + architecture.md 间接获取，未来若加 hard ref 需同步加 dual-form 检测。
+
+helper：[`scripts/run_sprint_init_check_prereq.sh`](scripts/run_sprint_init_check_prereq.sh) — exit 0 / 2 / 3；JSON stdout（含 `optional_missing` 字段）+ 引导 stderr。
+
+**14 字段 mapping 概要**（详 [`.claude/commands/init.md`](../commands/init.md) §2 — 表格用 sharded 路径写 source 列，LLM 提取时按"sharded 探测 → 单文件章节 grep" fallback；两形式都是一等公民）：
+
+| yaml field | BMad source（sharded 形式 / 单文件章节）| 提取语义 |
 |---|---|---|
-| `_bmad-output/planning-artifacts/product-brief.md` | halt | `/bmad-product-brief` |
-| `_bmad-output/planning-artifacts/prd.md` | halt | `/bmad:prd` |
-| `_bmad-output/planning-artifacts/architecture/tech-stack.md` | halt | `/bmad:architecture` |
-| `_bmad-output/planning-artifacts/architecture/repo-structure.md` | halt | `/bmad:architecture` |
-| `_bmad-output/implementation-artifacts/sprint-status.yaml` | halt（exit 3） | `/bmad:sprint-planning` |
-
-helper：[`scripts/run_sprint_init_check_prereq.sh`](scripts/run_sprint_init_check_prereq.sh) — exit 0 / 2 / 3；JSON stdout + 引导 stderr。
-
-**14 字段 mapping 概要**（详 [`.claude/commands/init.md`](../commands/init.md) §2）：
-
-| yaml field | BMad source | 提取语义 |
-|---|---|---|
-| `project_display_name` | product-brief.md / prd.md | 产品名 / 项目代号 |
-| `container_orchestrator` | architecture/tech-stack.md | 容器编排（docker-compose / k8s） |
-| `frontend_framework` | architecture/tech-stack.md | 前端框架（Next.js / SvelteKit） |
-| `backend_languages` | architecture/tech-stack.md | 后端语言列表（Go / Python / Rust） |
-| `e2e_framework` | architecture/tech-stack.md | e2e 框架（Playwright / Cypress） |
-| `extra.frontend_dir` | architecture/repo-structure.md | 前端代码目录 |
-| `extra.e2e_test_subdir` | repo-structure.md / testing-strategy.md | e2e 测试目录 |
-| `extra.container_count` | tech-stack.md | 服务容器数量 |
-| `extra.i18n_locales` | architecture/i18n.md（NICE） | 前端国际化语种 |
+| `project_display_name` | product-brief*.md / prd.md | 产品名 / 项目代号 |
+| `container_orchestrator` | architecture/tech-stack.md / architecture.md §tech-stack | 容器编排（docker-compose / k8s） |
+| `frontend_framework` | architecture/tech-stack.md / architecture.md §tech-stack | 前端框架（Next.js / SvelteKit） |
+| `backend_languages` | architecture/tech-stack.md / architecture.md §tech-stack | 后端语言列表（Go / Python / Rust） |
+| `e2e_framework` | architecture/tech-stack.md / architecture.md §testing-strategy | e2e 框架（Playwright / Cypress） |
+| `extra.frontend_dir` | architecture/repo-structure.md / architecture.md §repo-structure | 前端代码目录 |
+| `extra.e2e_test_subdir` | repo-structure.md / testing-strategy 章节 | e2e 测试目录 |
+| `extra.container_count` | tech-stack.md / architecture.md §tech-stack | 服务容器数量 |
+| `extra.i18n_locales` | architecture/i18n.md / architecture.md §i18n（NICE） | 前端国际化语种 |
 | `extra.routing_pattern` | i18n.md / tech-stack.md（NICE） | 路由模式 |
-| `extra.proxy_addon` | architecture/proxy*.md（NICE） | 代理插件 |
-| `extra.sandbox_constraint` | architecture/nfrs.md（NICE） | 沙箱资源约束 |
-| `extra.resource_baseline` | architecture/nfrs.md（NICE） | 资源 baseline |
-| `extra.backend_modules` | architecture/repo-structure.md | 后端模块列表 |
+| `extra.proxy_addon` | architecture/proxy*.md / architecture.md §proxy（NICE） | 代理插件 |
+| `extra.sandbox_constraint` | architecture/nfrs.md / architecture.md §nfrs（NICE） | 沙箱资源约束 |
+| `extra.resource_baseline` | architecture/nfrs.md / architecture.md §nfrs（NICE） | 资源 baseline |
+| `extra.backend_modules` | architecture/repo-structure.md / architecture.md §repo-structure | 后端模块列表 |
 
 派生字段（不读 BMad；基于上述 11 描述字段拼模板）：
 - `artifacts_root` — 默认 `_bmad-output/implementation-artifacts`（yaml 已设则保留）
