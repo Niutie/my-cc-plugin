@@ -175,10 +175,12 @@ HOOKS_EXIT=$?
 
 | # | 概念产物 | 接受的形式 | 来源 BMad 命令 |
 |---|---|---|---|
-| 1 | product-brief | `product-brief*.md`（BMad 上游会带项目名后缀，如 `product-brief-aegis.md`）| `/bmad:product-brief` |
-| 2 | prd | 单文件 `prd.md` **或** sharded 目录 `prd/`（跑过 `/bmad:shard-doc`） | `/bmad:prd` |
-| 3 | architecture | 单文件 `architecture.md` **或** sharded 目录 `architecture/`（跑过 `/bmad:shard-doc`） | `/bmad:architecture` |
-| 4 | sprint-status | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） | `/bmad:sprint-planning` |
+| 1 | product-brief | `product-brief*.md`（BMad 上游会带项目名后缀，如 `product-brief-aegis.md`）| `/bmad-product-brief` |
+| 2 | prd | 单文件 `prd.md` **或** sharded 目录 `prd/`（跑过 `/bmad-shard-doc`） | `/bmad-create-prd` |
+| 3 | architecture | 单文件 `architecture.md` **或** sharded 目录 `architecture/`（跑过 `/bmad-shard-doc`） | `/bmad-create-architecture` |
+| 4 | sprint-status | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） | `/bmad-sprint-planning` |
+
+> **BMad 命令两形式说明**：BMad 装好后大多数命令同时有 `/bmad-<name>` (skill 直射) 与 `/bmad:<name>` (workflow 别名) 两种形式，功能等价。本指南用 hyphen 形式（更直接对应 `.claude/skills/bmad-<name>/`）；若你环境里 hyphen 形式没识别，换冒号形式 `/bmad:<name>` 即可。少数较新/meta 命令（`/bmad:workflow-init`、`/bmad:research`、`/bmad:tech-spec`）只有冒号形式。
 
 ```bash
 BMAD_READY=1
@@ -187,25 +189,25 @@ MISSING_LABELS=""
 # 1) product-brief: glob 匹配（BMad 上游文件名带项目后缀）
 if ! ls _bmad-output/planning-artifacts/product-brief*.md >/dev/null 2>&1; then
     BMAD_READY=0
-    MISSING_LABELS="${MISSING_LABELS}  - product-brief*.md（请跑 /bmad:product-brief）\n"
+    MISSING_LABELS="${MISSING_LABELS}  - product-brief*.md（请跑 /bmad-product-brief）\n"
 fi
 
 # 2) prd: 单文件 OR sharded 目录
 if [ ! -f _bmad-output/planning-artifacts/prd.md ] && [ ! -d _bmad-output/planning-artifacts/prd ]; then
     BMAD_READY=0
-    MISSING_LABELS="${MISSING_LABELS}  - prd.md（或 prd/ sharded 目录；请跑 /bmad:prd）\n"
+    MISSING_LABELS="${MISSING_LABELS}  - prd.md（或 prd/ sharded 目录；请跑 /bmad-create-prd）\n"
 fi
 
 # 3) architecture: 单文件 OR sharded 目录
 if [ ! -f _bmad-output/planning-artifacts/architecture.md ] && [ ! -d _bmad-output/planning-artifacts/architecture ]; then
     BMAD_READY=0
-    MISSING_LABELS="${MISSING_LABELS}  - architecture.md（或 architecture/ sharded 目录；请跑 /bmad:architecture）\n"
+    MISSING_LABELS="${MISSING_LABELS}  - architecture.md（或 architecture/ sharded 目录；请跑 /bmad-create-architecture）\n"
 fi
 
 # 4) sprint-status.yaml: 路径固定
 if [ ! -f _bmad-output/implementation-artifacts/sprint-status.yaml ]; then
     BMAD_READY=0
-    MISSING_LABELS="${MISSING_LABELS}  - sprint-status.yaml（请跑 /bmad:sprint-planning）\n"
+    MISSING_LABELS="${MISSING_LABELS}  - sprint-status.yaml（请跑 /bmad-sprint-planning）\n"
 fi
 ```
 
@@ -232,13 +234,16 @@ fi
   【下一步】
     首次使用 BMad（项目根没 _bmad/ 目录）先装 + init：
       npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code
-      /bmad:workflow-init
+      /bmad:workflow-init     # 注：workflow-init 只有冒号形式
 
     然后按下列顺序跑 BMad planning workflow：
-      /bmad:product-brief    → product-brief-<name>.md
-      /bmad:prd              → prd.md
-      /bmad:architecture     → architecture.md（默认单文件；可选 /bmad:shard-doc 切片）
-      /bmad:sprint-planning  → sprint-status.yaml
+      /bmad-product-brief         → product-brief-<name>.md
+      /bmad-create-prd            → prd.md
+      /bmad-create-architecture   → architecture.md（默认单文件；可选 /bmad-shard-doc 切片）
+      /bmad-sprint-planning       → sprint-status.yaml
+
+    （命令名也可写 /bmad:product-brief / /bmad:prd / /bmad:architecture / /bmad:sprint-planning —
+      hyphen 与 colon 形式功能等价，按你环境的 skill 习惯选）
 
     完成后**重跑** /harness-zh:init —— 检测到 BMad 齐后会自动进入 yaml 字段提取流程。
 
@@ -277,8 +282,8 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 **按退出码处理**：
 - **0**：进 §2
-- **2**：BMad planning artifacts 缺失。**halt**：把 helper 的 stderr verbatim 贴给用户，TaskCreate 标 `cancelled`，退出。**不**继续读 BMad / 不写 yaml。引导文本（helper 内硬编码）含具体 BMad slash 命令（`/bmad:product-brief` / `/bmad:prd` / `/bmad:architecture`）。
-- **3**：sprint-status.yaml 缺失。**halt**：引导跑 `/bmad:sprint-planning`，TaskCreate 标 `cancelled`，退出。
+- **2**：BMad planning artifacts 缺失。**halt**：把 helper 的 stderr verbatim 贴给用户，TaskCreate 标 `cancelled`，退出。**不**继续读 BMad / 不写 yaml。引导文本（helper 内硬编码）含具体 BMad 命令（`/bmad-product-brief` / `/bmad-create-prd` / `/bmad-create-architecture`；hyphen 形式 — colon 别名也可）。
+- **3**：sprint-status.yaml 缺失。**halt**：引导跑 `/bmad-sprint-planning`（或 `/bmad:sprint-planning`），TaskCreate 标 `cancelled`，退出。
 - **其它**：halt + 报告 helper exit code（参数错误 / 内部错误 — 不应发生）。
 
 **MUST-EXIST 清单**（helper 内 — 单文件或 sharded 任一形式接受）：

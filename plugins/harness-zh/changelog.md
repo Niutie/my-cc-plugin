@@ -11,6 +11,44 @@
 
 ---
 
+## v0.1.4 — 2026-05-06 — BMad 命令名改回 hyphen 形式（修 v0.1.3 过激改动）
+
+### 触发
+
+solo-dev 反馈 v0.1.3 把所有 BMad 命令改成 colon 形式（`/bmad:prd` 等）"好像不对" —— 实际 hyphen 形式（`/bmad-create-prd`）和 colon 形式（`/bmad:prd`）在用户环境**都存在且都可用**，他**通常用 hyphen**。
+
+### 根因
+
+v0.1.3 调研时 agent 报告 "上游用纯冒号"，但只看了 BMad 上游 README 的 docs 描述，没核实**实际装到本地后的命令注册**。两形式同时存在的实情：
+
+- **hyphen 形式**（`/bmad-<name>`）= 直接对应 `.claude/skills/bmad-<name>/` 的 skill 名（`npx bmad-method install --tools claude-code` 写的就是这种）
+- **colon 形式**（`/bmad:<name>`）= BMad workflow 别名 / namespace 命令；多数 PM 命令同时注册两种
+- 部分命令名形式不同（`/bmad-create-prd` vs `/bmad:prd`、`/bmad-create-architecture` vs `/bmad:architecture` —— hyphen 带 "create-" 前缀，colon 没有）
+- 较新 / meta 命令（`/bmad:workflow-init`、`/bmad:research`、`/bmad:tech-spec`、`/bmad:brainstorm`、`/bmad:create-workflow` 等）**仅** colon 形式
+
+### 修
+
+| 位置 | 改动 |
+|---|---|
+| `commands/init.md` §A.5 表格"来源命令"列 | colon → hyphen + 加两形式等价说明段 |
+| `commands/init.md` §A.5 detection 块的 MISSING_LABELS hint | colon → hyphen |
+| `commands/init.md` §A.7 早结束文案 | 4 个 PM 命令改 hyphen + 加 "命令名也可写 /bmad:xxx" 说明；保留 `/bmad:workflow-init` 标注"只有冒号形式" |
+| `commands/init.md` §1 描述 | 同步 |
+| `scripts/run_sprint_init_check_prereq.sh` MISSING_GUIDANCE 数组 | colon → hyphen；末尾 stderr 加两形式等价注脚 |
+| `README.md` BMad 段命令清单 | colon → hyphen + 一行说明 colon 别名也可 |
+
+### 注意
+
+§A.5 表格"来源命令"列示例（修后）：
+- product-brief → `/bmad-product-brief`
+- prd → `/bmad-create-prd`（注意 hyphen 形式带 "create-" 前缀）
+- architecture → `/bmad-create-architecture`（同上）
+- sprint-planning → `/bmad-sprint-planning`
+
+未来若 solo-dev 改习惯 colon 形式，重跑一次本档全局 sed 即可。
+
+---
+
 ## v0.1.3 — 2026-05-06 — 对齐 BMad-METHOD 上游（命令名 + 路径）
 
 ### 触发

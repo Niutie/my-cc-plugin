@@ -22,7 +22,7 @@ harness-zh **orchestrates** other tools and requires the following installed in 
 
 #### 1. BMad-METHOD toolset
 
-[BMad-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) provides `/bmad:product-brief`, `/bmad:prd`, `/bmad:architecture`, `/bmad:create-story`, `/bmad:dev-story`, `/bmad:retrospective`, `/bmad:sprint-planning`, and ~30 other slash commands across 5 modules:
+[BMad-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) provides `/bmad-product-brief`, `/bmad-create-prd`, `/bmad-create-architecture`, `/bmad-create-story`, `/bmad-dev-story`, `/bmad-retrospective`, `/bmad-sprint-planning`, and ~30 other slash commands across 5 modules. Most commands also have a colon-form alias (e.g. `/bmad:prd` ≡ `/bmad-create-prd`); a few newer/meta commands (`/bmad:workflow-init`, `/bmad:research`, `/bmad:tech-spec`) are colon-only.
 
 | Module | Purpose | Required for harness-zh? |
 |---|---|---|
