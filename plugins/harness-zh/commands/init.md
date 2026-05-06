@@ -26,25 +26,46 @@ description: Harness 项目 bootstrap — 投递 plugin 资产到 .claude/harnes
 
 ### A.0 探测 plugin 安装路径
 
-按下列顺序尝试，命中即用，全部 miss 则 halt：
+按下列顺序尝试，命中即用，全部 miss 则 halt。Claude Code 把 plugin 装在
+`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`（带版本子目录），
+所以单纯 `find -name harness-zh` 只能找到版本子目录的父级，**不**包含 `commands/`
+等实际文件。靠扫 `plugin.json` 的 `name` 字段定位才稳：
 
 ```bash
-# 1) Claude Code 注入的 env 变量（hooks 上下文一定有；commands 上下文不保证 — 试一下）
+# 1) Claude Code 注入的 env 变量（hooks 上下文必有；commands 上下文不保证 — 试一下）
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || PLUGIN_ROOT=""
 
-# 2) 标准 Claude Code plugin 安装位置扫描
+# 2) 扫 ~/.claude/plugins 下所有 plugin.json，找 name="harness-zh" 的；
+#    优先 cache/<marketplace>/<plugin>/<version>/（官方版本化安装路径）
 if [ -z "$PLUGIN_ROOT" ]; then
-    PLUGIN_ROOT="$(find ~/.claude -type d -name harness-zh -path '*plugins*' 2>/dev/null | head -1)"
+    while IFS= read -r manifest; do
+        if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
+            candidate="$(dirname "$(dirname "$manifest")")"
+            case "$candidate" in
+                */cache/*) PLUGIN_ROOT="$candidate"; break;;
+            esac
+        fi
+    done < <(find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null)
 fi
 
-# 3) 都没命中 → halt
+# 3) Cache miss → fallback 用任意命中（如 marketplaces/<...>/plugins/<plugin>/）
+if [ -z "$PLUGIN_ROOT" ]; then
+    while IFS= read -r manifest; do
+        if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
+            PLUGIN_ROOT="$(dirname "$(dirname "$manifest")")"
+            break
+        fi
+    done < <(find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null)
+fi
+
+# 4) 都没命中 → halt
 if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT" ]; then
     cat >&2 <<EOF
 ERROR: 无法定位 harness-zh plugin 安装目录
-       已尝试: \${CLAUDE_PLUGIN_ROOT}, ~/.claude/plugins/**/harness-zh/
+       已尝试: \${CLAUDE_PLUGIN_ROOT} env 变量，扫 ~/.claude/plugins/**/plugin.json
        请确认 plugin 已通过以下流程装载：
-         /plugin marketplace add <owner>/my-cc-plugin
+         /plugin marketplace add Niutie/my-cc-plugin
          /plugin install harness-zh@my-cc-plugin
 EOF
     exit 1
