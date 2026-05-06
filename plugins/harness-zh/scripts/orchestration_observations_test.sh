@@ -336,7 +336,7 @@ else
 fi
 
 # T2.f3 — run-test-sprint.md T4 row in expected-output table has suffix
-RTS_TABLE_MATCH=$(grep -c "atdd + e2e (run-sprint stage 5.5)" "${REPO_ROOT}/.claude/commands/run-test-sprint.md" || true)
+RTS_TABLE_MATCH=$(grep -c "atdd + e2e (run-sprint stage 5.5)" "${REPO_ROOT}/.claude/commands/run-test.md" || true)
 if [[ "$RTS_TABLE_MATCH" -ge 1 ]]; then
     pass "T2.f3 — run-test-sprint.md 含 \"(run-sprint stage 5.5)\" 后缀"
 else

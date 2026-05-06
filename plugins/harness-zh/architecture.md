@@ -19,7 +19,7 @@
            │                         │                         │
            ▼                         ▼                         ▼
   ┌────────────────────┐   ┌────────────────────┐   ┌────────────────────┐
-  │   /run-sprint       │   │   /run-test-sprint  │   │   主 agent 手工     │
+  │   /harness-zh:run       │   │   /harness-zh:run-test  │   │   主 agent 手工     │
   │   业务故事循环      │   │   测试循环 (新)     │   │   chore 循环 (元)   │
   │   5-stage + 6 + 6.5 │   │   T1 / T3 / T4      │   │   单 commit         │
   │                     │   │                     │   │                     │
@@ -49,7 +49,7 @@
 ## 二、单 epic 完整流水线（端到端展开）
 
 ```
-solo-dev 跑: /run-sprint
+solo-dev 跑: /harness-zh:run
    │
    ▼
 ┌─ epic-N backlog (12 / 9 / 11 stories) ──────────────────────────────────┐
@@ -69,7 +69,7 @@ solo-dev 跑: /run-sprint
 │   │  stage 4: dev fix                                               │   │
 │   │  stage 5: bmad code-review                                      │   │
 │   │                                                                 │   │
-│   │  stage 5.5 (Q2 ②): 调 /run-test-sprint --story KEY              │   │
+│   │  stage 5.5 (Q2 ②): 调 /harness-zh:run-test --story KEY              │   │
 │   │    ├─ check_test_harness_env.sh                                 │   │
 │   │    │   ├─ docker 可用 → 跑 T3 atdd + T4 e2e                    │   │
 │   │    │   │     ├─ green: 写 test_status.KEY.atdd=green           │   │
@@ -99,7 +99,7 @@ solo-dev 跑: /run-sprint
 │   └─────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────┘
    │
-   │  /run-sprint 主循环准备进 epic-(N+1)
+   │  /harness-zh:run 主循环准备进 epic-(N+1)
    │
    ▼
 ┌─ pre-commit hook (C1) gate ─────────────────────────────────────────────┐
@@ -116,7 +116,7 @@ solo-dev 跑: /run-sprint
                               /         \
                             是           否
                             ▼             ▼
-              ┌─────────────────────────┐  /run-sprint 进 epic-(N+1)
+              ┌─────────────────────────┐  /harness-zh:run 进 epic-(N+1)
               │ 进入手工 chore 循环      │  (回到上面流水线)
               │ (路径 B)                 │
               └─────────────────────────┘
@@ -136,7 +136,7 @@ solo-dev 跑: /run-sprint
                     全 done? → 解除 hook gate
                             │
                             ▼
-                    /run-sprint 进 epic-(N+1) (循环到顶)
+                    /harness-zh:run 进 epic-(N+1) (循环到顶)
 ```
 
 ---
@@ -235,7 +235,7 @@ solo-dev 跑: /run-sprint
 
 ```
                    ┌──────────────────────────────────────┐
-                   │ .claude/commands/run-sprint.md       │
+                   │ .claude/commands/run.md       │
                    │   (主 orchestrator)                   │
                    └─────┬────────────┬───────────┬────────┘
                          │            │           │
@@ -265,7 +265,7 @@ solo-dev 跑: /run-sprint
                    └────────────────────────────┘
 
                    ┌──────────────────────────────────────┐
-                   │ .claude/commands/run-test-sprint.md  │
+                   │ .claude/commands/run-test.md  │
                    │   (测试 orchestrator)                 │
                    └─────┬───────────┬───────────┬─────────┘
                          │           │           │
@@ -298,7 +298,7 @@ C10 spec 已 2026-05-03 改完（commit pending）：Approach / Boundaries / Q2 
 
 ### Q2 ✅ RESOLVED: stage 5.5 嵌入 — 嵌入
 
-`/run-test-sprint` 嵌入 run-sprint stage 5.5（每条 story bmad-code-review 完成后自动调）+ 保留独立入口 `/run-test-sprint --story <key>`。stage 5.5 graceful skip（sandbox 无 docker → 写 FU-Test-KEY-sandbox + exit 0）保证不阻 run-sprint 主循环。这是真扩展 run-sprint 5-stage 到 6-stage（不是为残留改主循环——测试本就是开发流水线一环）。
+`/harness-zh:run-test` 嵌入 run-sprint stage 5.5（每条 story bmad-code-review 完成后自动调）+ 保留独立入口 `/harness-zh:run-test --story <key>`。stage 5.5 graceful skip（sandbox 无 docker → 写 FU-Test-KEY-sandbox + exit 0）保证不阻 run-sprint 主循环。这是真扩展 run-sprint 5-stage 到 6-stage（不是为残留改主循环——测试本就是开发流水线一环）。
 
 C-bootstrap spec 内部 Q4 已 2026-05-03 标 RESOLVED。
 
@@ -370,7 +370,7 @@ Q1/Q2/Q3 决策点 → 改 C10 + C-bootstrap spec（如有修正）
    │
    ▼
 5. 实施 C-test-harness-bootstrap
-   testarch 三 skill 跑通 + /run-test-sprint.md 第一版
+   testarch 三 skill 跑通 + /run-test.md 第一版
    单 commit + 翻 C-bootstrap=done
    (Q2 决策处)
    │
@@ -383,7 +383,7 @@ Q1/Q2/Q3 决策点 → 改 C10 + C-bootstrap spec（如有修正）
 全 retro_action_items=done → pre-commit hook gate 解除
    │
    ▼
-/run-sprint (无参) 自动跑 epic-4 / 5 / 6
+/harness-zh:run (无参) 自动跑 epic-4 / 5 / 6
    每条 story 自动走 5-stage + 5.5 (如 Q2 选 ②) + 6 + 6.5
    每个 epic 收尾自动 process-retro-residue 生成新 chore
    主 agent 在新 epic 启动前自动消化 chore (闭环)
@@ -406,7 +406,7 @@ Q1/Q2/Q3 决策点 → 改 C10 + C-bootstrap spec（如有修正）
 - 4 份 chore spec: `_bmad-output/implementation-artifacts/chore-retro-c10-*.md` / `c11-*.md` / `c12-*.md` / `chore-test-harness-bootstrap.md`
   - C11 / C12 已标 superseded by deferred-work-schema-v1（2026-05-04）— 脚本骨架保留, 解析路径切到 schema tag
 - C1 pre-commit hook spec: `_bmad-output/implementation-artifacts/spec-retro-c1-pre-commit-hook-retro-action-items.md`
-- run-sprint 主流程: `.claude/commands/run-sprint.md`
+- run-sprint 主流程: `.claude/commands/run.md`
 - 代答政策: `.claude/harness/answer-policy.md`
 - sprint 状态机: `.claude/harness/scripts/sprint-status.py` + `.claude/harness/scripts/harness-state.py`
 - commit 协议: `.claude/harness/scripts/harness-commit.py`
@@ -482,7 +482,7 @@ teach        trigger: manual_only        永远不自动触发
 ### 评估流程（run-test-sprint 入口接通点）
 
 ```
-/run-test-sprint --story $KEY 启动
+/harness-zh:run-test --story $KEY 启动
    │
    ▼
 0.0 参数解析（KEY / EPIC / DRY_RUN）
@@ -534,20 +534,20 @@ C-path-externalization 落地后，三类项目特定值从脚本硬编码移出
 
 **不做**：① slash command（run-sprint.md / run-test-sprint.md）prose 不外化（散文级路径示例，模板化是后续 chore）；② commit message 模板 / 5-stage 状态机命名不外化（架构层硬约定）。
 
-### `/run-sprint-init` — clone-time / mid-project 一次性 yaml 同步（chore C-run-sprint-init 沉淀）
+### `/harness-zh:init` — clone-time / mid-project 一次性 yaml 同步（chore C-run-sprint-init 沉淀）
 
-`harness-project-config.yaml` 是 harness 跨脚本的项目配置 SoT，但其 14 字段（11 描述 + 3 派生）的事实源头是 BMad planning artifacts（`product-brief.md` / `prd.md` / `architecture/tech-stack.md` / `architecture/repo-structure.md`）。手填易漂移、新项目 clone 启动门槛高 — `/run-sprint-init` 一次性把 BMad → yaml 同步。
+`harness-project-config.yaml` 是 harness 跨脚本的项目配置 SoT，但其 14 字段（11 描述 + 3 派生）的事实源头是 BMad planning artifacts（`product-brief.md` / `prd.md` / `architecture/tech-stack.md` / `architecture/repo-structure.md`）。手填易漂移、新项目 clone 启动门槛高 — `/harness-zh:init` 一次性把 BMad → yaml 同步。
 
 **触发场景**：
 - ① clone harness 到全新项目（空 yaml + 完整 BMad 产物）→ 14 字段全填
 - ② mid-project 启用 harness（部分手填 yaml + 完整 BMad）→ merge：5 既有保留 + 9 缺失补全
 
-**调用形式（LLM-orchestrated；与 `/run-sprint` / `/run-test-sprint` 同款）**：
+**调用形式（LLM-orchestrated；与 `/harness-zh:run` / `/harness-zh:run-test` 同款）**：
 
 ```
-/run-sprint-init               # 默认 merge — 已存在字段不动 + 缺失字段补全
-/run-sprint-init --dry-run     # 仅 stdout 列 diff，0 写入
-/run-sprint-init --force       # 覆盖既有值（含手改字段）；先列 "field: old → new" + 二次确认
+/harness-zh:init               # 默认 merge — 已存在字段不动 + 缺失字段补全
+/harness-zh:init --dry-run     # 仅 stdout 列 diff，0 写入
+/harness-zh:init --force       # 覆盖既有值（含手改字段）；先列 "field: old → new" + 二次确认
 ```
 
 **Prerequisite gate（MUST-EXIST 严格 — Q4 决策）**：
@@ -562,7 +562,7 @@ C-path-externalization 落地后，三类项目特定值从脚本硬编码移出
 
 helper：[`scripts/run_sprint_init_check_prereq.sh`](scripts/run_sprint_init_check_prereq.sh) — exit 0 / 2 / 3；JSON stdout + 引导 stderr。
 
-**14 字段 mapping 概要**（详 [`.claude/commands/run-sprint-init.md`](../commands/run-sprint-init.md) §2）：
+**14 字段 mapping 概要**（详 [`.claude/commands/init.md`](../commands/init.md) §2）：
 
 | yaml field | BMad source | 提取语义 |
 |---|---|---|
@@ -635,7 +635,7 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 │       ├── architecture.md                      ← 设计单一权威来源（本文件；100% portable）
 │       ├── changelog.md                         ← 历史叙事（每条优化追加；100% portable）
 │       ├── answer-policy.md                     ← 代答政策 / subagent 通用决策原则（100% portable）
-│       ├── harness-project-config.yaml          ← ⚠️ 项目特定（clone 后第一件事改这里 — 16 字段；或 /run-sprint-init 自动同步）
+│       ├── harness-project-config.yaml          ← ⚠️ 项目特定（clone 后第一件事改这里 — 16 字段；或 /harness-zh:init 自动同步）
 │       ├── test-stage-triggers.yaml             ← 9 testarch skill 测试触发条件（100% portable）
 │       │
 │       ├── conventions/                         ← 数据格式约定（1 个；100% portable）
@@ -694,7 +694,7 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 │           │
 │           ├── [Bootstrap / install / clone]
 │           │   ├── install_git_hooks.sh                           hook 安装到 .git/hooks/（幂等 + backup）
-│           │   ├── run_sprint_init_check_prereq.sh + _test.sh     /run-sprint-init 前置检查
+│           │   ├── run_sprint_init_check_prereq.sh + _test.sh     /harness-zh:init 前置检查
 │           │   └── simulate_clone_test.sh                         clone 通用化回归测试（占位符化 + 拷贝清单）
 │           │
 │           └── [其它一次性 chore 回归测试]
@@ -734,7 +734,7 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 
 | 文件 | 改什么 | 自动化 |
 |---|---|---|
-| `.claude/harness/harness-project-config.yaml` | 16 字段（11 BMad-sourced 描述 + 3 派生 + project_context + fullstack_review_steps） | ✅ `/run-sprint-init` 自动从 BMad planning artifacts 提取 |
+| `.claude/harness/harness-project-config.yaml` | 16 字段（11 BMad-sourced 描述 + 3 派生 + project_context + fullstack_review_steps） | ✅ `/harness-zh:init` 自动从 BMad planning artifacts 提取 |
 | `.claude/harness/scripts/run_retro_self_audit.sh` | 重写所有 `check_AN/BN/CN()` 函数体（hardcoded 检查路径 + grep target，对应原项目 retro action items）；或整个删除 | ❌ 手工（脚本头已 ⚠️ 标注） |
 
 **不需要再改的文件**（已通过 yaml-driven 动态注入解耦项目特定）：
@@ -744,5 +744,5 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 
 **新项目 onboarding 三步**：
 1. clone 整个 `.claude/` + `_bmad/{customize,custom}/` + `CLAUDE.md`
-2. 跑 `/run-sprint-init` 让主 agent 从 BMad planning artifacts 自动填 16 字段到 `harness-project-config.yaml`
+2. 跑 `/harness-zh:init` 让主 agent 从 BMad planning artifacts 自动填 16 字段到 `harness-project-config.yaml`
 3. 删 `run_retro_self_audit.sh`（或按新项目 retro 重写 check_XN()）+ 验证 `bash .claude/harness/scripts/simulate_clone_test.sh` 退出 0

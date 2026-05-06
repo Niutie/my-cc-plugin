@@ -3,7 +3,7 @@
 #
 # 检测当前会话是否具备跑 e2e 测试的全部条件（docker / pnpm / node / @playwright/test
 # 框架装载 / Playwright runtime 真就绪）。输出**一行 JSON** 到 stdout（供
-# .claude/commands/run-test-sprint.md 解析），exit 0 永远——所有"环境受限"路径都由
+# .claude/commands/run-test.md 解析），exit 0 永远——所有"环境受限"路径都由
 # 调用方按 JSON 决断 graceful skip，不通过退出码传信号。
 #
 # F4 finding 修复（codex adversarial review 2026-05-04）：原版用

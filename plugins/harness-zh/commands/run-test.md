@@ -4,9 +4,9 @@ description: 测试 harness 单 story 入口（atdd 红相 + e2e 实跑 + sandbo
 
 # Test Sprint Loop（chore C-bootstrap 第一版）
 
-你是测试 harness 的**主 orchestrator**。当用户触发 `/run-test-sprint --story <key>`，或当 `/run-sprint` 阶段 ⑤.5 自动调用，你必须按以下手册顺序执行 stage T1 / T3 / T4。
+你是测试 harness 的**主 orchestrator**。当用户触发 `/harness-zh:run-test --story <key>`，或当 `/harness-zh:run` 阶段 ⑤.5 自动调用，你必须按以下手册顺序执行 stage T1 / T3 / T4。
 
-**与 `/run-sprint` 共享的行为契约**：
+**与 `/harness-zh:run` 共享的行为契约**：
 
 - **代答政策**：每个用 `Agent` / `SendMessage` 调度的 testarch 子 agent，prompt 末尾必须含"按 `.claude/harness/answer-policy.md` 自决，不要发问"。代答政策项目语境见 [`/answer-policy.md`](../answer-policy.md)。
 - **进度可视化**：用 TaskCreate 给本次 test sprint 建一个任务（标题形如 `Test Sprint: <key>`），stage 进入时 `in_progress`，完成时 `completed`。
@@ -73,7 +73,7 @@ EVAL_REASON=$(echo "$EVAL_JSON" | sed -nE 's/.*"reason":[[:space:]]*"([a-z_]+)".
 
 stage 跑或 skip 由后续每条 stage 的"触发判断"门决定（见 §1 各 stage）。
 
-> **5-5 commit 由本 subagent 内部 T4 stage 完成（chore-harness-epic-4-orchestration-observations T2.2，2026-05-04）**：当本 subagent 由 `/run-sprint` stage 5.5 自动调起时，run-sprint 主 agent **不会再调用** `harness-commit.py 5-5` 当 commit 路径——只会跑 5-5 命令做 sanity gate（期待 STATUS=skip 验证 worktree 已被 T3+T4 commit 清干净）。本 subagent 必须负责跑完整 T1/T3/T4 + 各自 commit；T4 commit message 含 "(run-sprint stage 5.5)" 后缀让 grep 稳定找。详 [`run-sprint.md`](run-sprint.md) §1 阶段 ⑤.5。
+> **5-5 commit 由本 subagent 内部 T4 stage 完成（chore-harness-epic-4-orchestration-observations T2.2，2026-05-04）**：当本 subagent 由 `/harness-zh:run` stage 5.5 自动调起时，run-sprint 主 agent **不会再调用** `harness-commit.py 5-5` 当 commit 路径——只会跑 5-5 命令做 sanity gate（期待 STATUS=skip 验证 worktree 已被 T3+T4 commit 清干净）。本 subagent 必须负责跑完整 T1/T3/T4 + 各自 commit；T4 commit message 含 "(run-sprint stage 5.5)" 后缀让 grep 稳定找。详 [`run-sprint.md`](run-sprint.md) §1 阶段 ⑤.5。
 
 ### 0.1 环境探测
 
@@ -197,7 +197,7 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 
 ## 3. 死循环 / 失控防护
 
-下面 5 条**任一命中**立即 halt + 用户介入（与 `/run-sprint` §3 同款模板）：
+下面 5 条**任一命中**立即 halt + 用户介入（与 `/harness-zh:run` §3 同款模板）：
 
 1. testarch skill 子 agent 返回但产物缺失 / 非空校验失败
 2. testarch skill 子 agent 提问回来超过 2 次（重发 "按 answer-policy.md 自决" 不解决）
@@ -209,9 +209,9 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 
 - `eval_test_stage_triggers.sh` exit ≠ 0 / yaml 损坏 / `EVAL_REASON=fail_open_default` → 主 agent 用 defaults JSON（t1/t3/t4=true, 其余 false）继续 + stderr WARN，**不**阻流（与 stage 5.5 graceful skip 同款 — harness 自动化的"完成开发"承诺不被工具失败反噬）
 
-**Halt 模板**（与 `/run-sprint` §3 一致）：
+**Halt 模板**（与 `/harness-zh:run` §3 一致）：
 
-> stage 失败：T<N> in /run-test-sprint --story $KEY
+> stage 失败：T<N> in /harness-zh:run-test --story $KEY
 > 现场：[一两句话讲发生了什么]
 > 违反规则：[贴 harness-commit.py 的 BLACKLIST/CROSS_STORY/UNEXPECTED_ARTIFACT/UNSTAGED 行 verbatim]
 > 已落 commit：[git log --oneline harness/$KEY/start..HEAD]
@@ -228,7 +228,7 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 1. 写 `_bmad-output/implementation-artifacts/test_artifacts/skipped-${KEY}-$(date +%Y-%m-%d).md`，内容：
    - 时间戳（ISO-8601）
    - 完整 env JSON（哪个维度 false → 解锁条件提示）
-   - 调用上下文（独立 `/run-test-sprint --story` 还是 run-sprint stage 5.5）
+   - 调用上下文（独立 `/harness-zh:run-test --story` 还是 run-sprint stage 5.5）
    - 解锁后补跑命令：`just test-sprint STORY=${KEY}`
 
 2. 在 `_bmad-output/implementation-artifacts/deferred-work.md` 顶部 sandbox-bound section 追加一行：

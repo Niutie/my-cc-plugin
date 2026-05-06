@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# /run-sprint-init §1 prerequisite gate — BMad planning artifacts MUST-EXIST 检查
+# /harness-zh:init §1 prerequisite gate — BMad planning artifacts MUST-EXIST 检查
 #
-# 由 .claude/commands/run-sprint-init.md §1 调用；test 入口由 run_sprint_init_test.sh 用。
+# 由 .claude/commands/init.md §1 调用；test 入口由 run_sprint_init_test.sh 用。
 #
 # 输入：
 #   --root <path>     项目根目录（默认 HARNESS_REPO_ROOT）；test 用 mktemp dir override
@@ -112,7 +112,7 @@ printf '{"all_present": %s, "missing_planning": %s, "missing_sprint_status": %s}
 # stderr 引导 + exit code
 if [ "${#MISSING_PLANNING[@]}" -gt 0 ]; then
     echo "" >&2
-    echo "❌ BMad planning artifacts MUST-EXIST 缺失 ${#MISSING_PLANNING[@]} 项 — /run-sprint-init halt" >&2
+    echo "❌ BMad planning artifacts MUST-EXIST 缺失 ${#MISSING_PLANNING[@]} 项 — /harness-zh:init halt" >&2
     for i in "${!MISSING_PLANNING[@]}"; do
         echo "  - $ROOT/${MISSING_PLANNING[$i]}" >&2
         echo "    请先跑 ${MISSING_GUIDANCE[$i]} 生成该产物" >&2
@@ -126,7 +126,7 @@ fi
 
 if [ "$MISSING_SPRINT_STATUS" = "true" ]; then
     echo "" >&2
-    echo "❌ sprint-status.yaml 缺失 — /run-sprint-init halt" >&2
+    echo "❌ sprint-status.yaml 缺失 — /harness-zh:init halt" >&2
     echo "  - $ROOT/$SPRINT_STATUS_REL" >&2
     echo "    请先跑 /bmad:sprint-planning 生成 sprint backlog" >&2
     exit 3

@@ -1,6 +1,6 @@
 # Harness 代答政策
 
-`/run-sprint` 编排的所有 BMad / Codex 子 agent 在被调用时，必须按本政策自决，**不要发问**。
+`/harness-zh:run` 编排的所有 BMad / Codex 子 agent 在被调用时，必须按本政策自决，**不要发问**。
 
 本文件只含跨项目通用的**流程决策原则**。项目特定决策语境（产品定位 / 目标客户 /
 交付形态 / 关键决策原则等）由 `harness-prompt-suffix.py` 在 prompt 注入时从

@@ -145,7 +145,7 @@ echo "==> grep harness 元文档 + prompt 模板 'Aegis AI Audit'（期望 0 命
 GREP_HITS=0
 PROMPT_TEMPLATES="$(ls "$TMPDIR/.claude/harness/scripts/"*_prompt.md 2>/dev/null | sed "s|^$TMPDIR/||" || true)"
 for f in CLAUDE.md .claude/harness/architecture.md \
-         .claude/commands/run-sprint.md .claude/commands/run-test-sprint.md \
+         .claude/commands/run.md .claude/commands/run-test.md \
          $PROMPT_TEMPLATES; do
     if [ -f "$TMPDIR/$f" ]; then
         hits="$(grep -c "Aegis AI Audit" "$TMPDIR/$f" 2>/dev/null)"

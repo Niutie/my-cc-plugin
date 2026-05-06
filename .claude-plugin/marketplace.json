@@ -6,9 +6,9 @@
   "description": "Personal Claude Code plugin marketplace.",
   "plugins": [
     {
-      "name": "harness",
-      "source": "./plugins/harness",
-      "description": "BMad-based sprint orchestration harness for solo-dev + AI workflows.",
+      "name": "harness-zh",
+      "source": "./plugins/harness-zh",
+      "description": "BMad-based sprint orchestration harness for solo-dev + AI workflows (zhenhua's flavor).",
       "version": "0.1.0"
     }
   ]

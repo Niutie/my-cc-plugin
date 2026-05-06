@@ -6,7 +6,7 @@
 # (pending / in-progress / partial / needs-review).
 #
 # Used by:
-#   - run-sprint stage 1 prompt injection (.claude/commands/run-sprint.md)
+#   - run-sprint stage 1 prompt injection (.claude/commands/run.md)
 #     surfaces "candidate FU items the new spec should evaluate / merge"
 #
 # Usage:

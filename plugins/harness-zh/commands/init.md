@@ -2,13 +2,13 @@
 description: Harness clone-time 一次性初始化 — 从 BMad planning artifacts 提取 14 字段写入 harness-project-config.yaml（merge 模式；--dry-run 预览；--force 覆盖带二次确认）
 ---
 
-# /run-sprint-init — Harness 项目 config 初始化
+# /harness-zh:init — Harness 项目 config 初始化
 
-你是这个 init 的**主 orchestrator**。当用户触发 `/run-sprint-init`，你必须按以下手册顺序执行 §0–§6，把 `.claude/harness/harness-project-config.yaml` 14 字段（11 描述 + 3 派生）从 BMad planning artifacts 自动同步。
+你是这个 init 的**主 orchestrator**。当用户触发 `/harness-zh:init`，你必须按以下手册顺序执行 §0–§6，把 `.claude/harness/harness-project-config.yaml` 14 字段（11 描述 + 3 派生）从 BMad planning artifacts 自动同步。
 
 **触发场景**：① clone harness 到全新项目（空 yaml + 完整 BMad 产物）；② mid-project 启用 harness（部分 yaml 已填 + 完整 BMad）。
 
-**与 `/run-sprint` / `/run-test-sprint` 共享的行为契约**：
+**与 `/harness-zh:run` / `/harness-zh:run-test` 共享的行为契约**：
 
 - **代答政策**：本命令不调度 BMad/codex 子 agent，直接由主 agent 读 BMad markdown + 写 yaml；无 prompt 后缀注入步骤。决策若不显然 → 按 `.claude/harness/answer-policy.md` 自决，不发问。
 - **进度可视化**：用 TaskCreate 建任务 `Sprint Init: <project_display_name>`（启动时 in_progress；§6 完成时 completed）。
@@ -237,7 +237,7 @@ bash .claude/harness/scripts/simulate_clone_test.sh
 stdout 报告（按下表结构）：
 
 ```
-✅ /run-sprint-init 完成
+✅ /harness-zh:init 完成
 
 【写入字段】<N>/14 BMad 字段 + <M>/3 派生字段
   - project_display_name: '<value>'
@@ -260,7 +260,7 @@ stdout 报告（按下表结构）：
 **`--dry-run` 模式报告**（无写入）：
 
 ```
-🔍 /run-sprint-init --dry-run（0 写入）
+🔍 /harness-zh:init --dry-run（0 写入）
 
 【will-write】<N> 字段
   - field: <empty> → '<bmad-value>'
@@ -281,17 +281,17 @@ stdout 报告（按下表结构）：
 
 ## 7. 死循环 / 失控防护
 
-下列**任一**命中立即 halt + 用户介入（与 `/run-sprint` §3 / `/run-test-sprint` §3 同款模板）：
+下列**任一**命中立即 halt + 用户介入（与 `/harness-zh:run` §3 / `/harness-zh:run-test` §3 同款模板）：
 
 1. helper `run_sprint_init_check_prereq.sh` 退出码非 0/2/3（参数错误 / 内部异常）
 2. BMad markdown 提取语义后 `EXTRACTED[<key>]` 仍为空对**所有 14 字段** → 怀疑 BMad 产物为空文件 / 损坏 → halt + 提示用户检查 `_bmad-output/planning-artifacts/`
 3. yaml 写入后 `harness_config.py` smoke test exit ≠ 0（yaml 语法破坏）→ rollback + halt
 4. `simulate_clone_test.sh` exit ≠ 0 → rollback + halt
-5. runtime quota 信号（`hit your limit` / `rate limit` 等）— 与 `/run-sprint` §3 同款配额专属模板
+5. runtime quota 信号（`hit your limit` / `rate limit` 等）— 与 `/harness-zh:run` §3 同款配额专属模板
 
-**Halt 模板**（与 `/run-sprint` 一致）：
+**Halt 模板**（与 `/harness-zh:run` 一致）：
 
-> stage 失败：§<N> in /run-sprint-init
+> stage 失败：§<N> in /harness-zh:init
 > 现场：[一两句话讲发生了什么]
 > 违反规则：[贴 helper / harness_config / simulate_clone 的 stderr verbatim]
 > yaml 当前状态：[`git diff --stat .claude/harness/harness-project-config.yaml`]

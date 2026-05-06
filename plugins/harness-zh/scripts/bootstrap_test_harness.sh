@@ -78,7 +78,7 @@ if ! grep -qE "^test_status:" "$SPRINT_STATUS"; then
         echo "# ============================================================================"
         echo "# Test Status — chore C-bootstrap test harness 接通后的 atdd / e2e 跑动状态"
         echo "# ============================================================================"
-        echo "# 由 .claude/commands/run-test-sprint.md 各 stage（T3 atdd / T4 e2e）写入。"
+        echo "# 由 .claude/commands/run-test.md 各 stage（T3 atdd / T4 e2e）写入。"
         echo "# 字段："
         echo "#   atdd          pending | red | green | skipped"
         echo "#   e2e_last_run  ISO-8601 时间戳 OR null（never run）"
@@ -126,7 +126,7 @@ $ENV_JSON
     expected output:
       _bmad-output/implementation-artifacts/test_artifacts/${STORY}.atdd-checklist.md
       console-web/tests/e2e/${STORY}.spec.ts (红相 placeholder — 无依赖断言)
-    sandbox note: spec.ts 是红相 scaffold；实际跑 e2e 留给后续 stage 5.5 / /run-test-sprint
+    sandbox note: spec.ts 是红相 scaffold；实际跑 e2e 留给后续 stage 5.5 / /harness-zh:run-test
                   入口。本步只产 scaffold 不实跑。
 
 [Verification commands (主 agent 全部跑完 A/B/C 后跑):]

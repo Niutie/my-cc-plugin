@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-harness-state.py — single-source-of-truth state query for /run-sprint.
+harness-state.py — single-source-of-truth state query for /harness-zh:run.
 
 Usage:
     # JSON state query (default mode):
@@ -819,7 +819,7 @@ def read_story_status_for_resume(key):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Single-source-of-truth state query for /run-sprint")
+    parser = argparse.ArgumentParser(description="Single-source-of-truth state query for /harness-zh:run")
     parser.add_argument("key", help="story key, e.g. 1-3-postgresql-baseline-schema")
     fmt = parser.add_mutually_exclusive_group()
     fmt.add_argument("--json", action="store_const", dest="format", const="json", default="json")

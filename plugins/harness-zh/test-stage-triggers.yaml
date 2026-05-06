@@ -1,4 +1,4 @@
-# Test stage triggers — condition-driven yaml for /run-test-sprint
+# Test stage triggers — condition-driven yaml for /harness-zh:run-test
 #
 # Single source of truth for "which testarch skill 应该跑" — 覆盖全 9 个
 # bmad-testarch skill。run-test-sprint 主流程**首步**调

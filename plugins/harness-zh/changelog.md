@@ -2,7 +2,7 @@
 
 > **2026-05-04 路径布局迁移**：本 changelog 含早于 `chore-harness-layout-consolidation`（commit 2026-05-04）的历史叙事，引用 `_bmad/scripts/...` / `.claude/scripts/...` / `.claude/harness-architecture.md` / `.claude/answer-policy.md` 等旧路径——这些是历史快照，**不**改写。现行布局见 [`.claude/harness/architecture.md`](architecture.md) §一。新条目按当前路径写。
 
-每次对 `/run-sprint` 编排器（`.claude/harness/scripts/*.py` + `.claude/commands/run-sprint.md` + `.claude/harness/answer-policy.md`）的优化在这里追加一条记录。**新条目放最上面**。每条包含：
+每次对 `/harness-zh:run` 编排器（`.claude/harness/scripts/*.py` + `.claude/commands/run.md` + `.claude/harness/answer-policy.md`）的优化在这里追加一条记录。**新条目放最上面**。每条包含：
 
 - 日期 + story 来源（哪条 story 跑流水线时暴露的痛点）
 - 改了哪些文件
@@ -44,7 +44,7 @@
 - 新增引言段：明确"本文件只含跨项目通用流程决策原则；项目特定语境由 harness-prompt-suffix.py 内联注入"
 - 保留 §决策原则（4 条不发问 / 优先继续 / 写交付物 / 登记 follow-up）+ §适用范围
 
-### §F: /run-sprint-init §2 加字段 15-16（L1+L2 init 层）
+### §F: /harness-zh:init §2 加字段 15-16（L1+L2 init 层）
 
 - 14 → 16 字段提取规则
 - 字段 15（project_context）: BMad source = `product-brief.md` 或 `prd.md`；语义提取产品定位 + 关键决策原则段；fallback 多行块 + WARN
@@ -56,11 +56,11 @@
 - §12.2 Clone 拷贝清单整理（去掉 🔧 行）
 - 新增 §12.3「Clone 后必改文件」表 — 仅 `harness-project-config.yaml`（自动化）+ `run_retro_self_audit.sh`（手工）2 项
 - 显式列出"不需要再改的文件"（answer-policy.md / bmad-dev-story-suffix.md / customize toml — 因为 yaml-driven 动态注入解耦了项目特定）
-- 「新项目 onboarding 三步」：clone → /run-sprint-init → 改 retro audit + simulate_clone_test 验证
+- 「新项目 onboarding 三步」：clone → /harness-zh:init → 改 retro audit + simulate_clone_test 验证
 
 ### §H: 影响
 
-- **clone 痛点解决**：原本需要手工改 4 处（answer-policy.md / bmad-dev-story-suffix.md / customize toml line 22 / harness-project-config.yaml）→ 现在仅需改 1 处（harness-project-config.yaml；其它由 prompt-suffix.py 动态读 yaml）；且 yaml 由 /run-sprint-init 自动从 BMad planning artifacts 提取
+- **clone 痛点解决**：原本需要手工改 4 处（answer-policy.md / bmad-dev-story-suffix.md / customize toml line 22 / harness-project-config.yaml）→ 现在仅需改 1 处（harness-project-config.yaml；其它由 prompt-suffix.py 动态读 yaml）；且 yaml 由 /harness-zh:init 自动从 BMad planning artifacts 提取
 - **subagent 决策质量保留**：prompt 中既有跨项目通用决策原则，又有项目特定语境（inline）；信息密度无损失
 - **零回归**：5/5 self-test PASS（check_retro_action_items / process_retro_residue / backfill_resolved_markers / harness_config / simulate_clone_test）
 - **Q6 弹性提升**：原硬编码 7 sub-bullet → 现按 yaml list 长度任意（letter 自动从 a..z；≥27 用 item-N）；不同项目数据流深度不一也覆盖
@@ -91,7 +91,7 @@
 - `.claude/harness/scripts/process_retro_residue_prompt.md` 加 "Category 分类 rubric" 段（dev/harness 判定标准 + 边界判定 + 模糊归 harness 保守原则）+ MANIFEST block 输出契约（fresh agent 末尾输出 `=== MANIFEST === / <code>: <dev|harness> / === END MANIFEST ===`，主 agent 据此写 sprint-status.yaml `category:` 字段）
 - `.claude/harness/scripts/process_retro_residue.sh` 输出要求段同步加 MANIFEST block 说明
 - 自检清单加 4 项 category / MANIFEST 强制项
-- `.claude/commands/run-sprint.md` 阶段 ⑥.5 闭环 — 步骤 5 新增"主 agent 解析 MANIFEST block 得 code→category 映射"；步骤 6 写 yaml 时 chore_spec + category 两字段一并落；sanity check 加"MANIFEST 行数 == FILE block 数"+ checker 退出 ≤ 200 (不引入新 NOCAT)；halt 触发加"category 不在 {dev,harness}"+ "MANIFEST 与 FILE 数量不一致"
+- `.claude/commands/run.md` 阶段 ⑥.5 闭环 — 步骤 5 新增"主 agent 解析 MANIFEST block 得 code→category 映射"；步骤 6 写 yaml 时 chore_spec + category 两字段一并落；sanity check 加"MANIFEST 行数 == FILE block 数"+ checker 退出 ≤ 200 (不引入新 NOCAT)；halt 触发加"category 不在 {dev,harness}"+ "MANIFEST 与 FILE 数量不一致"
 - `CLAUDE.md` 起步约定段重写「会话起步约定」— 按 category 分两段通知（dev 主通知阻 epic / harness 仅在 dev 全 done 时作次通知，且必须 solo-dev 显式触发"评估 harness 优化"或"继续 harness <id>"才进实施流程）
 
 ### §D: 决策文档
@@ -273,11 +273,11 @@
 
 **story 来源**：epic 1 收官 — 12 条 story + retrospective 全 done 后，`sprint-status.yaml` 仍显示 `epic-1: in-progress`，用户手动指出。
 
-**痛点**：playbook 阶段 ⑥ 只有一行状态推进——`set epic-${EPIC}-retrospective done`，从未推进 `epic-${EPIC}` 自身。`bmad-retrospective` skill 也不维护 epic 顶层状态字段。结果是每个 epic 跑完，retro key 翻 done，但 epic key 永远卡在 `in-progress`，要靠人工事后补。`/run-sprint --epic <num>` 模式的"epic 全 done 且 retro = done → 直接退出"判断仍能走通（不依赖 epic key 自身），所以 bug 没炸——只是 sprint dashboard 永远是错的。
+**痛点**：playbook 阶段 ⑥ 只有一行状态推进——`set epic-${EPIC}-retrospective done`，从未推进 `epic-${EPIC}` 自身。`bmad-retrospective` skill 也不维护 epic 顶层状态字段。结果是每个 epic 跑完，retro key 翻 done，但 epic key 永远卡在 `in-progress`，要靠人工事后补。`/harness-zh:run --epic <num>` 模式的"epic 全 done 且 retro = done → 直接退出"判断仍能走通（不依赖 epic key 自身），所以 bug 没炸——只是 sprint dashboard 永远是错的。
 
 **改了什么**：
 
-1. `.claude/commands/run-sprint.md`
+1. `.claude/commands/run.md`
    - §0.5 commit 表 line 167：`epic($EPIC): mark retrospective done` → `epic($EPIC): mark done`，括号里说明 6-done commit 同时翻两个 key（`epic-${EPIC}-retrospective` + `epic-${EPIC}`）。
    - §1 阶段 ⑥ line 522~523：`状态推进` 一行拆成两步：先 `set epic-${EPIC}-retrospective done`，再 `set epic-${EPIC} done`，并明文注释"epic 状态没有任何 skill 维护，主 agent 必须显式做"+引用本条 changelog。前置 `epic-all-done` 已经在阶段 ⑥ 入口做过，无需再校验。
 2. `.claude/scripts/harness-commit.py`
@@ -370,25 +370,25 @@
 **改了什么**（A → F 一刀整理）：
 
 **A. §0.A 启动 dirty worktree → 自动切续作（不 halt）**
-- `.claude/commands/run-sprint.md` §0.A：worktree 不为空时**不再 halt**。改为：调 `python3 .claude/scripts/sprint-status.py find-by-status review` 找最近 review 状态的 story；找到就切 §0.B 续作流程；找不到才 halt（说明 worktree 有未知工作）。
+- `.claude/commands/run.md` §0.A：worktree 不为空时**不再 halt**。改为：调 `python3 .claude/scripts/sprint-status.py find-by-status review` 找最近 review 状态的 story；找到就切 §0.B 续作流程；找不到才 halt（说明 worktree 有未知工作）。
 - §3 表里"0.A 模式 worktree 不为空 → halt"行收紧条件：仅在 `find-by-status review` 也找不到时才 halt。
 
 **B. start tag 已存在但未 `--continue` → 主 agent 自决切续作**
-- `.claude/commands/run-sprint.md` §1 阶段 ①：start tag 已存在不再 halt。主 agent 调 `harness-state.py $KEY` 拿状态 JSON，按 `next_action_code` 自动切到对应阶段（`stage1/2/3/4/5/tag-only/blocked-dirty`）。**仅** `next_action_code == "done"` halt（story 早已完成）。
+- `.claude/commands/run.md` §1 阶段 ①：start tag 已存在不再 halt。主 agent 调 `harness-state.py $KEY` 拿状态 JSON，按 `next_action_code` 自动切到对应阶段（`stage1/2/3/4/5/tag-only/blocked-dirty`）。**仅** `next_action_code == "done"` halt（story 早已完成）。
 - §3 表删除"同 key start tag 已存在 + 未传 --continue → halt"行（条件已无意义）。
 
 **C. stage2-base tag 缺失 → 主 agent 自动补打（不 halt）**
-- `.claude/commands/run-sprint.md` §1 阶段 ②：把 `STAGE2_BASE=$(git rev-parse harness/$KEY/stage2-base)` 改成"先调 `harness-state.py` 拿 `stage2_base_sha` 字段（脚本已经 fallback 到 stage1 commit subject 匹配），tag 不存在时主 agent 自动 `git tag harness/$KEY/stage2-base $STAGE2_BASE`"。
+- `.claude/commands/run.md` §1 阶段 ②：把 `STAGE2_BASE=$(git rev-parse harness/$KEY/stage2-base)` 改成"先调 `harness-state.py` 拿 `stage2_base_sha` 字段（脚本已经 fallback 到 stage1 commit subject 匹配），tag 不存在时主 agent 自动 `git tag harness/$KEY/stage2-base $STAGE2_BASE`"。
 - 阶段 ③/⑤ 引用同一流程（"用阶段 ② 介绍的 `harness-state.py + 自动补 tag` 流程"），不再各自手 `git rev-parse <tag>`。
 - §3 表删除"stage ① commit 后 stage2-base tag 没打 → halt"行。
 
 **D. 广义错误词文本扫描 → 删（信任结构化校验）**
-- `.claude/commands/run-sprint.md` §-1.b 步骤 (a)：原版要扫子 agent 返回里的 `error` / `failed` / `halted` / `cannot` / `无法`，false positive 高（"我加了 error handling"等正常完成描述全命中），且**真正的失败一定能被结构化校验抓到**：产物缺失 → 验收 halt；schema 不合规 → `harness-commit.py` 退出码 1；漏 stage 推进 → sprint-status 兜底 set 暴露不一致；patch 没改对 → 下一轮 review 发现。删掉广义文本扫描。
+- `.claude/commands/run.md` §-1.b 步骤 (a)：原版要扫子 agent 返回里的 `error` / `failed` / `halted` / `cannot` / `无法`，false positive 高（"我加了 error handling"等正常完成描述全命中），且**真正的失败一定能被结构化校验抓到**：产物缺失 → 验收 halt；schema 不合规 → `harness-commit.py` 退出码 1；漏 stage 推进 → sprint-status 兜底 set 暴露不一致；patch 没改对 → 下一轮 review 发现。删掉广义文本扫描。
 - 例外保留：`hit your limit` / `rate limit` / `usage limit` / `quota` / `reset` 这一类 runtime quota 信号在结构化层不可见，仍要扫文本（halt 模板选项 5）。
 - §3 表第 1 行"广义错误词信号 → halt"删除；保留配额耗尽这一行。
 
 **E. stage ⑥ retro 状态推进 halt → 删（兜底 set 已无条件跑）**
-- `.claude/commands/run-sprint.md` §1 阶段 ⑥ 已经包含**无条件**的 `python3 .claude/scripts/sprint-status.py set epic-${EPIC}-retrospective done`，所以 §3 表"retro 状态没推进 → halt"行从未实际触发过——纯粹是早期防御性留白。删除。
+- `.claude/commands/run.md` §1 阶段 ⑥ 已经包含**无条件**的 `python3 .claude/scripts/sprint-status.py set epic-${EPIC}-retrospective done`，所以 §3 表"retro 状态没推进 → halt"行从未实际触发过——纯粹是早期防御性留白。删除。
 
 **F. 顺手修：`sprint-status.py` 缺 `find-by-status` 子命令（doc bug）**
 - 原 §0.B 写"调 `python3 .claude/scripts/sprint-status.py status-of-status review`"，但该子命令不存在（`sprint-status.py` 只有 `next/count/status/set/epic-of/epic-all-done/epic-retro-status`）。续作流程从未真正运行过这一行——一直靠主 agent 自由判断 `<KEY>`。
@@ -448,7 +448,7 @@
   - `classify()` 返回值 `'project_allowed' | 'project_flagged'` 合并为 `'project'`
   - `main()` 不再 emit `PROJECT_CODE=<path>` 行
   - 文档头部输出说明同步更新
-- `.claude/commands/run-sprint.md`：
+- `.claude/commands/run.md`：
   - §−1.d step 4 删"项目代码白名单"段、补"项目代码处理：脚本一律放行 stage"段
   - §0.5 删"白名单 + 标记"三段式说明、补 halt 类条件清单
 
@@ -465,7 +465,7 @@
 - 仅在 `project_code: True` 的 stage（2/4/5）启用。
 
 **C. stage ③ 主 agent 预解析 codex companion 路径**
-- `.claude/commands/run-sprint.md` §1 阶段 ③：把 `<CODEX_COMPANION_PATH>` 提升为占位符，与 `<STAGE2_BASE>` 同等地位，由主 agent 调度前用 Bash 预解析：
+- `.claude/commands/run.md` §1 阶段 ③：把 `<CODEX_COMPANION_PATH>` 提升为占位符，与 `<STAGE2_BASE>` 同等地位，由主 agent 调度前用 Bash 预解析：
   ```bash
   CODEX_COMPANION_PATH="${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts/codex-companion.mjs}"
   [ -z "$CODEX_COMPANION_PATH" ] || [ ! -f "$CODEX_COMPANION_PATH" ] && \
@@ -518,7 +518,7 @@ A. `.claude/scripts/harness-commit.py`：
 - `STAGES["4"]["global_files"]: [] → ["deferred-work.md"]`（与 stage 2/5 一致；stage ④ prompt 明确允许 deferred 决策建立 follow-up note）。
 - `STAGES["6"]["global_files"]: [...] + "deferred-work.md"`（retro 期间发现的 epic 级延后项）。
 
-B. `.claude/commands/run-sprint.md`：
+B. `.claude/commands/run.md`：
 - §1 阶段 ②"边界情况"段重写：**禁止**前推 stage2-base tag；改为让 tag 留在原位 + review prompt 用 `git diff <base>..HEAD -- . ':!.claude'` pathspec 把 harness 改动从 review diff 里排除。说明前推为什么坏（含本次 2.9% 覆盖率事故的具体数字）。
 - §1 阶段 ⑤ bmad review prompt：`git diff <STAGE2_BASE>..HEAD` → `git diff <STAGE2_BASE>..HEAD -- . ':!.claude'`，且 prompt 内追加一段说明"为什么不前推 tag、用 pathspec 替代"。
 - §1 阶段 ⑤ STAGE2_BASE 准备行：去掉"如有元修改 commit 插入则前推 tag"的旧引用。
@@ -550,7 +550,7 @@ A. `.claude/scripts/harness-prompt-suffix.py`：
 - 每个 stage 的进度源行从"- **stage X**: ..."改成"- **本阶段**: ..."——子 agent 视角更直接。
 - stage 1 / 3 / 6 输出无变化（仍只贴 answer-policy）。
 
-B. `.claude/commands/run-sprint.md` §1 阶段 ③：
+B. `.claude/commands/run.md` §1 阶段 ③：
 - 顶部说明段加一句：`/codex:adversarial-review` 是 `disable-model-invocation: true`，Skill tool 调不动，直接给底层命令。
 - prompt 模板第 1 步改成"不要试 Skill tool；直接 Bash 跑 `node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" adversarial-review --wait --base <STAGE2_BASE> "review focus: ..."`"，把 review focus 文本作为命令尾部 free-text 参数传入。
 
@@ -574,7 +574,7 @@ B. `.claude/commands/run-sprint.md` §1 阶段 ③：
 
 **改了什么**：
 - `.claude/scripts/harness-commit.py` STAGE_SPEC["2"]["global_files"] 增加 `"deferred-work.md"`
-- `.claude/commands/run-sprint.md` §0.5 stage ② 行注明允许 `deferred-work.md`
+- `.claude/commands/run.md` §0.5 stage ② 行注明允许 `deferred-work.md`
 
 **不影响**：跨 story 隔离规则未变（line 440 已经把 `deferred-work.md` 列为全局允许文件）。stage ⑤ 仍允许写。stage ①/③/④/⑥ 仍拒绝。
 
@@ -641,7 +641,7 @@ B. `.claude/commands/run-sprint.md` §1 阶段 ③：
 - 影响：主 agent 漏粘风险归零。后续若要调整代答政策 / 断点续作约定，只改一处脚本，不需改 5 段 prompt 描述。
 
 ### G. `--continue` 模式 + stage ④ fresh agent + `STAGE2_BASE` from tag + §3 表更新
-- 文件：改 `.claude/commands/run-sprint.md`
+- 文件：改 `.claude/commands/run.md`
 - 痛点四项：①§0.2 要求 worktree 干净，但续作模式合法用法是 worktree 不干净（dev 中段中断），导致协议自相矛盾，本次靠主 agent 自由判断违规放行。②stage ④ 协议要求 SendMessage 用 stage ② dev agentId 续作，但 agentId 跨会话失效，本次 spawn fresh 是"协议外"操作。③`STAGE2_BASE` 从 git rev-parse HEAD 取的会话内变量，续作就丢。④§3 防护表没覆盖 dev-result.json schema fail / review-findings.json schema fail / git tag 缺失等新引入的硬错误。
 - 改了什么：①新增 `--continue` 显式分支，跳过 §0.2 干净 check，先调 `harness-state.py` 决定从哪 stage 切入。②stage ④ 文档统一改为"spawn fresh general-purpose agent，让它读 story md / codex review / 代码续作"，删除 SendMessage 跨会话 agentId 的设计假设。③stage ③/⑤ 的 `STAGE2_BASE` 改为从 `git rev-parse harness/$KEY/stage2-base` 读，由 stage 1 commit 时自动打 tag 提供。④§3 表新增条目：harness-state.py / dev-result.json / review-findings.json schema 校验 fail 都触发 halt。
 - 影响：续作模式从"靠主 agent 自由判断"升级为"协议合规"。stage ④ 的"复用上下文"幻想清除（实测跨会话不可用）。`STAGE2_BASE` 来源单一可信。

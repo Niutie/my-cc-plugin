@@ -3,7 +3,7 @@
 harness-commit.py — sprint pipeline commit helper.
 
 Implements §-1.d (commit protocol) + §0.5 (path expected-output table)
-from .claude/commands/run-sprint.md, so the main agent doesn't have to
+from .claude/commands/run.md, so the main agent doesn't have to
 hand-walk the rules every commit.
 
 Usage:
@@ -651,7 +651,7 @@ STAGES = {
     # outputs are the union of T3 + T4 since stage 5.5 may invoke both atdd
     # (red-phase scaffold) and e2e (actual run) in one shot when env permits.
     #
-    # `T1` / `T3` / `T4` are independent stages used by `/run-test-sprint`
+    # `T1` / `T3` / `T4` are independent stages used by `/harness-zh:run-test`
     # (the dedicated test orchestrator). They ALSO emit through this commit
     # helper for path-whitelist symmetry with the run-sprint pipeline.
     #
@@ -727,8 +727,8 @@ STAGES = {
         # see chore-harness-epic-4-orchestration-observations T2.2: stage 5.5
         # is the only invocation path that produces T4 commits in run-sprint
         # pipeline; suffix lets `git log --grep "stage 5.5"` find them stably
-        # whether invoked via /run-test-sprint --story (standalone) or via
-        # /run-sprint stage 5.5 spawn. Standalone-only invocations do not
+        # whether invoked via /harness-zh:run-test --story (standalone) or via
+        # /harness-zh:run stage 5.5 spawn. Standalone-only invocations do not
         # generate run-sprint commits — keeping the suffix is harmless noise
         # and the grep stability requirement trumps the "looks misleading"
         # cost (Q3 RESOLVED 2026-05-04).

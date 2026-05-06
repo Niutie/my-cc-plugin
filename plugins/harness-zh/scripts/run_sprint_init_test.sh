@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-test for /run-sprint-init §1 prerequisite helper.
+# Self-test for /harness-zh:init §1 prerequisite helper.
 #
 # Slash command 本身是 LLM-orchestrated（无法 bash 直接 invoke）；本脚本测可机械化的
 # §1 prereq gate（run_sprint_init_check_prereq.sh）— 这是 init 流程的硬错误关。
