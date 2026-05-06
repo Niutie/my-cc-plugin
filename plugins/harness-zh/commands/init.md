@@ -38,10 +38,14 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 
 # 2) 扫 ~/.claude/plugins 下所有 plugin.json，找 name="harness-zh" 的；
 #    优先 cache/<marketplace>/<plugin>/<version>/（官方版本化安装路径）
+#    **过滤 orphaned 副本**：Claude Code 在版本切换 / 卸载时会留下旧版本目录，
+#    并放 `.orphaned_at` marker；这些目录内容是 stale 的，必须跳过
 if [ -z "$PLUGIN_ROOT" ]; then
     while IFS= read -r manifest; do
         if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
             candidate="$(dirname "$(dirname "$manifest")")"
+            # 跳过 orphaned 缓存（Claude Code 留下的 stale 版本目录）
+            [ -f "$candidate/.orphaned_at" ] && continue
             case "$candidate" in
                 */cache/*) PLUGIN_ROOT="$candidate"; break;;
             esac
@@ -53,7 +57,9 @@ fi
 if [ -z "$PLUGIN_ROOT" ]; then
     while IFS= read -r manifest; do
         if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
-            PLUGIN_ROOT="$(dirname "$(dirname "$manifest")")"
+            candidate="$(dirname "$(dirname "$manifest")")"
+            [ -f "$candidate/.orphaned_at" ] && continue   # 同样过滤 orphaned
+            PLUGIN_ROOT="$candidate"
             break
         fi
     done < <(find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null)
@@ -195,47 +201,41 @@ HOOKS_EXIT=$?
 
 ### A.5 BMad artifacts 检测 → 流程分叉
 
-**3 类必需产物 + 1 类可选产物**（每类**单文件或 sharded 目录任一形式都完全支持**，与 §1 helper `run_sprint_init_check_prereq.sh` 一致）：
-
-| # | 概念产物 | 必需性 | 接受的形式 | 来源 BMad 命令 |
-|---|---|---|---|---|
-| 1 | prd | **必需** | 单文件 `prd.md`（默认形式）**或** sharded 目录 `prd/`（跑过 `/bmad-shard-doc`） | `/bmad-create-prd` |
-| 2 | architecture | **必需** | 单文件 `architecture.md`（默认形式）**或** sharded 目录 `architecture/`（跑过 `/bmad-shard-doc`） | `/bmad-create-architecture` |
-| 3 | sprint-status | **必需** | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） | `/bmad-sprint-planning` |
-| 4 | product-brief | **可选**（不阻流；缺则 §2 字段 1/15 用 prd.md 兜底 + WARN） | `product-brief*.md`（BMad 上游会带项目名后缀，如 `product-brief-aegis.md`） | `/bmad-product-brief` |
-
-> **重要：单文件 vs sharded 是 BMad 上游的两种合法布局，harness-zh 完全支持任一**。BMad 默认产单文件 `prd.md` / `architecture.md`；只有用户额外跑 `/bmad-shard-doc` 才会切到 sharded 形式。**不要**把任一种当成"次选"——LLM 在 §2 提取字段时按"先看 sharded 路径是否存在 → 不存在则读单文件全文按章节 grep"自适应。
-
-> **BMad 命令两形式说明**：BMad 装好后大多数命令同时有 `/bmad-<name>` (skill 直射) 与 `/bmad:<name>` (workflow 别名) 两种形式，功能等价。本指南用 hyphen 形式（更直接对应 `.claude/skills/bmad-<name>/`）；若你环境里 hyphen 形式没识别，换冒号形式 `/bmad:<name>` 即可。少数较新/meta 命令（`/bmad:workflow-init`、`/bmad:research`、`/bmad:tech-spec`）只有冒号形式。
+**单一权威源：调 `run_sprint_init_check_prereq.sh` helper 脚本**，根据 exit code + JSON stdout 决定流程。**不要**自己 inline 重写检测逻辑或按文件名直觉判断 —— helper 是 dual-form (单文件/sharded) 兼容的唯一可信入口。
 
 ```bash
-BMAD_READY=1                # 仅 3 个必需产物决定是否进 §0+ 提取
-MISSING_LABELS=""           # 必需缺失项
-WARN_LABELS=""              # 可选缺失项（不阻流）
+HELPER_OUT="$(bash .claude/harness/scripts/run_sprint_init_check_prereq.sh --root "$PWD" 2>&1)"
+HELPER_EXIT=$?
 
-# 1) prd: 单文件 OR sharded 目录（必需）
-if [ ! -f _bmad-output/planning-artifacts/prd.md ] && [ ! -d _bmad-output/planning-artifacts/prd ]; then
-    BMAD_READY=0
-    MISSING_LABELS="${MISSING_LABELS}  - prd.md（或 prd/ sharded 目录；请跑 /bmad-create-prd）\n"
-fi
-
-# 2) architecture: 单文件 OR sharded 目录（必需）
-if [ ! -f _bmad-output/planning-artifacts/architecture.md ] && [ ! -d _bmad-output/planning-artifacts/architecture ]; then
-    BMAD_READY=0
-    MISSING_LABELS="${MISSING_LABELS}  - architecture.md（或 architecture/ sharded 目录；请跑 /bmad-create-architecture）\n"
-fi
-
-# 3) sprint-status.yaml: 路径固定（必需）
-if [ ! -f _bmad-output/implementation-artifacts/sprint-status.yaml ]; then
-    BMAD_READY=0
-    MISSING_LABELS="${MISSING_LABELS}  - sprint-status.yaml（请跑 /bmad-sprint-planning）\n"
-fi
-
-# 4) product-brief: glob 匹配（可选 — 不影响 BMAD_READY）
-if ! ls _bmad-output/planning-artifacts/product-brief*.md >/dev/null 2>&1; then
-    WARN_LABELS="${WARN_LABELS}  - product-brief*.md（可选；缺则 project_display_name / project_context 从 prd.md 兜底提取）\n"
-fi
+# Helper stdout 第一行是 JSON：{"all_present": bool, "missing_planning": [...], "missing_sprint_status": bool, "optional_missing": [...]}
+HELPER_JSON="$(printf '%s\n' "$HELPER_OUT" | grep -m1 '^{')"
+# Helper stderr 含人类可读引导（命令名 + 路径建议）
+HELPER_GUIDANCE="$(printf '%s\n' "$HELPER_OUT" | grep -vE '^{' | grep -vE '^$')"
 ```
+
+**按 HELPER_EXIT 分支**（与 helper 脚本退出码契约一致）：
+
+| HELPER_EXIT | 含义 | 行为 |
+|---|---|---|
+| `0` | 3 必需产物都齐（product-brief 可能缺 → optional_missing 字段） | `BMAD_READY=1` → 走 §A.7 "BMAD ready" 分支进 §0+ |
+| `2` | prd / architecture **必需** planning 缺失 | `BMAD_READY=0` → 走 §A.7 "early-exit" 分支 |
+| `3` | sprint-status.yaml 缺失 | `BMAD_READY=0` → 走 §A.7 "early-exit" 分支 |
+| 其他 | helper 异常（参数错误 / 内部 bug） | **halt** + 报告 exit code + HELPER_OUT verbatim |
+
+**3 类必需产物 + 1 类可选产物的接受形式**（与 helper 脚本内逻辑一致；本表仅供 LLM 理解，**不要**用于绕过 helper 自己判断）：
+
+| # | 概念产物 | 必需性 | 接受的形式 |
+|---|---|---|---|
+| 1 | prd | **必需** | 单文件 `prd.md`（默认）**或** sharded 目录 `prd/`（跑过 `/bmad-shard-doc`） |
+| 2 | architecture | **必需** | 单文件 `architecture.md`（默认）**或** sharded 目录 `architecture/`（跑过 `/bmad-shard-doc`） |
+| 3 | sprint-status | **必需** | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） |
+| 4 | product-brief | **可选**（缺则 §2 字段 1/15 用 prd.md 兜底；进 optional_missing 数组） | `product-brief*.md`（glob — 上游会带项目名后缀） |
+
+> **重要：单文件 vs sharded 是 BMad 上游的两种合法布局**。BMad 默认产单文件 `prd.md` / `architecture.md`；用户跑 `/bmad-shard-doc` 后切到 sharded。harness-zh 对二者无偏好，二者都是一等公民。
+>
+> **绝对不要**自己用 `[ -f architecture/tech-stack.md ]` 这种针对单一形式的检查 —— helper 脚本已封装 dual-form 探测，调它即可。
+
+> **BMad 命令两形式说明**：装好后大多数命令同时有 `/bmad-<name>` (skill 直射) 与 `/bmad:<name>` (workflow 别名) 两种形式，功能等价。本指南用 hyphen 形式（更直接对应 `.claude/skills/bmad-<name>/`）；若环境里 hyphen 没识别，换冒号即可。少数较新/meta 命令（`/bmad:research`、`/bmad:tech-spec`）只有冒号形式。
 
 ### A.6 资产部署统计（不论 BMad ready 与否都打印）
 
@@ -246,19 +246,24 @@ fi
   - git hooks: <installed / unchanged | WARN: core.hooksPath ...>
 ```
 
-### A.7 BMad ready 分叉
+### A.7 BMad ready 分叉（按 §A.5 的 HELPER_EXIT）
 
-- **`BMAD_READY=1`** → emit "BMad artifacts 齐 → 进入 §0 字段提取流程"，进 §0
-- **`BMAD_READY=0`** → emit 早结束块（下方），TaskCreate 标 `completed`，退出 0：
+- **`HELPER_EXIT=0` (BMAD_READY=1)** → emit "BMad artifacts 齐（product-brief 可能可选缺失）→ 进入 §0 字段提取流程"。如果 helper JSON 的 `optional_missing` 非空，emit WARN 行：
+
+  ```
+  💭 可选缺失（不阻流）：
+    - product-brief*.md（缺则 §2 字段 1/15 用 prd.md 兜底）
+  ```
+
+  然后进 §0。
+
+- **`HELPER_EXIT=2` 或 `3` (BMAD_READY=0)** → emit 早结束块（下方），TaskCreate 标 `completed`，退出 0：
 
   ```
   ⚠️ BMad 必需 planning artifacts 未齐 — 跳过 yaml 字段提取
 
-  【必需缺失】
-  $MISSING_LABELS
-
-  【可选缺失（不阻流，仅信息）】
-  $WARN_LABELS  ← 仅当有 WARN 内容时显示此段
+  【必需缺失】（来自 helper stderr 引导）
+  $HELPER_GUIDANCE   ← 直接贴 helper 的引导段，不要自己重写
 
   【下一步】
     首次使用 BMad（项目根没 _bmad/ 目录）先装：

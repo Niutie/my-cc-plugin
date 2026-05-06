@@ -11,6 +11,42 @@
 
 ---
 
+## v0.1.10 — 2026-05-06 — Orphaned cache 过滤 + §A.5 单一权威源化（修 LLM hallucinate "需要 split form"）
+
+### 触发
+
+solo-dev 在 `~/HaiAn MCTS`（prd.md ✓ + architecture.md 单文件 ✓ + sprint-status.yaml ✓）跑 v0.1.9 `/harness-zh:init`，**直接跑 helper 脚本** `bash run_sprint_init_check_prereq.sh` 输出 `all_present: true exit 0`，但 LLM **没真跑 helper**，自己按 §A.5 inline bash 字面意义 + §A.7 文案历史模式 hallucinate "需要 split 成 architecture/tech-stack.md + repo-structure.md"，错误进 BMAD_READY=0 早结束。
+
+同时报告中提到：§A.0 plugin 路径探测命中了 orphaned 0.1.2 缓存目录（带 `.orphaned_at` marker），LLM 从 stale 副本部署了 0.1.2 内容 — 需要手动切到 0.1.9 活跃路径。
+
+### 根因
+
+1. **§A.0 探测漏洞**：`find` + `plugin.json` 扫描没有过滤 Claude Code 在版本切换时留下的 `.orphaned_at` 标记目录，"命中即用"会拿到 stale 内容
+2. **§A.5 双源结构**：表格 + inline bash 同时存在，LLM 倾向于按"自己理解"判断而不实际执行 bash → 字面读了"3 必需 + 1 可选"但 hallucinate 出"sharded form 是真正的 well-known"
+
+### 修
+
+#### §A.0 加 orphaned 过滤
+
+`commands/init.md` §A.0 plugin 路径探测两处（cache 优先 + fallback）都加 `[ -f "$candidate/.orphaned_at" ] && continue`，跳过 stale 副本。Cache 目录可能同时存在多个版本（如 0.1.0 + 0.1.2 + 0.1.7 + 0.1.9），其中只有最新一个无 marker；探测器现在自动跳过历史版本。
+
+#### §A.5 重构为"helper 是单一权威源"
+
+之前 §A.5 既有"接受形式"表格又有 inline bash detection — LLM 容易"演奏"bash（按语义分析而不实际跑）。改成：
+
+- §A.5 顶部明确 **"调 helper 脚本，按 exit code + JSON 决定流程"**
+- 删 inline bash detection（不再是"参考实现"，避免 LLM 误用）
+- 表格降级为"供理解的 reference"，明确 **"绝对不要用此表自己重写检测，调 helper 即可"**
+- 加 HELPER_EXIT → BMAD_READY 映射表（0/2/3/其他）
+- §A.7 早结束文案改成 `$HELPER_GUIDANCE`（直接贴 helper 的 stderr 引导段），不再重写
+
+### 注意
+
+- helper 脚本 `run_sprint_init_check_prereq.sh` 本身从 v0.1.8 起就 dual-form 正确；v0.1.10 是把 init.md §A.5 / §A.7 也对齐到"helper 唯一权威"模型，避免 LLM 绕过 helper 自己 hallucinate
+- HaiAn MCTS 实测 helper 输出：`{"all_present": true, "missing_planning": [], "missing_sprint_status": false, "optional_missing": ["product-brief*.md (可选 — 缺则字段 1/15 从 prd.md 兜底)"]}` exit 0 — 应该进 §0+ 字段提取（product-brief 缺仅 WARN）
+
+---
+
 ## v0.1.9 — 2026-05-06 — 跨整个 plugin tree 全量审计 dual-form (sharded / 单文件) 兼容性
 
 ### 触发
