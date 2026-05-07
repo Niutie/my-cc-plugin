@@ -58,7 +58,12 @@ SPRINT_FILE = get_sprint_status_path()
 # from `next` / `count` / `epic-all-done` evaluations. Documented in
 # run-sprint.md §0.A. Standalone comments above the line remain the preferred
 # convention for readability.
-STORY_KEY_RE = re.compile(r"^\s+([A-Za-z0-9_\-]+):\s*(\S+)\s*(?:#.*)?$")
+# Story key 用 [^\s:#] 而非 [A-Za-z0-9_\-]，让 BMad 中文模式产出的 CJK
+# story key（如 `1-1-后端工程脚手架`）能被解析。yaml 语法约束：unquoted
+# mapping key 不能含 whitespace 或 `:`；`#` 是行内注释起点 — 三者都可作
+# delimiter，把它们排除即可。整个 regex 只在 development_status 块内匹配
+# （见 _iter_dev_status 的 in_block 状态机），不会误吃其他 yaml 段。
+STORY_KEY_RE = re.compile(r"^\s+([^\s:#]+):\s*(\S+)\s*(?:#.*)?$")
 
 
 def _iter_dev_status(include_epic_keys: bool = False) -> list[tuple[int, str, str]]:

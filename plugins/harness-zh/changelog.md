@@ -11,6 +11,56 @@
 
 ---
 
+## v0.1.11 — 2026-05-07 — sprint-status.py CJK story key 解析（i18n 真 bug 修复）
+
+### 触发
+
+solo-dev 在 `~/HaiAn MCTS` 跑 `/harness-zh:run --epic 1`，启动时 `python3 sprint-status.py count` 返回 `0/0`、`next` 退出 1，但 `_bmad-output/implementation-artifacts/sprint-status.yaml` 实际有 80+ 条 backlog story。
+
+### 根因
+
+`sprint-status.py:61` 的 `STORY_KEY_RE` 正则 `^\s+([A-Za-z0-9_\-]+):\s*(\S+)\s*(?:#.*)?$` 写死 ASCII 字符集，但 BMad 中文模式（用户配置 `communication_language: Chinese / document_output_language: Chinese`）产出的 story key 全是 CJK 短语：
+
+```yaml
+development_status:
+  epic-1: backlog
+  1-1-后端工程脚手架与公共基础设施: backlog        ← 不匹配 ASCII regex
+  1-2-前端工程脚手架-主题-token-与全局布局: backlog ← 同上
+  ...
+```
+
+整个 80+ 条 story 被静默过滤，count→0/0 / next→exit1 / epic-of/find-by-status 等所有 sprint-status.py 命令链路全失效。
+
+`harness-state.py` 通过 `python3 sprint-status.py status <key>` shell out 读状态，连带受影响。`harness-commit.py` 等其他脚本用 `re.escape(key)` 处理 key，无 ASCII 假设，未受影响。
+
+### 修
+
+`scripts/sprint-status.py:61` 把 `[A-Za-z0-9_\-]+` 替换成 `[^\s:#]+`（接受任何非空白/非冒号/非注释起点字符 — yaml 语法本就禁止 unquoted mapping key 含这三类，CJK / accents / 任何 Unicode 自动通过）：
+
+```python
+STORY_KEY_RE = re.compile(r"^\s+([^\s:#]+):\s*(\S+)\s*(?:#.*)?$")
+```
+
+加注释解释为什么用否定字符类（yaml 语法约束 + i18n 友好）。整个 regex 仍只在 `development_status:` 块内匹配（`_iter_dev_status` 的 `in_block` 状态机不变），不会误吃 yaml 其他段（如 `retro_action_items.<code>.status`）。
+
+### 验证
+
+复制修过的脚本到 HaiAn MCTS 项目侧 `.claude/harness/scripts/sprint-status.py`，重跑：
+
+| 命令 | 修前 | 修后 |
+|---|---|---|
+| `count` | `0/0`（全过滤） | `62/62` ✓ |
+| `next` | exit 1 | `1-1-后端工程脚手架与公共基础设施` exit 0 ✓ |
+| `epic-of <CJK key>` | `key 不是合法 story key` | `1` ✓ |
+
+### 注意
+
+这是 harness 第一个 i18n 真 bug。原 Aegis 项目用英文 story key（`5-9-forensic-evidence-destroy-workflow-dual-control` 这种），从未踩过这个坑。BMad 中文产出场景属于 plugin 化后扩大用户群带来的覆盖面变化，未来类似 ASCII 假设需逐个排雷（已审计 harness-commit.py / harness-state.py 无此问题；其他 .sh / .py 脚本的 regex 多数针对 chore filename / action item code 等 design-by-letter 场景，非 user-data，无需修）。
+
+Bump 0.1.10 → 0.1.11。
+
+---
+
 ## v0.1.10 — 2026-05-06 — Orphaned cache 过滤 + §A.5 单一权威源化（修 LLM hallucinate "需要 split form"）
 
 ### 触发
