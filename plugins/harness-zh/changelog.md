@@ -11,6 +11,67 @@
 
 ---
 
+## v0.1.12 — 2026-05-07 — harness-commit.py / harness-state.py CJK 路径 quotepath + utf-8 decode-safe（i18n 续修）
+
+### 触发
+
+solo-dev 在 `~/HaiAn MCTS` 升级到 v0.1.11（CJK story key regex 修好）后跑 `/harness-zh:run`，stage 1 commit 仍 halt：
+
+```
+STATUS=halt
+REASON=non-artifact path in stage 1 which forbids project code
+FORBIDDEN="_bmad-output/implementation-artifacts/1-1-\345\220\216\347\253\257\345\267\245\347\250\213\350\204\232\346\211\213\346\236\266\344\270\216\345\205\254\345\205\261\345\237\272\347\241\200\350\256\276\346\226\275.md"
+```
+
+### 根因
+
+两个独立 i18n bug，叠加发作：
+
+1. **`git status --porcelain` / `git diff --stat` / `git ls-files` 默认 quotepath=true** — 输出对非 ASCII 路径做 C-style octal 转义并加双引号包裹（`"_bmad-output/.../1-1-\345\220..."`）。harness-commit.py 的 `classify()` 把这种带引号 + 转义的 path 拿去匹配 `<KEY>.md` artifact pattern，全数 miss，故 stage 1 把 story md 误判为"项目代码"（黑名单）→ halt。harness-state.py 三处 `git status --porcelain` + 一处 `git diff --stat` 同样路径数据全部受污染，影响 `compute_state` 的 worktree_clean / 落地清单分组 / resume prompt artifact 计数。
+
+2. **`subprocess.run(..., text=True)` 默认 utf-8 strict 解码** — `git diff --cached --stat` 把长文件名按列宽截断展示（`...3-2-用户管理-rbac... | 12 +-`），可能在 CJK 多字节序列中段切断。strict 解码遇到孤立首字节抛 `UnicodeDecodeError`，stage 1 在 sanity-check 段崩。
+
+CJK story key 项目（v0.1.11 修好后才暴露，因为之前 sprint-status.py 直接过滤掉看不到 story）必踩；ASCII 项目（如 Aegis）从未遇到。
+
+### 修
+
+集中到 `run()` helper（`harness-commit.py:1234` + `harness-state.py:79`），双 fix 一并注入：
+
+```python
+def run(cmd):
+    if cmd and cmd[0] == "git" and (len(cmd) < 3 or cmd[1] != "-c" or not cmd[2].startswith("core.quotepath")):
+        cmd = ["git", "-c", "core.quotepath=false"] + list(cmd[1:])
+    return subprocess.run(cmd, capture_output=True, text=True, errors="replace", check=False)
+```
+
+- (a) 幂等检测后 `-c core.quotepath=false` 注入；所有 git 子调用统吃（status / diff / ls-files / log / rev-parse 全部）
+- (b) `errors="replace"` 让 stat 截断的半个 UTF-8 字节降级成 U+FFFD 替换符，不阻流；stat 输出本就是人类摘要，replacement char 无害
+
+`git-hooks/pre-commit` 同时加 `GIT="git -c core.quotepath=false"` 别名，gate ① / ② 防御性挂上（当前 trigger 都是 ASCII 不直接出问题，但任何未来 CJK 命名的 retro 文件 `4-X-中文复盘.md` 会立即踩坑——零成本补丁）。
+
+附带 ship `templates/deferred-work.md.template` + init §A.3.b 投放——`_bmad-output/implementation-artifacts/` 父目录存在但 `deferred-work.md` 不存在时从 template cp 一份。消除 main agent 凭印象造非 schema-v1 placeholder 被 gate ② 拒的整类问题（典型症状：用 `[severity:medium]` 这种废弃 tag）。
+
+### 验证
+
+`run()` helper 单测：注入 git 子调用 + 不重复注入已设的 `-c core.quotepath=...` + 不动 non-git 命令；`errors='replace'` 实际下沉到 subprocess kwargs。
+
+```
+PASS: quotepath injection works for git, idempotent, skips non-git
+PASS: run() now passes errors=replace + quotepath
+```
+
+CJK 路径 stage 1 实跑（在 HaiAn MCTS 项目 hotfix 版上验证过）：commit 通过、artifact 正确分类、stat 截断不再崩。
+
+### 注意
+
+- HaiAn MCTS 项目侧 `.claude/harness/scripts/harness-commit.py` 之前手工 hotfix 过同样两点（`.claude/` gitignore，未进 git 历史）。本次 plugin 升级后 `/harness-zh:update` 会备份成 `.bak.<TS>` 再覆盖。覆盖前 `diff` 一下确认 plugin 新版的 `run()` helper 行为覆盖你 hotfix 语义（应该一致 + 多了集中化 + harness-state.py 也修了），再清 .bak。
+- 这是 v0.1.11 i18n 修复的续集——sprint-status 解 CJK key 后，下游 git path I/O 是第二层雷。已审计 plugin 内全部 `subprocess.run(["git", ...])` 调用（harness-commit.py / harness-state.py 各一处 helper 集中托底；harness_config.py、sprint-status.py 等其他脚本不直接 shell out 到 git，无关）。短期内应该排完了。
+- `git-hooks/pre-commit` 的 `GIT="git -c ..."` 是 bash 字符串展开模式，不是 array — 当前所有调用都是裸的 `$GIT diff ...` 形式，无 quoting 边界问题；如未来加更复杂 hook gate 用到含空格参数，记得切 array `GIT=(git -c core.quotepath=false)` + `"${GIT[@]}"`。
+
+Bump 0.1.11 → 0.1.12。
+
+---
+
 ## v0.1.11 — 2026-05-07 — sprint-status.py CJK story key 解析（i18n 真 bug 修复）
 
 ### 触发
