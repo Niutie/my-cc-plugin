@@ -609,7 +609,7 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 | 2 | `container_orchestrator` | `architecture/tech-stack.md` 或 `architecture.md §tech-stack` | 找容器编排技术（docker-compose / k8s / podman / nerdctl-compose） | `'docker-compose'` + WARN |
 | 3 | `frontend_framework` | `architecture/tech-stack.md` 或 `architecture.md §tech-stack` | 找前端框架（Next.js / SvelteKit / Remix / Astro 含版本） | `'TODO: frontend framework'` + WARN |
 | 4 | `backend_languages` (list) | `architecture/tech-stack.md` 或 `architecture.md §tech-stack` | 找后端语言列表（Go / Python / TypeScript / Rust 含版本） | `['TypeScript']` + WARN |
-| 5 | `e2e_framework` | `architecture/tech-stack.md` 或 `architecture.md §testing-strategy` | 找端到端测试框架（Playwright / Cypress / WebdriverIO） | `'Playwright'` + WARN |
+| 5 | `e2e_framework` | `architecture/tech-stack.md` 或 `architecture.md §testing-strategy` | 找端到端测试框架（Playwright / Cypress / WebdriverIO / 'none' for 纯后端项目） | **条件 fallback**（v0.1.19）：若字段 6 `frontend_dir` 也提取失败 / fallback 到 `'frontend'` → fallback `'none'` + INFO（纯后端项目正常状态，不 WARN）；否则 fallback `'Playwright'` + WARN |
 | 6 | `extra.frontend_dir` | `architecture/repo-structure.md` 或 `architecture.md §repo-structure` | 找前端代码顶层目录名 | `'frontend'` + WARN |
 | 7 | `extra.e2e_test_subdir` | `architecture/repo-structure.md` 或 `testing-strategy.md` | 找 e2e 测试目录路径（相对前端目录或仓库根） | `'tests/e2e'` + WARN |
 | 8 | `extra.container_count` | `architecture/tech-stack.md` 或 `deploy/` 段 | 找服务容器数量（整数） | `0` + WARN |
@@ -632,6 +632,14 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 - 字段 15（project_context）由 `harness-prompt-suffix.py` 在 prompt 注入时内联到代答政策块；缺失会导致 subagent 决策时缺项目语境（fallback 为通用决策原则）
 - 字段 16（fullstack_review_steps）由 `harness-prompt-suffix.py` stage 2 渲染为 dev-story Q6 sub-bullet 注入到 dev subagent；list 为空时 Q6 整段降级跳过（不阻流）
 - 这两字段 fallback 不阻 init / sprint，但实际跑 dev / review 时建议补全（subagent 决策质量与字段完整度强相关）
+
+**字段 5 (e2e_framework) 的条件 fallback 语义**（v0.1.19 A 档新增）：
+- 提取顺序保证字段 6 (frontend_dir) 必须先于字段 5 计算或在字段 5 计算时可访问，因为字段 5 fallback 依赖字段 6 结果
+- 若 BMad 提取到具体值（"Playwright" / "Cypress" / "WebdriverIO" / "Selenium" / "none"）→ 直接采用（不 WARN）
+- 若 BMad 未发现 e2e 框架信息：
+  - 字段 6 也未发现 frontend_dir（fallback 到 `'frontend'`）→ 推断"纯后端项目"，fallback `e2e_framework: 'none'` + INFO（不 WARN，因为是正常状态）
+  - 字段 6 发现具体 frontend_dir 但 e2e 框架未提及 → fallback `'Playwright'` + WARN（默认假设 Playwright，让 solo-dev review）
+- 这个条件 fallback 解 v0.1.18 之前的 sandbox-skip 污染（纯后端项目被 fallback 到 'Playwright' → probe → 全 skip → deferred-work 鬼影累积）
 
 ---
 
@@ -676,9 +684,12 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 | Go (含版本) | TypeScript / Next.js 等 | `go vet/build/test ./<backend_modules[0]>/...\npnpm --filter <frontend_dir> typecheck/test/lint --max-warnings=0/build` |
 | Python (含版本) | TypeScript / Next.js 等 | `cd <backend_modules[0]> && pytest && ruff check\npnpm --filter <frontend_dir> typecheck/test/lint --max-warnings=0/build` |
 | Rust (含版本) | TypeScript / Next.js 等 | `cd <backend_modules[0]> && cargo check && cargo test\npnpm --filter <frontend_dir> typecheck/test/lint --max-warnings=0/build` |
+| Java (含版本) | TypeScript / Next.js 等 | `cd <backend_modules[0]> && mvn -B test  # Gradle: ./gradlew test\npnpm --filter <frontend_dir> typecheck/test/lint --max-warnings=0/build` |
 | 其它栈 | 任意 | `# TODO: fill verification commands for your stack` + WARN |
 
-`backend_modules` 为空 → 把 `<backend_modules[0]>` 替换为 `.` （仓库根）。`frontend_dir` 为空 → 把 `<frontend_dir>` 替换为 `frontend`。
+**Java 行特殊点**：默认输出 Maven 命令 `mvn -B test`（`-B` = batch / non-interactive），inline comment 提示 Gradle 用户改成 `./gradlew test`。模板**不**自动检测 `pom.xml` vs `build.gradle`（避免误判多模块项目；solo-dev 跑完 init 后按需手工调一次即可）。
+
+`backend_modules` 为空 → 把 `<backend_modules[0]>` 替换为 `.` （仓库根）。`frontend_dir` 为空 / `e2e_framework` = `'none'` → 把整行 `pnpm --filter <frontend_dir> ...` **删除**（保留单一后端 line；混入 pnpm 命令会让纯后端项目 dev subagent 报 cmd not found）。
 
 ---
 

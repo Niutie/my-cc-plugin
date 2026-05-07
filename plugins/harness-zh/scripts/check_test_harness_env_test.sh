@@ -197,6 +197,104 @@ else
 fi
 
 # ============================================================================
+# F4-7: e2e_framework='none' → reason="no_e2e_configured"，跳 Playwright 探测
+#       (v0.1.19 A 档 — 解纯后端 Java/Go/Python 项目 sandbox-skip 污染)
+# ============================================================================
+echo "F4-7: e2e_framework='none' → no_e2e_configured 短路"
+F7_REPO="$WORKDIR/repo-no-e2e"
+mkdir -p "$F7_REPO/.claude/harness"
+# 故意不创建任何 console-web/ 目录 — 验证短路真的不去探测
+cat > "$F7_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+project_display_name: 'Pure Backend Project'
+backend_languages:
+  - 'Java 17'
+e2e_framework: 'none'              # 项目自报无 e2e 需求
+
+extra:
+  frontend_dir: ''                  # 无前端
+YAML
+
+OUT="$(run_probe "$F7_REPO" "$WORKDIR/pw-cache-doesnt-matter")"
+# runtime_ready 应为 false（短路不探测，所有 RC=1）；reason 应为 no_e2e_configured
+assert_field "F4-7" "$OUT" "framework_installed" "false"
+assert_field "F4-7" "$OUT" "runtime_ready"       "false"
+assert_field "F4-7" "$OUT" "all_available"       "false"
+if echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('reason') == 'no_e2e_configured' and d.get('e2e_framework') == 'none' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-7.reason=no_e2e_configured + e2e_framework=none"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-7.reason / e2e_framework — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
+# F4-8: e2e_framework='Cypress' → reason="probe_not_implemented_for_Cypress"
+# ============================================================================
+echo "F4-8: e2e_framework='Cypress' → probe_not_implemented_for_Cypress 短路"
+F8_REPO="$WORKDIR/repo-cypress"
+mkdir -p "$F8_REPO/.claude/harness"
+mkdir -p "$F8_REPO/web/cypress"
+cat > "$F8_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+project_display_name: 'Cypress Project'
+e2e_framework: 'Cypress'
+
+extra:
+  frontend_dir: 'web'
+YAML
+
+# stderr 抓 WARN
+F8_STDERR="$WORKDIR/f8-stderr.txt"
+OUT="$(run_probe "$F8_REPO" "$WORKDIR/pw-cache-doesnt-matter" 2>"$F8_STDERR")"
+
+assert_field "F4-8" "$OUT" "runtime_ready" "false"
+assert_field "F4-8" "$OUT" "all_available" "false"
+if echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('reason') == 'probe_not_implemented_for_Cypress' and d.get('e2e_framework') == 'Cypress' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-8.reason=probe_not_implemented_for_Cypress"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-8.reason / e2e_framework — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+# 验证 stderr 有 WARN
+if grep -q "WARN.*e2e_framework='Cypress'" "$F8_STDERR" 2>/dev/null; then
+    echo "  ✓ F4-8.stderr 含 WARN about Cypress"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-8.stderr 缺 WARN — content: $(cat "$F8_STDERR" 2>/dev/null)" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
+# F4-9: e2e_framework='Playwright' （显式声明）+ frontend_dir='web' →
+#       走真 probe；不短路
+# ============================================================================
+echo "F4-9: e2e_framework='Playwright' 显式 → 真 probe 不短路"
+F9_REPO="$WORKDIR/repo-explicit-pw"
+mkdir -p "$F9_REPO/.claude/harness"
+mkdir -p "$F9_REPO/web/node_modules/@playwright/test"
+cat > "$F9_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+project_display_name: 'Explicit Playwright'
+e2e_framework: 'Playwright'
+
+extra:
+  frontend_dir: 'web'
+YAML
+F9_PW_CACHE="$WORKDIR/pw-cache-explicit"
+mkdir -p "$F9_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F9_REPO" "$F9_PW_CACHE")"
+assert_field "F4-9" "$OUT" "framework_installed" "true"
+assert_field "F4-9" "$OUT" "chromium_installed"  "true"
+assert_field "F4-9" "$OUT" "runtime_ready"       "true"
+if echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('reason') == 'real_probe' and d.get('e2e_framework') == 'Playwright' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-9.reason=real_probe + e2e_framework=Playwright"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-9.reason / e2e_framework — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
 # F4-6: config 文件存在但 frontend_dir 为空字符串 → 保 fallback 'console-web'
 #       （template 默认 `frontend_dir: ''` 场景）
 # ============================================================================

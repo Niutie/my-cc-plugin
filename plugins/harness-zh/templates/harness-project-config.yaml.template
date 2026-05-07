@@ -20,7 +20,10 @@ project_display_name: ''         # e.g., 'Aegis AI Audit'
 container_orchestrator: ''       # docker-compose / k8s / podman / nerdctl-compose
 frontend_framework: ''           # e.g., 'Next.js 16' / 'SvelteKit 2' / 'Remix 2' / 'Astro 4'
 backend_languages: []            # e.g., ['Go 1.23', 'Python 3.12', 'TypeScript', 'Rust 1.85']
-e2e_framework: ''                # Playwright / Cypress / WebdriverIO / Selenium
+e2e_framework: ''                # Playwright / Cypress / WebdriverIO / Selenium / 'none'
+                                 # 'none' = 纯后端 / 无 e2e 项目；让 /harness-zh:run-test 走
+                                 # §4.5 clean skip（不写 skipped report、不污染 deferred-work）。
+                                 # Playwright 之外目前 T3/T4 仍是 Playwright-coded，会走 §4 sandbox-skip。
 
 # Artifact 输出根目录（init §3.1 派生；默认 '_bmad-output/implementation-artifacts'）
 artifacts_root: ''

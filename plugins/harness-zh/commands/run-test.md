@@ -81,12 +81,14 @@ stage 跑或 skip 由后续每条 stage 的"触发判断"门决定（见 §1 各
 ```bash
 ENV_JSON=$(bash .claude/harness/scripts/check_test_harness_env.sh)
 ALL_AVAILABLE=$(echo "$ENV_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["all_available"])')
+REASON=$(echo "$ENV_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["reason"])')
 ```
 
-**两条分支**：
+**三条分支**（v0.1.19 A 档加入 no-e2e clean skip 分流）：
 
 - `ALL_AVAILABLE == True` → 进 §1 stage T1/T3/T4 全跑
-- `ALL_AVAILABLE == False` → 进 §4 sandbox graceful skip（写 skipped report + FU-Test-<key>-sandbox + exit 0）
+- `ALL_AVAILABLE == False` AND `REASON == "no_e2e_configured"` → 进 **§4.5 no-e2e clean skip**（项目自报 `e2e_framework: 'none'` — 跳过 T1/T3/T4，**不**写 skipped report、**不**写 deferred FU-Test-*-sandbox、**不** commit；worktree 保持干净，run-sprint stage 5.5 sanity gate 自然 STATUS=skip 通过）
+- `ALL_AVAILABLE == False` AND `REASON` 其它（含 `probe_not_implemented_for_<X>` / `real_probe; missing: ...`）→ 进 §4 sandbox graceful skip（写 skipped report + FU-Test-<key>-sandbox + exit 0）
 
 ### 0.2 dry-run 分支
 
@@ -222,7 +224,9 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 
 ## 4. Sandbox graceful skip 路径
 
-**触发**：`check_test_harness_env.sh` 输出 `all_available=false`（任一维度 false：docker / pnpm / node / playwright）。
+**触发**：`check_test_harness_env.sh` 输出 `all_available=false` **且 `reason` 不为 `"no_e2e_configured"`**（即真探测失败 — 缺 chromium / framework / pnpm / version_check 等；或 e2e_framework 是 Cypress/WebdriverIO/Selenium 等未实现栈）。
+
+> v0.1.19 A 档分流：`reason="no_e2e_configured"`（项目自报无 e2e）走 §4.5 clean skip，不再走本节 sandbox-skip 路径。`reason="probe_not_implemented_for_<X>"`（非 Playwright 栈）仍走本节 — 因为 plugin 现有 T3/T4 实现是 Playwright 限定，非 Playwright 栈实质上无法实跑。
 
 **步骤**：
 
@@ -251,6 +255,39 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 5. **退出码 0**：不阻调用方（独立调用退出 0；run-sprint stage 5.5 调用时 main agent 继续走 stage 6）。
 
 **幂等性**：solo-dev 解锁后跑 `just test-sprint STORY=$KEY` → check_env all_available=true → 走 §1 流水线 → T4 commit 时 deferred-work.md 的 `FU-Test-${KEY}-sandbox` 行被本次 patch 移除（test_status entry 也覆写为 atdd=red/green）。
+
+---
+
+## 4.5 No-e2e clean skip 路径（v0.1.19 A 档）
+
+**触发**：`check_test_harness_env.sh` 输出 `all_available=false` 且 `reason="no_e2e_configured"`（即项目 `harness-project-config.yaml` 顶层 `e2e_framework: 'none'`，自报无 e2e 测试需求）。
+
+**与 §4 sandbox-skip 的关键差异**：
+
+| | §4 sandbox-skip | §4.5 no-e2e clean skip |
+|---|---|---|
+| 触发原因 | 环境探测真失败（缺 chromium / framework / pnpm 等） | 项目主动声明无 e2e |
+| 写 `skipped-${KEY}-*.md` 标记 | ✅ 写 | ❌ 不写 |
+| 写 deferred-work `FU-Test-${KEY}-sandbox` | ✅ 写（待 solo-dev 解锁后清） | ❌ 不写 |
+| 改 sprint-status `test_status` 段 | ✅ 写 `sandbox_bound: true` | ❌ 不动 |
+| commit T4 | ✅ 走 sandbox 风格 commit msg | ❌ 不 commit（worktree 保持干净） |
+| 调用方影响 | run-sprint 5.5 sanity gate 看 worktree 已被清干净 → STATUS=skip | run-sprint 5.5 sanity gate 看 worktree 一开始就干净 → STATUS=skip |
+| 幂等性 | solo-dev 装好 env 后重跑 → 翻 sandbox=true→false | 项目从 'none' 改成 'Playwright' 后重跑 → 自动走 §1/§4 |
+
+**步骤**：
+
+1. **echo banner**（stdout — 让调用方与 solo-dev 都明确这是声明式 skip 不是 bug）：
+
+   ```
+   ⏸ /harness-zh:run-test --story ${KEY} → no-e2e clean skip
+     原因：harness-project-config.yaml 声明 e2e_framework='none'
+     行为：跳过 T1/T3/T4；不写 skipped report；不污染 deferred-work
+     如要恢复 e2e 流水线，把 e2e_framework 改为 'Playwright'（含装相应运行时）
+   ```
+
+2. **退出码 0**：不阻调用方。**不调** `harness-commit.py`（无产物可 commit）。worktree 保持调用前状态（如有 dev 阶段未提交的代码，本节不动它们）。
+
+**为什么不也跑 T1（test-design）**：T1 产物是 `epic-${EPIC}-test-design.md`（risk-based 测试计划），对纯后端 / 无 e2e 项目仍有价值（unit test 设计建议）。但当前 BMad testarch-test-design skill 默认 e2e 取向，对无 e2e 项目产出可能错位 / 噪声。保守起见 v0.1.19 A 档**统一跳 T1+T3+T4**；后续如有诉求再分开（issue 待提）。
 
 ---
 

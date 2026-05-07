@@ -32,14 +32,30 @@
 # 从 ${REPO_ROOT}/.claude/harness/harness-project-config.yaml 读 `frontend_dir`
 # 字段（顶层 scalar 或 `extra:` 二级 scalar）。未配置 / 文件缺失 → fallback
 # 到 'console-web'（保 backward-compat：旧用户 + 现有 self-test fixture 不变）。
-# 输出 JSON 含 `frontend_dir` 字段供调用方透明显示探测目录。
+#
+# e2e_framework 短路（v0.1.19 — A 档：解 Java/Go/Python 纯后端项目 sandbox-skip
+# 污染 deferred-work.md 的痛点）：
+# 从 config 读顶层 `e2e_framework` 字段，case-insensitive 分流：
+#   - 'none' / 'n/a' / 'na' / 'no' → 短路成 reason="no_e2e_configured"，跳过
+#       Playwright 探测（因为项目自报无 e2e 需求）。run-test.md §4 据此走 clean
+#       no-e2e skip 路径，**不**写 FU-Test-*-sandbox 到 deferred-work
+#   - 'cypress' / 'webdriverio' / 'selenium' / 任何其它非空非 Playwright 值
+#       → 短路成 reason="probe_not_implemented_for_<X>" + stderr WARN，提示
+#       T3/T4 stages 仍是 Playwright 实现，本栈未支持
+#   - 'playwright' / 空 / 缺失 → 走现有 Playwright 探测（默认）
+# 短路路径下所有 RC 设 1（runtime_ready=false），让现有 §4 sandbox-skip 入口
+# 兼容；branch 由 reason 字段决定。
+#
+# 输出 JSON 含 `frontend_dir` + `e2e_framework` 字段供调用方透明显示。
 #
 # 输出 schema（紧凑 JSON 一行 + 末尾换行）：
 #   {"docker": <bool>, "pnpm": <bool>, "node": <bool>, "playwright": <bool>,
 #    "framework_installed": <bool>, "chromium_installed": <bool>,
 #    "runtime_ready": <bool>, "all_available": <bool>,
 #    "frontend_dir": "<probed dir>",
-#    "reason": "real_probe"|"forced_sandbox"|"<missing list>"}
+#    "e2e_framework": "<configured framework or ''>",
+#    "reason": "real_probe"|"forced_sandbox"|"no_e2e_configured"
+#            |"probe_not_implemented_for_<X>"|"real_probe; missing: ..."}
 #
 # 用法：
 #   bash .claude/harness/scripts/check_test_harness_env.sh
@@ -127,7 +143,50 @@ if [ -f "$_HARNESS_CONFIG" ]; then
     fi
 fi
 
-# ---- FORCE_SANDBOX env override ----
+# ---- e2e_framework：短路决策（v0.1.19 A 档） ----
+# 仅顶层 scalar；extra: 下不放本字段（template 设计 — 保跟 frontend_framework /
+# backend_languages 等顶层栈字段对齐）。
+E2E_FRAMEWORK=""
+if [ -f "$_HARNESS_CONFIG" ]; then
+    _ef_val="$(grep -E "^e2e_framework:[[:space:]]" "$_HARNESS_CONFIG" 2>/dev/null \
+              | head -1 \
+              | sed -E "s/^e2e_framework:[[:space:]]+//")"
+    if [ -n "$_ef_val" ]; then
+        # strip inline comment 先（避免引号去剥 + 注释一起被当 value）
+        _ef_val="$(printf '%s' "$_ef_val" | sed -E 's/[[:space:]]+#.*$//')"
+        # 去外层引号
+        _ef_val="${_ef_val#\'}"; _ef_val="${_ef_val%\'}"
+        _ef_val="${_ef_val#\"}"; _ef_val="${_ef_val%\"}"
+        # 去尾随空白
+        _ef_val="${_ef_val%"${_ef_val##*[![:space:]]}"}"
+        E2E_FRAMEWORK="$_ef_val"
+    fi
+fi
+
+# 短路判定 — case-insensitive 分流
+SHORT_CIRCUIT=""
+_ef_lower="$(printf '%s' "$E2E_FRAMEWORK" | tr '[:upper:]' '[:lower:]')"
+case "$_ef_lower" in
+    none|"n/a"|na|no)
+        SHORT_CIRCUIT="no_e2e_configured"
+        ;;
+    ""|playwright)
+        # 默认 Playwright 路径 — 不短路
+        :
+        ;;
+    cypress|webdriverio|selenium)
+        SHORT_CIRCUIT="probe_not_implemented_for_${E2E_FRAMEWORK}"
+        echo "WARN [check_test_harness_env]: e2e_framework='${E2E_FRAMEWORK}' — probe 仅实现 Playwright；T3/T4 stages 也是 Playwright-coded。本栈走 sandbox-skip + informative reason；如需真支持请提 feature request。" >&2
+        ;;
+    *)
+        # unknown framework — 当作未实现处理
+        SHORT_CIRCUIT="probe_not_implemented_for_${E2E_FRAMEWORK}"
+        echo "WARN [check_test_harness_env]: 未识别 e2e_framework='${E2E_FRAMEWORK}' — 仅 Playwright 完整支持。走 sandbox-skip。" >&2
+        ;;
+esac
+
+# ---- FORCE_SANDBOX env override + e2e_framework SHORT_CIRCUIT ----
+# 优先级：FORCE_SANDBOX > SHORT_CIRCUIT > 真探测
 REASON_DETAIL=""
 if [ "${FORCE_SANDBOX:-0}" = "1" ]; then
     DOCKER_RC=1
@@ -138,6 +197,17 @@ if [ "${FORCE_SANDBOX:-0}" = "1" ]; then
     CHROMIUM_RC=1
     VERSION_RC=1
     REASON="forced_sandbox"
+elif [ -n "$SHORT_CIRCUIT" ]; then
+    # e2e_framework 短路：跳过 Playwright 探测；所有 RC=1 让 §4 sandbox-skip 入口
+    # 兼容；reason 字段决定 §4 内 branch（no_e2e clean skip 还是 sandbox-skip）
+    DOCKER_RC=1
+    PNPM_RC=1
+    NODE_RC=1
+    PLAYWRIGHT_RC=1
+    FRAMEWORK_RC=1
+    CHROMIUM_RC=1
+    VERSION_RC=1
+    REASON="$SHORT_CIRCUIT"
 else
     REASON="real_probe"
 
@@ -212,17 +282,25 @@ fi
 # all_available = runtime_ready (F4 fix — 不再用旧 4 维度联合)
 ALL_RC=$RUNTIME_RC
 
-# REASON 字段最终拼接：sandbox 直返；real probe + 有 missing → "real_probe; missing: ..."
-if [ "$REASON" = "forced_sandbox" ]; then
-    FINAL_REASON="forced_sandbox"
-elif [ -n "$REASON_DETAIL" ]; then
-    FINAL_REASON="real_probe; ${REASON_DETAIL}"
-else
-    FINAL_REASON="real_probe"
-fi
+# REASON 字段最终拼接：
+#   - forced_sandbox / no_e2e_configured / probe_not_implemented_for_X → 直返
+#   - real_probe + missing → "real_probe; missing: ..."
+#   - real_probe + ready → "real_probe"
+case "$REASON" in
+    forced_sandbox|no_e2e_configured|probe_not_implemented_for_*)
+        FINAL_REASON="$REASON"
+        ;;
+    *)
+        if [ -n "$REASON_DETAIL" ]; then
+            FINAL_REASON="real_probe; ${REASON_DETAIL}"
+        else
+            FINAL_REASON="real_probe"
+        fi
+        ;;
+esac
 
 # 紧凑 JSON 单行
-printf '{"docker": %s, "pnpm": %s, "node": %s, "playwright": %s, "framework_installed": %s, "chromium_installed": %s, "runtime_ready": %s, "all_available": %s, "frontend_dir": "%s", "reason": "%s"}\n' \
+printf '{"docker": %s, "pnpm": %s, "node": %s, "playwright": %s, "framework_installed": %s, "chromium_installed": %s, "runtime_ready": %s, "all_available": %s, "frontend_dir": "%s", "e2e_framework": "%s", "reason": "%s"}\n' \
     "$(bool $DOCKER_RC)" \
     "$(bool $PNPM_RC)" \
     "$(bool $NODE_RC)" \
@@ -232,6 +310,7 @@ printf '{"docker": %s, "pnpm": %s, "node": %s, "playwright": %s, "framework_inst
     "$(bool $RUNTIME_RC)" \
     "$(bool $ALL_RC)" \
     "$FRONTEND_DIR" \
+    "$E2E_FRAMEWORK" \
     "$FINAL_REASON"
 
 exit 0
