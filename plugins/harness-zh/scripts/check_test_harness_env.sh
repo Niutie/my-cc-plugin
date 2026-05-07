@@ -28,10 +28,17 @@
 #   AEGIS_ENV_PROBE_PLAYWRIGHT_CACHE=<path>  override chromium cache 探测路径
 #                                            （默认 ~/Library/Caches/ms-playwright）
 #
+# frontend_dir 解析（v0.1.18 — 修 0.1.17 之前硬编码 console-web 的 bug）：
+# 从 ${REPO_ROOT}/.claude/harness/harness-project-config.yaml 读 `frontend_dir`
+# 字段（顶层 scalar 或 `extra:` 二级 scalar）。未配置 / 文件缺失 → fallback
+# 到 'console-web'（保 backward-compat：旧用户 + 现有 self-test fixture 不变）。
+# 输出 JSON 含 `frontend_dir` 字段供调用方透明显示探测目录。
+#
 # 输出 schema（紧凑 JSON 一行 + 末尾换行）：
 #   {"docker": <bool>, "pnpm": <bool>, "node": <bool>, "playwright": <bool>,
 #    "framework_installed": <bool>, "chromium_installed": <bool>,
 #    "runtime_ready": <bool>, "all_available": <bool>,
+#    "frontend_dir": "<probed dir>",
 #    "reason": "real_probe"|"forced_sandbox"|"<missing list>"}
 #
 # 用法：
@@ -84,6 +91,42 @@ fi
 # ---- Playwright chromium cache override（self-test 可 override） ----
 PW_CACHE_DIR="${AEGIS_ENV_PROBE_PLAYWRIGHT_CACHE:-${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}}"
 
+# ---- frontend_dir：从 harness-project-config.yaml 读；缺则 fallback 'console-web' ----
+# 不 source read_harness_config.sh — 那个 helper 把 REPO_ROOT 绑定到自己的脚本路径，
+# 与本脚本通过 AEGIS_ENV_PROBE_REPO 控制 REPO_ROOT 的语义冲突。本地 inline 解析。
+FRONTEND_DIR="console-web"
+_HARNESS_CONFIG="${REPO_ROOT}/.claude/harness/harness-project-config.yaml"
+if [ -f "$_HARNESS_CONFIG" ]; then
+    # 顶层 scalar 优先
+    _fd_val="$(grep -E "^frontend_dir:[[:space:]]" "$_HARNESS_CONFIG" 2>/dev/null \
+              | head -1 \
+              | sed -E "s/^frontend_dir:[[:space:]]+//")"
+    # 退到 extra: 二级 scalar
+    if [ -z "$_fd_val" ]; then
+        _fd_val="$(awk '
+            /^extra:/ { in_extra=1; next }
+            in_extra && /^[^[:space:]#]/ { in_extra=0 }
+            in_extra && /^[[:space:]]+frontend_dir:[[:space:]]/ {
+                sub(/^[[:space:]]+frontend_dir:[[:space:]]+/, "")
+                # 同时去掉行尾 inline comment（`# foo` 段）
+                sub(/[[:space:]]+#.*$/, "")
+                print
+                exit
+            }
+        ' "$_HARNESS_CONFIG" 2>/dev/null)"
+    fi
+    if [ -n "$_fd_val" ]; then
+        # 去外层引号 + 尾随空白
+        _fd_val="${_fd_val#\'}"; _fd_val="${_fd_val%\'}"
+        _fd_val="${_fd_val#\"}"; _fd_val="${_fd_val%\"}"
+        _fd_val="${_fd_val%"${_fd_val##*[![:space:]]}"}"
+        # 空字符串（template 默认 '' 或被清空）→ 保 fallback 'console-web'
+        if [ -n "$_fd_val" ]; then
+            FRONTEND_DIR="$_fd_val"
+        fi
+    fi
+fi
+
 # ---- FORCE_SANDBOX env override ----
 REASON_DETAIL=""
 if [ "${FORCE_SANDBOX:-0}" = "1" ]; then
@@ -119,8 +162,8 @@ else
         NODE_RC=1
     fi
 
-    # framework_installed: console-web/node_modules/@playwright/test 目录存在
-    if [ -d "${REPO_ROOT}/console-web/node_modules/@playwright/test" ]; then
+    # framework_installed: ${FRONTEND_DIR}/node_modules/@playwright/test 目录存在
+    if [ -d "${REPO_ROOT}/${FRONTEND_DIR}/node_modules/@playwright/test" ]; then
         FRAMEWORK_RC=0
         PLAYWRIGHT_RC=0   # legacy field — kept for backward compat
     else
@@ -140,7 +183,7 @@ else
     # version_check: pnpm exec playwright --version 在 5s 内退 0 + 输出含 "Version" 或数字
     VERSION_RC=1
     if [ "$FRAMEWORK_RC" = "0" ] && [ "$PNPM_RC" = "0" ]; then
-        PW_OUT="$(run_with_timeout 5 pnpm -C "${REPO_ROOT}/console-web" exec playwright --version 2>/dev/null || true)"
+        PW_OUT="$(run_with_timeout 5 pnpm -C "${REPO_ROOT}/${FRONTEND_DIR}" exec playwright --version 2>/dev/null || true)"
         # Playwright --version 输出形如 "Version 1.50.0" 或 "1.50.0"
         if echo "$PW_OUT" | grep -Eq '[0-9]+\.[0-9]+\.[0-9]+'; then
             VERSION_RC=0
@@ -179,7 +222,7 @@ else
 fi
 
 # 紧凑 JSON 单行
-printf '{"docker": %s, "pnpm": %s, "node": %s, "playwright": %s, "framework_installed": %s, "chromium_installed": %s, "runtime_ready": %s, "all_available": %s, "reason": "%s"}\n' \
+printf '{"docker": %s, "pnpm": %s, "node": %s, "playwright": %s, "framework_installed": %s, "chromium_installed": %s, "runtime_ready": %s, "all_available": %s, "frontend_dir": "%s", "reason": "%s"}\n' \
     "$(bool $DOCKER_RC)" \
     "$(bool $PNPM_RC)" \
     "$(bool $NODE_RC)" \
@@ -188,6 +231,7 @@ printf '{"docker": %s, "pnpm": %s, "node": %s, "playwright": %s, "framework_inst
     "$(bool $CHROMIUM_RC)" \
     "$(bool $RUNTIME_RC)" \
     "$(bool $ALL_RC)" \
+    "$FRONTEND_DIR" \
     "$FINAL_REASON"
 
 exit 0

@@ -136,6 +136,94 @@ assert_field "F4-3" "$OUT" "runtime_ready"       "false"
 assert_field "F4-3" "$OUT" "all_available"       "false"
 
 # ============================================================================
+# F4-4: harness-project-config.yaml 含 extra.frontend_dir='web' →
+#       探针应查 web/node_modules/@playwright/test，而非硬编码 console-web/
+#       （0.1.18 修 0.1.17 之前的硬编码 bug — solo-dev 项目 frontend_dir 非
+#        console-web 时全部 story 被静默 sandbox-skip）
+# ============================================================================
+echo "F4-4: 自定义 frontend_dir='web' via config（修 console-web 硬编码 bug）"
+F4_REPO="$WORKDIR/repo-customdir"
+mkdir -p "$F4_REPO/.claude/harness"
+mkdir -p "$F4_REPO/web/node_modules/@playwright/test"
+# 不在 console-web 创建任何东西 — 验证探针真的去 'web' 而非默认
+cat > "$F4_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+project_display_name: 'Test Project'
+container_orchestrator: 'docker-compose'
+
+extra:
+  frontend_dir: 'web'               # 项目自报前端目录（非 console-web）
+  e2e_test_subdir: 'tests/e2e'
+YAML
+F4_PW_CACHE="$WORKDIR/pw-cache-customdir"
+mkdir -p "$F4_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F4_REPO" "$F4_PW_CACHE")"
+assert_field "F4-4" "$OUT" "framework_installed" "true"
+assert_field "F4-4" "$OUT" "chromium_installed"  "true"
+assert_field "F4-4" "$OUT" "runtime_ready"       "true"
+assert_field "F4-4" "$OUT" "all_available"       "true"
+# 新字段 frontend_dir 必须 == "web"（透明显示探测目录）
+if echo "$OUT" | python3 -c "import sys,json; sys.exit(0 if json.load(sys.stdin).get('frontend_dir') == 'web' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-4.frontend_dir=web (从 config extra: 解析)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-4.frontend_dir 应为 'web' — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
+# F4-5: config 顶层 frontend_dir 优先（不在 extra: 下也能读出来）
+# ============================================================================
+echo "F4-5: 顶层 frontend_dir='frontend' via config（顶层 scalar 路径）"
+F5_REPO="$WORKDIR/repo-toplevel-fd"
+mkdir -p "$F5_REPO/.claude/harness"
+mkdir -p "$F5_REPO/frontend/node_modules/@playwright/test"
+cat > "$F5_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+project_display_name: 'Top Level FD Test'
+frontend_dir: 'frontend'
+YAML
+F5_PW_CACHE="$WORKDIR/pw-cache-toplevel"
+mkdir -p "$F5_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F5_REPO" "$F5_PW_CACHE")"
+assert_field "F4-5" "$OUT" "framework_installed" "true"
+assert_field "F4-5" "$OUT" "runtime_ready"       "true"
+if echo "$OUT" | python3 -c "import sys,json; sys.exit(0 if json.load(sys.stdin).get('frontend_dir') == 'frontend' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-5.frontend_dir=frontend (从 config 顶层 scalar 解析)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-5.frontend_dir 应为 'frontend' — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
+# F4-6: config 文件存在但 frontend_dir 为空字符串 → 保 fallback 'console-web'
+#       （template 默认 `frontend_dir: ''` 场景）
+# ============================================================================
+echo "F4-6: config 有但 frontend_dir='' → fallback 到 console-web"
+F6_REPO="$WORKDIR/repo-empty-fd"
+mkdir -p "$F6_REPO/.claude/harness"
+mkdir -p "$F6_REPO/console-web/node_modules/@playwright/test"
+cat > "$F6_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+project_display_name: 'Empty FD Test'
+
+extra:
+  frontend_dir: ''                  # template 默认 — 未填
+YAML
+F6_PW_CACHE="$WORKDIR/pw-cache-empty-fd"
+mkdir -p "$F6_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F6_REPO" "$F6_PW_CACHE")"
+assert_field "F4-6" "$OUT" "framework_installed" "true"   # console-web 找得到
+if echo "$OUT" | python3 -c "import sys,json; sys.exit(0 if json.load(sys.stdin).get('frontend_dir') == 'console-web' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-6.frontend_dir=console-web (空字符串 fallback)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-6.frontend_dir 应 fallback 'console-web' — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
 echo "============================================================================"
 echo "PASS=$PASS FAIL=$FAIL"
 exit $FAIL

@@ -811,6 +811,66 @@ stdout 报告（按下表结构）：
 提示：去掉 --dry-run 跑可写入 will-write 字段；加 --force 可覆盖 will-overwrite 字段（需二次确认）
 ```
 
+### 6.5 测试运行时探测（advisory — 不阻 init）
+
+写入字段后跑一次环境探测，让 solo-dev 在 init 当下就知道 e2e 测试能不能实跑（避免 `/harness-zh:run-test` 静默走 sandbox graceful skip 路径，几条 story 跑下来才发现 test_status 全 skip）。
+
+**触发条件**：`--dry-run` 模式 → **跳过本节**（避免在不写文件的 dry-run 路径里执行环境侧效应）。
+
+**步骤**：
+
+1. 跑探测：
+
+   ```bash
+   bash .claude/harness/scripts/check_test_harness_env.sh
+   ```
+
+2. 解析 stdout JSON：`runtime_ready` / `framework_installed` / `chromium_installed` / `frontend_dir` / `reason`。
+
+3. 按结果分支：
+
+   **(a) `runtime_ready=true`** → emit 一行：
+
+   ```
+   【测试运行时】✓ ready（探测目录：${frontend_dir}）— /harness-zh:run-test 可实跑 e2e
+   ```
+
+   **(b) `runtime_ready=false`** + `frontend_dir` 非空且能找到 → emit WARN 多行（按缺失维度 tailored）：
+
+   ```
+   【测试运行时】⚠️ 未就绪 — /harness-zh:run-test 会走 sandbox graceful skip
+                                 直到补齐（test_status 全 skip 的根因）
+     探测目录：${frontend_dir}
+     缺失维度：${reason 内 missing 列表，逐条人话化}
+       - framework 缺          → 前端依赖未装
+       - chromium 缺           → Playwright 浏览器二进制未装
+       - version_check 缺      → @playwright/test 包损坏 / 与 playwright.config.ts 不兼容
+
+     修复（在仓库根跑）：
+       cd ${frontend_dir}
+       pnpm install                                     # framework 缺时
+       pnpm exec playwright install --with-deps chromium  # chromium 缺时
+       pnpm exec playwright --version                   # 验证 version_check
+
+     修复完跑探测确认：
+       bash .claude/harness/scripts/check_test_harness_env.sh
+       # 期望 "runtime_ready": true
+   ```
+
+   **(c) `frontend_dir` 字段为空字符串 / 等于 fallback 'console-web' 但 'console-web' 也不存在** → emit hint：
+
+   ```
+   【测试运行时】⏸ 探测跳过 — extra.frontend_dir 未填 / 项目无前端目录
+     如本项目无前端 e2e 测试需求，可忽略本提示（atdd / e2e stage 会按
+     sandbox graceful skip 处理）。
+     如有前端需求，先把 .claude/harness/harness-project-config.yaml 的
+     extra.frontend_dir 填好（如 'web' / 'frontend' / 'console-web'），
+     然后单独跑：
+       bash .claude/harness/scripts/check_test_harness_env.sh
+   ```
+
+**为什么不 halt**：init 的核心承诺是"asset 投递 + yaml 字段提取"，测试运行时是 solo-dev 自己机器侧的事；探测失败应作为"第一时间被告知"的 advisory，不阻断 init 流程。solo-dev 看到 WARN 后自决何时装 playwright（CI 环境 / 上 docker / 真机器都有不同节奏）。
+
 完成后把 TaskCreate 任务标 `completed`，退出码 0。
 
 ---
