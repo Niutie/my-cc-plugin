@@ -63,6 +63,10 @@ shopt -s nullglob
 for src in "$SOURCE_DIR"/*; do
     [ -f "$src" ] || continue
     name="$(basename "$src")"
+    # skip backup / editor temp files (update 投递可能在 source 里留 .bak.<ts>)
+    case "$name" in
+        *.bak.*|*.backup|*.orig|*~) continue ;;
+    esac
     dst="$HOOKS_DIR/$name"
 
     if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
