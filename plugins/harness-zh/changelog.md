@@ -11,6 +11,51 @@
 
 ---
 
+## v0.1.14 — 2026-05-07 — retro action items category:harness 与 sprint-status 解耦 → upstream-feedback.md
+
+### 触发
+
+epic retro 产出的 action items 已经按 `category` 字段分流（`dev` / `harness`），`check_retro_action_items.sh` (pre-commit gate ①) 也按 category 做行为分流（dev 阻 commit，harness 仅 WARN）。但**物理位置**还都在 `_bmad-output/implementation-artifacts/sprint-status.yaml.retro_action_items`。从 plugin 用户视角：
+
+- sprint-status.yaml 是**项目侧 artifact**（用户的项目 git 历史里），里面躺着 plugin 维护方的债（`category: harness` 那些）
+- 用户感觉项目背着 plugin 自己的待办，污染 retro 视图
+- harness 类条目对项目用户没有 actionable 意义（用户不可能也不该改 plugin 源码），但 `check_retro_action_items.sh` 还会反复 WARN 提示它们 pending
+
+需要把 harness 类彻底搬出 sprint-status，落到一个独立的、专给 plugin 用户用来汇总后提 GitHub issue 的文件。
+
+### 修
+
+**新增 `templates/upstream-feedback.md.template`** — markdown 文件，header 含用户工作流（review → 复制提 issue → 翻 status 留 audit）+ schema 说明（每条目格式 + 5-值 status enum）。
+
+**新增 `scripts/detect_harness_residue.sh`** — bash + python3 内联，扫 sprint-status.yaml.retro_action_items 块，找未迁移（即 status != `migrated-upstream`）的 `category: harness` 条目。stdout 单行 JSON `{count, items[]}`，含每条的 epic / code / status / inline comment（description）/ chore_spec。exit 0 健康 / 2 sprint-status 缺 / 3 retro 块缺。
+
+**新增 `scripts/extract_harness_feedback.sh`** — 迁移工具，`--dry-run`（默认）print 预览，`--apply`：
+1. bootstrap upstream-feedback.md（不存在时从 plugin templates/ 投放，fallback 内嵌 minimal header）
+2. 备份 sprint-status.yaml → `.bak.<timestamp>`
+3. 把 harness 条目按 epic 分组追加到 upstream-feedback.md
+4. python state-machine 重写 sprint-status.yaml：把被迁条目的 `<CODE>: <status>` 行的 status 翻 `migrated-upstream`（**不**删行，保留 audit；用户可手工清掉 commented block）
+
+**`scripts/check_retro_action_items.sh` enum 扩展** — `migrated-upstream` 加入合法 status enum；不再触发 unknown-status WARN。
+
+**`prompt-suffixes/bmad-retrospective-suffix.md` 新增 §"retro action items 写入分流"** — 强制 retro skill 区分 `category: dev`（写 sprint-status，行为同前）vs `category: harness`（**禁止**写 sprint-status，**改写** upstream-feedback.md）。包含写入 schema、文件 bootstrap 路径、历史数据兼容指引。
+
+**`commands/init.md` 扩展 §A.3.d** — sprint-status.yaml 存在时跑 detect_harness_residue.sh，按 count 分支：
+- `count = 0` 或 sprint-status 缺 / retro 块缺 → silent / skip
+- `count > 0` → emit 现状 + dry-run 预览 + AskUserQuestion 二选一：
+  - **A) Migrate 现在**（推荐）— 跑 `extract_harness_feedback.sh --apply`
+  - **B) 跳过** — 提示后续手工跑
+
+§A.6 部署统计新增 `harness-residue: $HR_RESULT` 行。
+
+### 后续注意事项
+
+- 迁移行为是**保留式**（status 翻 `migrated-upstream`，不删行）。用户如果想完全清理 sprint-status，需手工删除 `migrated-upstream` 状态的整段（每段 4 行：CODE: status / category / chore_spec / 空行间隔）。后续可补一个 `--purge` 模式但目前不做（保留 = 安全）。
+- 没改 `sprint-status.py` 渲染逻辑 — 不知道它是否会显式列 `migrated-upstream` 状态条目；如发现噪音再补 filter。
+- 项目侧的"未迁残余"WARN 路径：`check_retro_action_items.sh` 看到 pending+harness 时仍 WARN（提示"快跑 extract"）；solo-dev 选择 init §A.3.d 跳过的话每次 commit 都会看到这条 WARN，是预期行为（提醒未完事）。
+- 提 issue 路径目前是手工（用户 review upstream-feedback.md 后复制粘贴）。后续可补一个 `/harness-zh:export-feedback` 命令一键打包成可提 issue 的 markdown 段，但 MVP 不做。
+
+---
+
 ## v0.1.13 — 2026-05-07 — 半路接入项目时 deferred-work.md schema 检测 + 三档迁移
 
 ### 触发

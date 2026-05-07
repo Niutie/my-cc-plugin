@@ -69,7 +69,8 @@ result="$(awk '
           && current_status != "in-progress" \
           && current_status != "partial" \
           && current_status != "deferred" \
-          && current_status != "done") {
+          && current_status != "done" \
+          && current_status != "migrated-upstream") {
         printf "UNKNOWN_STATUS  %s / %s / %s\n", current_epic, current_code, current_status
         unknown_status++
       } else if (current_status == "pending" || current_status == "in-progress") {
@@ -143,7 +144,7 @@ fi
 
 # E3: warn on unknown status — 不阻断，仅提示拼写错
 if [ "$unknown_status" -gt 0 ]; then
-    echo "WARN: $unknown_status action item(s) have unrecognized status (not in {pending|in-progress|partial|deferred|done}):" >&2
+    echo "WARN: $unknown_status action item(s) have unrecognized status (not in {pending|in-progress|partial|deferred|done|migrated-upstream}):" >&2
     printf '%s\n' "$result" | grep '^UNKNOWN_STATUS  ' | sed 's/^UNKNOWN_STATUS  /  /' >&2
     echo "      Fix the typo / case in sprint-status.yaml; gate currently treats unknown status as non-blocking." >&2
 fi

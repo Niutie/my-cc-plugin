@@ -1,0 +1,34 @@
+# Harness/Plugin Upstream Feedback
+
+> 给 **harness-zh** plugin 维护方的改进建议汇总。本文件由 retro skill 在 epic
+> retrospective 时 inject 写入：`category: harness` 类条目分流到这里，**不**进
+> `sprint-status.yaml.retro_action_items`（那块只装 `category: dev` 类项目自身的债）。
+>
+> 用户工作流：
+> 1. 每次 epic retro 完成后 review 本文件新增条目
+> 2. 必要时合并 / 补充上下文 / 删除噪音
+> 3. 准备好 → 复制粘贴到 https://github.com/Niutie/my-cc-plugin/issues 提交
+>    （一条一 issue 或合批；建议附 retro doc 链接 + 项目背景）
+> 4. issue 提了之后把条目 status 翻 `submitted`，附 issue 链接到 `关联` 子段
+>
+> Schema（每条目）：
+>
+> ```markdown
+> - **<CODE>** `[status:pending]` — <一句话描述>
+>   - 上下文：<rationale 摘要；retro 文档原始 evidence>
+>   - 关联：<可选；issue link / commit hash / 相关 FU 编号>
+>   - 历史：<可选；status 翻动 audit log>
+> ```
+>
+> Status 枚举（5 值，宽松）：
+> - `pending` — 默认；retro agent / 迁移工具新增时设
+> - `submitted` — 已提 GitHub issue
+> - `accepted` — 作者 triage 后表示采纳
+> - `wontfix` — 作者拒绝（写明理由到 历史 子段）
+> - `done` — plugin 已 ship 修复
+
+---
+
+（暂无条目 — 第一条由 retro skill 在 `category: harness` 项产生时写入；
+或由 `bash .claude/harness/scripts/extract_harness_feedback.sh --apply` 从历史
+sprint-status.yaml.retro_action_items 迁入。）

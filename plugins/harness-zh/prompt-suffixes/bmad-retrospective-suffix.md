@@ -49,6 +49,50 @@ solo-dev 在 paste 后必须为每行：
 
 ---
 
+## retro action items 写入分流（category: dev → sprint-status；harness → upstream-feedback.md）
+
+retro 阶段产出 action items 时**必须**按 `category` 字段分流到不同文件：
+
+### category: dev — 项目自身改动
+
+写入 `_bmad-output/implementation-artifacts/sprint-status.yaml.retro_action_items.epic-N-retro` 块：
+
+```yaml
+retro_action_items:
+  epic-N-retro:
+    <CODE>: <status>          # 一句话描述（inline comment）
+      category: dev
+      chore_spec: '<filename>'   # optional
+```
+
+行为同前：`pending` / `in-progress` 项被 pre-commit gate ① 阻 epic spec 创建。
+
+### category: harness — plugin 维护方的债（不进 sprint-status）
+
+**禁止**写入 sprint-status.yaml.retro_action_items；**改写**到 `.claude/harness/upstream-feedback.md`：
+
+```markdown
+## From: epic-N-retro (YYYY-MM-DD)
+
+- **<CODE>** `[status:pending]` — <一句话描述>
+  - 上下文：<rationale 摘要；retro 文档 evidence>
+  - 关联：plugin repo chore-spec 建议 `<filename>`（可选；指 plugin 仓库内的 chore spec 名）
+```
+
+**为什么分流**：plugin 用户视角下 `category: harness` 是上游 plugin 维护方的改进建议（非项目本身的债）。混在 sprint-status.yaml 里会让用户感觉项目背着 plugin 的债，污染项目 artifact。upstream-feedback.md 让用户事后复制粘贴提交到 plugin GitHub issue（https://github.com/Niutie/my-cc-plugin/issues）。
+
+**文件不存在时**：retro agent 在写第一条 harness 类条目时调 `bash .claude/harness/scripts/extract_harness_feedback.sh --apply`（即使 sprint-status 内 0 条 harness 条目也会触发 bootstrap 路径）；或由 `/harness-zh:init` §A.3.d 的迁移流程提前 bootstrap。
+
+**历史数据**：旧 retro 产出的 `category: harness` 条目可能仍躺在 sprint-status.yaml.retro_action_items；solo-dev 跑 `/harness-zh:init` 时会被检测到并提示迁移，或事后手工跑 `bash .claude/harness/scripts/extract_harness_feedback.sh --apply`。
+
+### check_retro_action_items.sh 分流契约（参考）
+
+- `category: dev` + status pending/in-progress → 阻 commit
+- `category: harness` + status pending/in-progress → stderr WARN（**不应**还存在 — 应已迁；WARN 即提示"快跑 extract_harness_feedback.sh"）
+- status `migrated-upstream` → 视同 done（已迁出 sprint-status；不阻、不 WARN）
+
+---
+
 ## deferred-work schema v1 写入约束
 
 retro skill 在做 superseded / 大群合并 / status 翻动时**必须**按 schema v1
