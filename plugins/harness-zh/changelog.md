@@ -64,9 +64,9 @@ CJK 路径 stage 1 实跑（在 HaiAn MCTS 项目 hotfix 版上验证过）：co
 
 ### 注意
 
-- HaiAn MCTS 项目侧 `.claude/harness/scripts/harness-commit.py` 之前手工 hotfix 过同样两点（`.claude/` gitignore，未进 git 历史）。本次 plugin 升级后 `/harness-zh:update` 会备份成 `.bak.<TS>` 再覆盖。覆盖前 `diff` 一下确认 plugin 新版的 `run()` helper 行为覆盖你 hotfix 语义（应该一致 + 多了集中化 + harness-state.py 也修了），再清 .bak。
 - 这是 v0.1.11 i18n 修复的续集——sprint-status 解 CJK key 后，下游 git path I/O 是第二层雷。已审计 plugin 内全部 `subprocess.run(["git", ...])` 调用（harness-commit.py / harness-state.py 各一处 helper 集中托底；harness_config.py、sprint-status.py 等其他脚本不直接 shell out 到 git，无关）。短期内应该排完了。
 - `git-hooks/pre-commit` 的 `GIT="git -c ..."` 是 bash 字符串展开模式，不是 array — 当前所有调用都是裸的 `$GIT diff ...` 形式，无 quoting 边界问题；如未来加更复杂 hook gate 用到含空格参数，记得切 array `GIT=(git -c core.quotepath=false)` + `"${GIT[@]}"`。
+- 升级后请检查项目侧 `.claude/harness/scripts/` 是否有手工 hotfix（`.claude/` 通常 gitignored）；`/harness-zh:update` 会备份成 `.bak.<TS>` 再覆盖，diff 确认 plugin 新版语义覆盖了 hotfix 之后再清 .bak。
 
 Bump 0.1.11 → 0.1.12。
 
