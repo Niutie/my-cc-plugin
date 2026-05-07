@@ -11,6 +11,41 @@
 
 ---
 
+## v0.1.13 — 2026-05-07 — 半路接入项目时 deferred-work.md schema 检测 + 三档迁移
+
+### 触发
+
+`/harness-zh:init` 假定 deferred-work.md 要么不存在（bootstrap 空模板）、要么 100% schema v1 conformant。半路接入既有项目（项目里已有大段 legacy deferred-work.md — 无 4-tag 头 / 含 inline `Resolved by Story X.Y` 后缀 / 含 `FU-RETRO-*` 命名空间）时这两个假设都不成立。具体伤害：
+
+- pre-commit gate ② 只扫新增行，历史 legacy 条目本身**不**阻 commit — 但 dev / review / spec-author agent 在 deferred-work.md 上下文里 mimic 周围 legacy 格式写新条目时会被 gate 拒
+- `grep_deferred_buckets.sh` / `grep_deferred_status.sh` / `grep_pending_deferred_for_story.sh` 三脚本只识 v1 4-tag 行，对 legacy 条目盲；§1 总账数据失真；dev agent 漏 cross-story trigger surface
+
+不能强制要求半路接入用户先还历史债（违背"装插件就能用"的接入意图），也不能默默忽略（数据失真会复利累积）。
+
+### 修
+
+**新增 `scripts/detect_deferred_work_schema.sh`** — bash 入口 + python3 内联，扫 deferred-work.md 算四类计数（FU 总数 / v1 4-tag 已标 / legacy 4-tag 缺失 / legacy inline 后缀 / FU-RETRO-* 命名空间）+ v1_pct，分类成 4 档：`pristine`（无 FU）/ `v1_clean`（≥95% v1）/ `mixed`（部分 v1）/ `legacy`（0% v1）。stdout 单行 JSON，exit 0 健康路径 / 2 文件缺失。
+
+**`templates/harness-project-config.yaml.template` 新增字段** — 顶层 `deferred_work_mode: 'strict'`（默认）；可切 `'advisory'` 表示与历史 legacy 条目共存，§1 总账按 v1-tagged 子集口径解读。pre-commit gate ② 行为不受 mode 影响（永远只校验新增行）。
+
+**`commands/init.md` 扩展 §A.3.c** — 仅当 `DW_BOOTSTRAPPED=0`（文件 pre-existed）时进，跑 detector，按 classification 分支：
+- `pristine` / `v1_clean` → silent OK，不询问
+- `mixed` / `legacy` → emit 现状报告 + AskUserQuestion 三选一：
+  - **A) Advisory 共存**（推荐）— 历史不动，sed yaml 设 `deferred_work_mode: 'advisory'`
+  - **B) Archive + greenfield** — `mv deferred-work.md deferred-work.legacy-pre-schema-v1.md`，从 plugin 模板重新 bootstrap；mode 保持 strict
+  - **C) Backfill 手工指南** — 不改文件，emit schema §5 backfill 路径；solo-dev 自己用 LLM 单批改写后重测
+- `§A.6` 部署统计新增 `deferred_work_mode: ${DW_MODE_RESULT}` 行
+
+**新增 `commands/upgrade-deferred-work.md`** — 事后入口，跑同款 detector + 三档交互。供 solo-dev 在 init 时选 advisory、后来想切回 strict、或事后手工 backfill 完想复测的场景；对 `pristine` / `v1_clean` + `mode=advisory` 自动提示切回 strict（mode 漂回路径）。
+
+### 后续注意事项
+
+- 本 commit **未**实现机器自动 Pass 1 backfill（schema §5 描述的 ~80% regex 抽取转换）。Backfill 仍是手工 LLM 单批 + 人工 Pass 2 兜底路径。后续 v0.2+ 可补一个 `scripts/backfill_deferred_pass1.py` 把 schema §5 Pass 1 逻辑落地，`/harness-zh:upgrade-deferred-work` 选项 C 升级为半自动。
+- `grep_deferred_buckets.sh` / `grep_deferred_status.sh` / `grep_pending_deferred_for_story.sh` 当前**不**感知 mode；跑 advisory 模式时三脚本仍按 v1 子集输出，无 WARN 提示"还有 K 条 legacy 条目未计入"。这是 known gap；solo-dev 自己在脑里把"§1 总账"理解为子集就够，正式补 WARN 是 v0.2+ 的小品改。
+- detector 的 `v1_pct >= 0.95` 阈值是经验值（容忍 5% 单条遗漏），如发现真实项目里 1-2 条 typo 反复触发交互可调到 0.9。
+
+---
+
 ## v0.1.12 — 2026-05-07 — harness-commit.py / harness-state.py CJK 路径 quotepath + utf-8 decode-safe（i18n 续修）
 
 ### 触发

@@ -25,6 +25,14 @@ e2e_framework: ''                # Playwright / Cypress / WebdriverIO / Selenium
 # Artifact 输出根目录（init §3.1 派生；默认 '_bmad-output/implementation-artifacts'）
 artifacts_root: ''
 
+# deferred-work.md 工具链模式（init §A.3.c 半路接入项目时由 solo-dev 选择）
+#   strict   — 默认；§1 总账 + grep 工具假定 deferred-work.md 100% schema v1
+#   advisory — 半路接入 + 历史 legacy 条目共存模式；grep 工具仍按 v1 tag 工作，
+#              但 §1 总账数据被视为"v1-tagged 子集"而非全量。pre-commit gate ②
+#              不论 mode 都只校验新增行（mode 不影响 gate 行为）。
+# 切换路径：编辑本字段，或跑 /harness-zh:upgrade-deferred-work 走交互升级流程。
+deferred_work_mode: 'strict'
+
 # ============================================================================
 # extra — 项目特定扩展字段（任何 harness 文档 / 评估脚本可引用 ${key}）
 # ============================================================================
