@@ -876,13 +876,39 @@ def _find_latest_retro_md(epic):
 
 
 def _parse_retro_action_items(retro_md_path, letter):
-    """Grep retro markdown for `^### {letter}[A-Za-z0-9-]*` action items.
+    """Parse retro markdown action items from §"Action items" section.
 
-    Confined to the section whose `## ` heading contains "action item" (case
-    insensitive); falls through if no such section is found (then accepts
-    items anywhere in the file). Returns list of (code, title) tuples.
+    Three accepted forms (canonical = Form 1; Forms 2/3 are backward-compat
+    fallbacks for retro markdown not following the canonical contract — see
+    `prompt-suffixes/bmad-retrospective-suffix.md` §"Action items markdown
+    格式契约" for the declared schema):
 
-    Raises RuntimeError on file IO failure.
+      Form 1 — H3 heading (canonical):
+        `### {letter}{N} — title`        e.g. `### A1 — 流程改进 X`
+        `### {letter}-<kebab> — title`   e.g. `### A-route-authz — 重构鉴权`
+
+      Form 2 — markdown table row (BMad 中文化衍生兜底):
+        `| AI-{S}.{I} | <title> | ... |`
+        Normalized to code `{letter}-{S}-{I}` (epic 1 / AI-2.3 → A-2-3).
+        Emits stderr WARN to push migration to canonical form.
+
+      Form 3 — bold inline bullet (§"自我约束"-style 兜底):
+        `**{letter}{N}** title`
+        `**{letter}1/{letter}2/{letter}3** shared-title`
+        Emits stderr WARN.
+
+    Form 1 wins; Forms 2/3 only consulted when Form 1 yields 0 items.
+
+    Section detection: any `## ` heading whose title contains the substring
+    "action item" (case-insensitive) or "行动项". When the section IS found
+    but **all 3 forms yield 0 items**, raises RuntimeError (fail-loud at
+    stage 6 — schema drift detection; previously this silently returned []
+    and only surfaced as an unrelated stage ⑥.5 block-missing error). When
+    no Action Items section is found at all, returns [] peacefully (legit
+    minimal retro).
+
+    Returns list of (code, title) tuples. Raises RuntimeError on file IO
+    failure or schema drift.
     """
     try:
         with open(retro_md_path, "r", encoding="utf-8") as f:
@@ -891,29 +917,95 @@ def _parse_retro_action_items(retro_md_path, letter):
         raise RuntimeError(f"could not read retro md {retro_md_path}: {e}")
 
     # Find Action Items section: any `## ` heading containing "action item"
+    # (English) or "行动项" (Chinese).
     section_re = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
-    section_starts = [(m.start(), m.group(1).lower()) for m in section_re.finditer(text)]
+    section_starts = [(m.start(), m.group(1)) for m in section_re.finditer(text)]
 
     section_text = text  # default: scan whole file
+    section_found = False
     for i, (pos, title) in enumerate(section_starts):
-        if "action item" in title:
+        if "action item" in title.lower() or "行动项" in title:
             end = section_starts[i + 1][0] if i + 1 < len(section_starts) else len(text)
             section_text = text[pos:end]
+            section_found = True
             break
 
-    item_re = re.compile(
+    items = []
+
+    # Form 1 — H3 heading (canonical)
+    h3_re = re.compile(
         rf"^###\s+({re.escape(letter)}[A-Za-z0-9-]*)\b\s*(?:[—–-]\s*(.+?))?\s*$",
         re.MULTILINE,
     )
-    items = []
-    for m in item_re.finditer(section_text):
+    for m in h3_re.finditer(section_text):
         code = m.group(1)
-        # Filter to bare-letter code (D + digits / D-named): ensure it's a
-        # plausible action-item code (matches `D[0-9]+` or `D-[a-z][a-z0-9-]+`).
+        # Filter: must be `<letter><digits>` or `<letter>-<lowercase-kebab>` to
+        # exclude false positives like `### A — Action items overview`.
         if re.fullmatch(rf"{re.escape(letter)}\d+", code) or \
            re.fullmatch(rf"{re.escape(letter)}-[a-z][a-zA-Z0-9-]+", code):
             items.append((code, (m.group(2) or "").strip()))
-    return items
+
+    if items:
+        return items
+
+    # Form 2 fallback — markdown table row `| AI-N.M | title | ... |`
+    # (the table separator row `| --- | --- |` won't match because col 1
+    # would be "---" not "AI-N.M").
+    table_re = re.compile(
+        r"^\|\s*AI-(\d+)\.(\d+)\s*\|\s*([^|]+?)\s*\|",
+        re.MULTILINE,
+    )
+    for m in table_re.finditer(section_text):
+        sec, idx = m.group(1), m.group(2)
+        title = m.group(3).strip()
+        items.append((f"{letter}-{sec}-{idx}", title))
+
+    if items:
+        print(
+            f"WARN: _parse_retro_action_items used Form 2 (markdown table "
+            f"`| AI-N.M |`) fallback for {retro_md_path}; canonical form is "
+            f"`### {letter}1 — title`. Codes normalized to `{letter}-N-M`. "
+            f"See prompt-suffixes/bmad-retrospective-suffix.md "
+            f"§'Action items markdown 格式契约'.",
+            file=sys.stderr,
+        )
+        return items
+
+    # Form 3 fallback — bold inline `**A1** title` / `**A1/A2/A3** shared-title`
+    bold_re = re.compile(
+        rf"\*\*({re.escape(letter)}\d+(?:/{re.escape(letter)}\d+)*)\*\*\s*([^\n*]+)",
+    )
+    for m in bold_re.finditer(section_text):
+        code_span = m.group(1)
+        title = m.group(2).strip()
+        for code in code_span.split("/"):
+            items.append((code.strip(), title))
+
+    if items:
+        print(
+            f"WARN: _parse_retro_action_items used Form 3 (bold inline "
+            f"`**{letter}N**`) fallback for {retro_md_path}; canonical form is "
+            f"`### {letter}1 — title`. See prompt-suffixes/"
+            f"bmad-retrospective-suffix.md §'Action items markdown 格式契约'.",
+            file=sys.stderr,
+        )
+        return items
+
+    # All 3 forms yielded 0. If a §"Action items" section was found, that's
+    # schema drift — fail loud at stage 6 (vs silently deferring to ⑥.5).
+    if section_found:
+        raise RuntimeError(
+            f"retro markdown has Action Items section but parser found 0 items "
+            f"matching any of 3 forms: "
+            f"(1) H3 `### {letter}N — title`, "
+            f"(2) markdown table `| AI-N.M | title |`, "
+            f"(3) bold inline `**{letter}N** title`. "
+            f"Schema drift — see prompt-suffixes/bmad-retrospective-suffix.md "
+            f"§'Action items markdown 格式契约' for canonical format. "
+            f"Path: {retro_md_path}"
+        )
+
+    return []
 
 
 def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
@@ -931,11 +1023,19 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
     """
     letter = _epic_letter(epic)
     if letter is None:
-        return []
+        # P2 fail-loud: previously silent return-empty. _epic_letter only maps
+        # 1..26; epic 27+ or non-integer epics now halt explicitly so the
+        # mismatch surfaces at stage 6 commit (not as a downstream ⑥.5 block-
+        # missing error).
+        raise RuntimeError(
+            f"_epic_letter returned None for epic={epic!r} — only integer "
+            f"epics 1..26 are supported. sprint-status.yaml retro_action_items "
+            f"cannot be seeded for this epic."
+        )
 
     items = _parse_retro_action_items(retro_md_path, letter)
     if not items:
-        return []
+        return []  # legit empty (no Action Items section in retro md)
 
     if not os.path.exists(sprint_status_path):
         raise RuntimeError(f"sprint-status.yaml not found: {sprint_status_path}")

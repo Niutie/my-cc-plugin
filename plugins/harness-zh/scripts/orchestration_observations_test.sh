@@ -9,6 +9,10 @@
 #     T1.f3  stage 6 seed with 5 D items (idempotent re-run = no change)
 #     T1.f4  stage 6 seed when block exists with 2 D items, retro md has 5 → seeds D3..D5 only
 #     T1.f5  stage 6-5 fill chore_spec for matching files
+#     T1.f6  P0 fail-loud: section found + 0 items (no H3/table/bold) → RuntimeError
+#     T1.f7  P1 Form 2 fallback: markdown table `| AI-N.M |` → code `<letter>-N-M` + WARN
+#     T1.f8  P1 Form 3 fallback: bold inline `**A1**` / `**A1/A2/A3**` shared title + WARN
+#     T1.f9  P2 fail-loud: epic > 26 (letter=None) → RuntimeError
 #
 #   T2 — stage 5.5 commit message suffix unification
 #     T2.f1  T4 STAGES commit_msg含 "(run-sprint stage 5.5)"
@@ -305,6 +309,200 @@ if [[ $RC -eq 0 ]] && \
 else
     fail "T1.f5 — fill (rc=$RC chore_spec_count=$COUNT out=$OUT)"
     cat "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"
+fi
+rm -rf "${TMP}"
+
+# ----------------------------------------------------------------------------
+# T1.f6 — _parse_retro_action_items: section found + 0 H3/table/bold matches
+#         → RuntimeError (P0 fail-loud, schema drift detection)
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d)"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts" "${TMP}/.claude/harness/scripts"
+cp "${SCRIPT_DIR}/harness-commit.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/sprint-status.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/harness_config.py" "${TMP}/.claude/harness/scripts/"
+cp "${REPO_ROOT}/.claude/harness/harness-project-config.yaml" "${TMP}/.claude/harness/"
+# retro md mimics BMad SKILL §8 default output (`**Process Improvements:**` +
+# numbered list) which matches none of the 3 forms — must trigger fail-loud.
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-4-retro-2026-05-04.md" <<'MD'
+# Epic 4 Retrospective
+
+## 6. Action Items
+
+**Process Improvements:**
+
+1. action item one
+   Owner: solo-dev
+2. action item two
+   Owner: solo-dev
+
+**Technical Debt:**
+
+1. debt item one
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+try:
+    hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-4-retro-2026-05-04.md', 'D')
+    print('NO_RAISE')
+except RuntimeError as e:
+    msg = str(e)
+    if 'schema drift' in msg.lower() and 'action items section' in msg.lower():
+        print('RAISED_OK')
+    else:
+        print('RAISED_WRONG_MSG', msg)
+" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && grep -q "RAISED_OK" <<< "$OUT"; then
+    pass "T1.f6 — section found + 0 items raises RuntimeError (fail-loud)"
+else
+    fail "T1.f6 — fail-loud (rc=$RC out=$OUT)"
+fi
+rm -rf "${TMP}"
+
+# ----------------------------------------------------------------------------
+# T1.f7 — _parse_retro_action_items: Form 2 fallback (markdown table row
+#         `| AI-N.M | title |`) — codes normalize to `<letter>-N-M`
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d)"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts" "${TMP}/.claude/harness/scripts"
+cp "${SCRIPT_DIR}/harness-commit.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/sprint-status.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/harness_config.py" "${TMP}/.claude/harness/scripts/"
+cp "${REPO_ROOT}/.claude/harness/harness-project-config.yaml" "${TMP}/.claude/harness/"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md" <<'MD'
+# Epic 1 Retrospective
+
+## 五、Action items（行动项）
+
+### 5.1 流程改进类 action items
+
+| ID | 行动 | Owner | 时机 | 验收 |
+| --- | --- | --- | --- | --- |
+| AI-1.1 | 流程改进项一 | solo-dev | 立即 | 标准 |
+| AI-1.2 | 流程改进项二 | solo-dev | 立即 | 标准 |
+
+### 5.2 技术债类 action items
+
+| ID | 行动 | Owner | 时机 | 验收 |
+| --- | --- | --- | --- | --- |
+| AI-2.1 | 技术债项一 | solo-dev | epic 2 | 标准 |
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+items = hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md', 'A')
+print('ITEMS', [c for c, t in items])
+print('TITLES', [t for c, t in items])
+" 2>&1)
+RC=$?
+# Expect codes A-1-1, A-1-2, A-2-1 with their respective titles, plus stderr WARN
+if [[ $RC -eq 0 ]] && \
+   grep -q "ITEMS \['A-1-1', 'A-1-2', 'A-2-1'\]" <<< "$OUT" && \
+   grep -q "Form 2 (markdown table" <<< "$OUT" && \
+   grep -q "流程改进项一" <<< "$OUT"; then
+    pass "T1.f7 — Form 2 markdown table fallback (3 items normalized to A-N-M, WARN emitted)"
+else
+    fail "T1.f7 — table fallback (rc=$RC out=$OUT)"
+fi
+rm -rf "${TMP}"
+
+# ----------------------------------------------------------------------------
+# T1.f8 — _parse_retro_action_items: Form 3 fallback (bold inline
+#         `**A1**` / `**A1/A2/A3**` shared title)
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d)"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts" "${TMP}/.claude/harness/scripts"
+cp "${SCRIPT_DIR}/harness-commit.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/sprint-status.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/harness_config.py" "${TMP}/.claude/harness/scripts/"
+cp "${REPO_ROOT}/.claude/harness/harness-project-config.yaml" "${TMP}/.claude/harness/"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md" <<'MD'
+# Epic 1 Retrospective
+
+## 五、Action items（行动项）
+
+自我约束：
+
+- **A1** 不再混用 docker-compose v1 / v2 命令
+- **A2/A3** 必须先跑 lint 再 commit
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+items = hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md', 'A')
+print('ITEMS', [c for c, t in items])
+" 2>&1)
+RC=$?
+# Expect A1 (single bold) + A2 + A3 (split from `**A2/A3**` shared title), WARN emitted
+if [[ $RC -eq 0 ]] && \
+   grep -q "ITEMS \['A1', 'A2', 'A3'\]" <<< "$OUT" && \
+   grep -q "Form 3 (bold inline" <<< "$OUT"; then
+    pass "T1.f8 — Form 3 bold inline fallback (single + slash-grouped split, WARN emitted)"
+else
+    fail "T1.f8 — bold fallback (rc=$RC out=$OUT)"
+fi
+rm -rf "${TMP}"
+
+# ----------------------------------------------------------------------------
+# T1.f9 — _seed_retro_action_items: epic > 26 → letter=None → RuntimeError
+#         (P2 fail-loud — previously silent return-empty)
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d)"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts" "${TMP}/.claude/harness/scripts"
+cp "${SCRIPT_DIR}/harness-commit.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/sprint-status.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/harness_config.py" "${TMP}/.claude/harness/scripts/"
+cp "${REPO_ROOT}/.claude/harness/harness-project-config.yaml" "${TMP}/.claude/harness/"
+cat > "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" <<'YAML'
+last_updated: 2026-05-04
+
+retro_action_items:
+  epic-1-retro:
+    A1: done
+
+test_status: {}
+YAML
+touch "${TMP}/_bmad-output/implementation-artifacts/epic-27-retro-2026-05-04.md"
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+try:
+    hc._seed_retro_action_items('27', '_bmad-output/implementation-artifacts/epic-27-retro-2026-05-04.md', '_bmad-output/implementation-artifacts/sprint-status.yaml')
+    print('NO_RAISE')
+except RuntimeError as e:
+    msg = str(e)
+    if '1..26' in msg or '_epic_letter returned None' in msg:
+        print('RAISED_OK')
+    else:
+        print('RAISED_WRONG_MSG', msg)
+" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && grep -q "RAISED_OK" <<< "$OUT"; then
+    pass "T1.f9 — epic > 26 (letter=None) raises RuntimeError (P2 fail-loud)"
+else
+    fail "T1.f9 — letter=None fail-loud (rc=$RC out=$OUT)"
 fi
 rm -rf "${TMP}"
 
