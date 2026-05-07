@@ -322,6 +322,153 @@ else
 fi
 
 # ============================================================================
+# F4-10: pnpm-lock.yaml → package_manager='pnpm' (default & explicit)
+# ============================================================================
+echo "F4-10: pnpm-lock.yaml → package_manager=pnpm"
+F10_REPO="$WORKDIR/repo-pnpm-lock"
+mkdir -p "$F10_REPO/.claude/harness"
+mkdir -p "$F10_REPO/web/node_modules/@playwright/test"
+touch "$F10_REPO/web/pnpm-lock.yaml"
+cat > "$F10_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+extra:
+  frontend_dir: 'web'
+YAML
+F10_PW_CACHE="$WORKDIR/pw-cache-pnpm-lock"
+mkdir -p "$F10_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F10_REPO" "$F10_PW_CACHE")"
+if echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('package_manager') == 'pnpm' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-10.package_manager=pnpm (lockfile=pnpm-lock.yaml)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-10.package_manager 应=pnpm — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
+# F4-11: yarn.lock → package_manager='yarn' (核心修复 — 旧版 yarn 用户硬编码 pnpm 失败)
+# ============================================================================
+echo "F4-11: yarn.lock → package_manager=yarn"
+F11_REPO="$WORKDIR/repo-yarn-lock"
+mkdir -p "$F11_REPO/.claude/harness"
+mkdir -p "$F11_REPO/web/node_modules/@playwright/test"
+touch "$F11_REPO/web/yarn.lock"
+# 注意：故意不放 pnpm-lock.yaml — 验证检测到 yarn 而非 fallback pnpm
+cat > "$F11_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+extra:
+  frontend_dir: 'web'
+YAML
+F11_PW_CACHE="$WORKDIR/pw-cache-yarn-lock"
+mkdir -p "$F11_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F11_REPO" "$F11_PW_CACHE")"
+if echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('package_manager') == 'yarn' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-11.package_manager=yarn (lockfile=yarn.lock)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-11.package_manager 应=yarn — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
+# F4-12: package-lock.json → package_manager='npm'
+# ============================================================================
+echo "F4-12: package-lock.json → package_manager=npm"
+F12_REPO="$WORKDIR/repo-npm-lock"
+mkdir -p "$F12_REPO/.claude/harness"
+mkdir -p "$F12_REPO/web/node_modules/@playwright/test"
+touch "$F12_REPO/web/package-lock.json"
+cat > "$F12_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+extra:
+  frontend_dir: 'web'
+YAML
+F12_PW_CACHE="$WORKDIR/pw-cache-npm-lock"
+mkdir -p "$F12_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F12_REPO" "$F12_PW_CACHE")"
+if echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('package_manager') == 'npm' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-12.package_manager=npm (lockfile=package-lock.json)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-12.package_manager 应=npm — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
+# F4-13: bun.lock → package_manager='bun'
+# ============================================================================
+echo "F4-13: bun.lock → package_manager=bun"
+F13_REPO="$WORKDIR/repo-bun-lock"
+mkdir -p "$F13_REPO/.claude/harness"
+mkdir -p "$F13_REPO/web/node_modules/@playwright/test"
+touch "$F13_REPO/web/bun.lock"
+cat > "$F13_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+extra:
+  frontend_dir: 'web'
+YAML
+F13_PW_CACHE="$WORKDIR/pw-cache-bun-lock"
+mkdir -p "$F13_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F13_REPO" "$F13_PW_CACHE")"
+if echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('package_manager') == 'bun' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-13.package_manager=bun (lockfile=bun.lock)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-13.package_manager 应=bun — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
+# F4-14: 无 lockfile → fallback package_manager='pnpm' (保 backward-compat)
+# ============================================================================
+echo "F4-14: 无 lockfile → fallback package_manager=pnpm"
+F14_REPO="$WORKDIR/repo-no-lock"
+mkdir -p "$F14_REPO/.claude/harness"
+mkdir -p "$F14_REPO/web/node_modules/@playwright/test"
+# 故意不放任何 lockfile
+cat > "$F14_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+extra:
+  frontend_dir: 'web'
+YAML
+F14_PW_CACHE="$WORKDIR/pw-cache-no-lock"
+mkdir -p "$F14_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F14_REPO" "$F14_PW_CACHE")"
+if echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('package_manager') == 'pnpm' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-14.package_manager=pnpm (无 lockfile fallback)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-14.package_manager 应 fallback=pnpm — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
+# F4-15: 多个 lockfile 共存 → pnpm-lock.yaml 优先（priority cascade 验证）
+# ============================================================================
+echo "F4-15: pnpm-lock + yarn.lock 共存 → pnpm 优先"
+F15_REPO="$WORKDIR/repo-multi-lock"
+mkdir -p "$F15_REPO/.claude/harness"
+mkdir -p "$F15_REPO/web/node_modules/@playwright/test"
+touch "$F15_REPO/web/pnpm-lock.yaml"
+touch "$F15_REPO/web/yarn.lock"
+touch "$F15_REPO/web/package-lock.json"
+cat > "$F15_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+extra:
+  frontend_dir: 'web'
+YAML
+F15_PW_CACHE="$WORKDIR/pw-cache-multi-lock"
+mkdir -p "$F15_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F15_REPO" "$F15_PW_CACHE")"
+if echo "$OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('package_manager') == 'pnpm' else 1)" 2>/dev/null; then
+    echo "  ✓ F4-15.package_manager=pnpm (优先级 pnpm > yarn > npm)"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-15.package_manager 应=pnpm (cascade 优先) — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+
+# ============================================================================
 echo "============================================================================"
 echo "PASS=$PASS FAIL=$FAIL"
 exit $FAIL

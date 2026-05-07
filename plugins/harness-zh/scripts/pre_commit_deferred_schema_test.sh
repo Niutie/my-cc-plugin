@@ -70,6 +70,26 @@ run_case "legacy-inline-resolved" 1 '- **FU-99.99.Z** `[status:resolved]` `[buck
 # fixture 4: FU-RETRO-* namespace — should fail
 run_case "fu-retro-namespace" 1 '- **FU-RETRO-9.99** `[status:pending]` `[bucket:other]` `[target:N/A]` `[source:dev-of-99.99]` — retro mirror should be rejected'
 
+# v0.1.20 — gate ② sub-check (d): target value enumeration
+
+# fixture 5: bad target — story-key drift `1-7-全名` style — should fail
+run_case "bad-target-story-key-drift" 1 '- **FU-99.99.D1** `[status:pending]` `[bucket:other]` `[target:1-7-单机一键启动]` `[source:dev-of-99.99]` — story-key drift should be rejected'
+
+# fixture 6: legit Story X.Y short form — should pass
+run_case "legit-target-story-short" 0 '- **FU-99.99.D2** `[status:pending]` `[bucket:other]` `[target:Story 9.9]` `[source:dev-of-99.99]` — Story X.Y legit'
+
+# fixture 7: legit Epic phrase form — should pass
+run_case "legit-target-epic-phrase" 0 '- **FU-99.99.D3** `[status:pending]` `[bucket:other]` `[target:Epic 6 production lockdown]` `[source:dev-of-99.99]` — Epic phrase legit'
+
+# fixture 8: legit v-phase target — should pass
+run_case "legit-target-v-phase" 0 '- **FU-99.99.D4** `[status:pending]` `[bucket:other]` `[target:v0.2+ customer-feedback]` `[source:dev-of-99.99]` — v-phase legit'
+
+# fixture 9: legit customer-feedback (phase-agnostic) — should pass
+run_case "legit-target-customer-feedback" 0 '- **FU-99.99.D5** `[status:pending]` `[bucket:other]` `[target:customer-feedback]` `[source:dev-of-99.99]` — customer-feedback legit'
+
+# fixture 10: bad target — random text — should fail
+run_case "bad-target-random-text" 1 '- **FU-99.99.D6** `[status:pending]` `[bucket:other]` `[target:future-work]` `[source:dev-of-99.99]` — non-enum value rejected'
+
 echo ""
 echo "Result: PASS=$PASS  FAIL=$FAIL"
 [ "$FAIL" = 0 ] && exit 0 || exit 1

@@ -91,6 +91,12 @@ fi
 #   (b) Legacy inline status suffix "— Resolved by Story X.Y (date):" forbidden
 #   (c) FU-RETRO-* namespace forbidden (retro action items live in
 #       sprint-status.yaml.retro_action_items)
+#   (d) target tag value must match schema §3.3 enumeration (v0.1.20):
+#       Story X.Y[.<letter|digit>] / Epic N[ retro| production lockdown] /
+#       vX.Y+ <kebab> / customer-feedback / N/A.
+#       Rejects common drift like `[target:1-7-全名]` (story-key style with
+#       hyphens) which silently breaks `grep_pending_deferred_for_story.sh`
+#       (expects `Story X.Y` short form).
 if $GIT diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
     # extract added lines (drop "+++" header marker; keep "+" body lines)
     ADDED="$($GIT diff --cached --unified=0 -- "$DEFERRED_WORK_PATH" \
@@ -99,6 +105,7 @@ if $GIT diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
     BAD_HEAD=""
     BAD_LEGACY=""
     BAD_RETRO=""
+    BAD_TARGET=""
 
     if [ -n "$ADDED" ]; then
         # (a) FU bullet head must match 4-tag schema; strip leading "+"
@@ -116,9 +123,34 @@ if $GIT diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
         BAD_RETRO="$(echo "$ADDED" \
             | grep -E '^\+- \*\*FU-RETRO-' \
             || true)"
+
+        # (d) target tag value enumeration (v0.1.20)
+        # Whitelist (POSIX ERE):
+        #   Story X.Y           — Story 1.11
+        #   Story X.Y.Z         — Story 1.11.A (sub-letter or sub-digit)
+        #   Epic N              — Epic 6
+        #   Epic N retro        — Epic 6 retro
+        #   Epic N <kebab>      — Epic 6 production lockdown (allow trailing kebab phrase)
+        #   vX.Y+ <kebab>       — v0.2+ first-sprint / v1.0+ FR77 / v2.0+ customer-feedback
+        #   customer-feedback   — phase-agnostic
+        #   N/A                 — handled by other mechanism
+        # Strategy: only check FU bullet HEAD lines (those with full 4-tag
+        # block); extract each [target:<value>] and validate against whitelist.
+        # Non-bullet lines (history audit, body fields) ignored.
+        TARGET_VALID_RE='^(Story [0-9]+\.[0-9]+([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
+        BAD_TARGET="$(echo "$ADDED" \
+            | grep -E '^\+- \*\*FU-[A-Za-z0-9._\-]+\*\* `\[status:[a-z\-]+\]` `\[bucket:[a-zA-Z0-9.+\-]+\]` `\[target:[^]`]*\]` `\[source:[^]`]*\]`' \
+            | while IFS= read -r line; do
+                # extract the target value: capture between `[target: ... ]`
+                target_val="$(printf '%s' "$line" | sed -E "s/.*\`\[target:([^]\`]*)\]\`.*/\1/")"
+                if ! printf '%s' "$target_val" | grep -qE "$TARGET_VALID_RE"; then
+                    printf '%s\n' "$line"
+                fi
+              done \
+            || true)"
     fi
 
-    if [ -n "$BAD_HEAD$BAD_LEGACY$BAD_RETRO" ]; then
+    if [ -n "$BAD_HEAD$BAD_LEGACY$BAD_RETRO$BAD_TARGET" ]; then
         cat >&2 <<'EOF'
 
 ERROR: deferred-work.md 新增内容违反 schema v1
@@ -146,6 +178,25 @@ EOF
             echo "$BAD_RETRO" | head -3 >&2
             echo "" >&2
             echo "    retro action items 100% 归 sprint-status.yaml.retro_action_items。" >&2
+            echo "" >&2
+        fi
+        if [ -n "$BAD_TARGET" ]; then
+            echo "(d) [target:...] tag 值不符合 schema §3.3 枚举（新增行）：" >&2
+            echo "$BAD_TARGET" | head -5 >&2
+            cnt="$(echo "$BAD_TARGET" | wc -l | tr -d ' ')"
+            [ "$cnt" -gt 5 ] && echo "    ... 还有 $((cnt-5)) 行未列出" >&2
+            echo "" >&2
+            echo "    合法形式（schema §3.3）：" >&2
+            echo "      Story X.Y                  e.g. [target:Story 1.7]" >&2
+            echo "      Story X.Y.Z                e.g. [target:Story 1.11.A]" >&2
+            echo "      Epic N                     e.g. [target:Epic 6]" >&2
+            echo "      Epic N retro               e.g. [target:Epic 6 retro]" >&2
+            echo "      Epic N <kebab phrase>      e.g. [target:Epic 6 production lockdown]" >&2
+            echo "      vX.Y+ <kebab>              e.g. [target:v0.2+ customer-feedback]" >&2
+            echo "      customer-feedback / N/A" >&2
+            echo "" >&2
+            echo "    常见漂移：[target:1-7-单机一键启动-...]（story-key 风格）→ 改 [target:Story 1.7]。" >&2
+            echo "    grep_pending_deferred_for_story.sh 只识别 'Story X.Y' 短格式；漂移会让该工具空命中。" >&2
             echo "" >&2
         fi
         cat >&2 <<'EOF'

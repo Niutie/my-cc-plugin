@@ -46,7 +46,22 @@
 # 短路路径下所有 RC 设 1（runtime_ready=false），让现有 §4 sandbox-skip 入口
 # 兼容；branch 由 reason 字段决定。
 #
-# 输出 JSON 含 `frontend_dir` + `e2e_framework` 字段供调用方透明显示。
+# 输出 JSON 含 `frontend_dir` + `e2e_framework` + `package_manager` 字段供调
+# 用方透明显示。
+#
+# package_manager 自动检测（v0.1.20 — 解 0.1.19 之前 pnpm 写死的痛点）：
+# 在 ${FRONTEND_DIR} 内查 lockfile 决定 package manager；优先级：
+#   pnpm-lock.yaml → pnpm
+#   bun.lock(b)    → bun
+#   yarn.lock      → yarn
+#   package-lock.json → npm
+#   都没有         → 默认 pnpm（保 backward-compat）
+# 决定后用对应 manager 跑 version_check：
+#   pnpm: pnpm exec playwright --version
+#   yarn: yarn exec playwright --version
+#   npm:  npx playwright --version
+#   bun:  bun x playwright --version
+# 解决了 yarn/npm/bun 项目即使装了 Playwright 也被静默判 false 的 bug。
 #
 # 输出 schema（紧凑 JSON 一行 + 末尾换行）：
 #   {"docker": <bool>, "pnpm": <bool>, "node": <bool>, "playwright": <bool>,
@@ -54,6 +69,7 @@
 #    "runtime_ready": <bool>, "all_available": <bool>,
 #    "frontend_dir": "<probed dir>",
 #    "e2e_framework": "<configured framework or ''>",
+#    "package_manager": "<detected: pnpm|yarn|npm|bun, '' on short-circuit>",
 #    "reason": "real_probe"|"forced_sandbox"|"no_e2e_configured"
 #            |"probe_not_implemented_for_<X>"|"real_probe; missing: ..."}
 #
@@ -188,6 +204,7 @@ esac
 # ---- FORCE_SANDBOX env override + e2e_framework SHORT_CIRCUIT ----
 # 优先级：FORCE_SANDBOX > SHORT_CIRCUIT > 真探测
 REASON_DETAIL=""
+PKG_MGR=""   # 默认空；真探测分支会按 lockfile 检测后填入
 if [ "${FORCE_SANDBOX:-0}" = "1" ]; then
     DOCKER_RC=1
     PNPM_RC=1
@@ -218,11 +235,33 @@ else
         DOCKER_RC=1
     fi
 
-    # pnpm
+    # ---- package manager 检测（v0.1.20）— 按 lockfile 自动选 ----
+    # 在 ${FRONTEND_DIR} 内查 lockfile 决定 manager；优先级：
+    #   pnpm-lock.yaml > bun.lock(b) > yarn.lock > package-lock.json > 默认 pnpm
+    # 选完用对应 manager 跑 version_check，避免 pnpm 用户写 yarn 项目时 silent skip。
+    PKG_MGR="pnpm"   # fallback 默认（保 backward-compat）
+    _fd_abs="${REPO_ROOT}/${FRONTEND_DIR}"
+    if [ -f "${_fd_abs}/pnpm-lock.yaml" ]; then
+        PKG_MGR="pnpm"
+    elif [ -f "${_fd_abs}/bun.lock" ] || [ -f "${_fd_abs}/bun.lockb" ]; then
+        PKG_MGR="bun"
+    elif [ -f "${_fd_abs}/yarn.lock" ]; then
+        PKG_MGR="yarn"
+    elif [ -f "${_fd_abs}/package-lock.json" ]; then
+        PKG_MGR="npm"
+    fi
+
+    # pnpm（legacy 字段 — 始终探 pnpm 命令存在性，与 PKG_MGR 解耦）
     if command -v pnpm >/dev/null 2>&1; then
         PNPM_RC=0
     else
         PNPM_RC=1
+    fi
+
+    # 检测到的 PKG_MGR 是否可执行
+    PKG_MGR_RC=1
+    if command -v "$PKG_MGR" >/dev/null 2>&1; then
+        PKG_MGR_RC=0
     fi
 
     # node
@@ -233,7 +272,7 @@ else
     fi
 
     # framework_installed: ${FRONTEND_DIR}/node_modules/@playwright/test 目录存在
-    if [ -d "${REPO_ROOT}/${FRONTEND_DIR}/node_modules/@playwright/test" ]; then
+    if [ -d "${_fd_abs}/node_modules/@playwright/test" ]; then
         FRAMEWORK_RC=0
         PLAYWRIGHT_RC=0   # legacy field — kept for backward compat
     else
@@ -250,10 +289,30 @@ else
         fi
     fi
 
-    # version_check: pnpm exec playwright --version 在 5s 内退 0 + 输出含 "Version" 或数字
+    # version_check: <PKG_MGR> exec/dlx/x playwright --version 在 5s 内退 0 + 输出含版本号
+    # 各 manager 调 dependency CLI 的语法不同，用 case 分流；统一 cd 进 frontend_dir
+    # 而非各自的 -C / --prefix / --cwd 标志（更可移植）
     VERSION_RC=1
-    if [ "$FRAMEWORK_RC" = "0" ] && [ "$PNPM_RC" = "0" ]; then
-        PW_OUT="$(run_with_timeout 5 pnpm -C "${REPO_ROOT}/${FRONTEND_DIR}" exec playwright --version 2>/dev/null || true)"
+    if [ "$FRAMEWORK_RC" = "0" ] && [ "$PKG_MGR_RC" = "0" ]; then
+        case "$PKG_MGR" in
+            pnpm)
+                PW_OUT="$(run_with_timeout 5 sh -c "cd '${_fd_abs}' && pnpm exec playwright --version" 2>/dev/null || true)"
+                ;;
+            yarn)
+                # yarn classic: `yarn exec`；yarn berry: 也支持 `yarn exec`（berry 还有 `yarn dlx`）
+                PW_OUT="$(run_with_timeout 5 sh -c "cd '${_fd_abs}' && yarn exec playwright --version" 2>/dev/null || true)"
+                ;;
+            npm)
+                # npm 用 npx 或 `npm exec`；npx 兼容性更广
+                PW_OUT="$(run_with_timeout 5 sh -c "cd '${_fd_abs}' && npx playwright --version" 2>/dev/null || true)"
+                ;;
+            bun)
+                PW_OUT="$(run_with_timeout 5 sh -c "cd '${_fd_abs}' && bun x playwright --version" 2>/dev/null || true)"
+                ;;
+            *)
+                PW_OUT=""
+                ;;
+        esac
         # Playwright --version 输出形如 "Version 1.50.0" 或 "1.50.0"
         if echo "$PW_OUT" | grep -Eq '[0-9]+\.[0-9]+\.[0-9]+'; then
             VERSION_RC=0
@@ -300,7 +359,7 @@ case "$REASON" in
 esac
 
 # 紧凑 JSON 单行
-printf '{"docker": %s, "pnpm": %s, "node": %s, "playwright": %s, "framework_installed": %s, "chromium_installed": %s, "runtime_ready": %s, "all_available": %s, "frontend_dir": "%s", "e2e_framework": "%s", "reason": "%s"}\n' \
+printf '{"docker": %s, "pnpm": %s, "node": %s, "playwright": %s, "framework_installed": %s, "chromium_installed": %s, "runtime_ready": %s, "all_available": %s, "frontend_dir": "%s", "e2e_framework": "%s", "package_manager": "%s", "reason": "%s"}\n' \
     "$(bool $DOCKER_RC)" \
     "$(bool $PNPM_RC)" \
     "$(bool $NODE_RC)" \
@@ -311,6 +370,7 @@ printf '{"docker": %s, "pnpm": %s, "node": %s, "playwright": %s, "framework_inst
     "$(bool $ALL_RC)" \
     "$FRONTEND_DIR" \
     "$E2E_FRAMEWORK" \
+    "$PKG_MGR" \
     "$FINAL_REASON"
 
 exit 0

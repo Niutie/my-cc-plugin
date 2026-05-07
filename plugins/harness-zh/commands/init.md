@@ -836,32 +836,68 @@ stdout 报告（按下表结构）：
    bash .claude/harness/scripts/check_test_harness_env.sh
    ```
 
-2. 解析 stdout JSON：`runtime_ready` / `framework_installed` / `chromium_installed` / `frontend_dir` / `reason`。
+2. 解析 stdout JSON：`runtime_ready` / `framework_installed` / `chromium_installed` / `frontend_dir` / `e2e_framework` / `package_manager` / `reason`。
 
 3. 按结果分支：
 
    **(a) `runtime_ready=true`** → emit 一行：
 
    ```
-   【测试运行时】✓ ready（探测目录：${frontend_dir}）— /harness-zh:run-test 可实跑 e2e
+   【测试运行时】✓ ready（探测目录：${frontend_dir}, pkg manager：${package_manager}）— /harness-zh:run-test 可实跑 e2e
    ```
 
-   **(b) `runtime_ready=false`** + `frontend_dir` 非空且能找到 → emit WARN 多行（按缺失维度 tailored）：
+   **(b) `runtime_ready=false`** + `e2e_framework='none'`（或 reason="no_e2e_configured"）→ emit hint：
+
+   ```
+   【测试运行时】⏸ 跳过探测：项目自报 e2e_framework='none'（纯后端 / 无 e2e）
+     /harness-zh:run-test 会走 §4.5 clean skip，不污染 deferred-work
+   ```
+
+   **(c) `runtime_ready=false`** + `e2e_framework` ∈ {`Cypress`/`WebdriverIO`/`Selenium`/其它非空非 Playwright} → emit WARN：
+
+   ```
+   【测试运行时】⚠️ probe 未实现 — e2e_framework='${e2e_framework}'
+     plugin 当前 T3/T4 stages 是 Playwright-coded；本栈走 sandbox-skip + informative reason。
+     如需 ${e2e_framework} 支持，请提 feature request；或临时把 e2e_framework 改 'none' 跳过 e2e 流水线。
+   ```
+
+   **(d) `runtime_ready=false`** + `frontend_dir` 非空 + `e2e_framework='Playwright'`（默认或显式）→ emit WARN 多行（按缺失维度 + 检测到的 pkg manager tailored）：
 
    ```
    【测试运行时】⚠️ 未就绪 — /harness-zh:run-test 会走 sandbox graceful skip
                                  直到补齐（test_status 全 skip 的根因）
      探测目录：${frontend_dir}
+     pkg manager（按 lockfile 检测）：${package_manager}
      缺失维度：${reason 内 missing 列表，逐条人话化}
        - framework 缺          → 前端依赖未装
        - chromium 缺           → Playwright 浏览器二进制未装
        - version_check 缺      → @playwright/test 包损坏 / 与 playwright.config.ts 不兼容
 
-     修复（在仓库根跑）：
+     修复（在仓库根跑）— 按 ${package_manager} 选对应命令组：
+
+     pnpm 项目：
        cd ${frontend_dir}
-       pnpm install                                     # framework 缺时
-       pnpm exec playwright install --with-deps chromium  # chromium 缺时
-       pnpm exec playwright --version                   # 验证 version_check
+       pnpm install
+       pnpm exec playwright install --with-deps chromium
+       pnpm exec playwright --version       # 验证
+
+     yarn 项目：
+       cd ${frontend_dir}
+       yarn install
+       yarn exec playwright install --with-deps chromium
+       yarn exec playwright --version
+
+     npm 项目：
+       cd ${frontend_dir}
+       npm install
+       npx playwright install --with-deps chromium
+       npx playwright --version
+
+     bun 项目：
+       cd ${frontend_dir}
+       bun install
+       bun x playwright install --with-deps chromium
+       bun x playwright --version
 
      修复完跑探测确认：
        bash .claude/harness/scripts/check_test_harness_env.sh
