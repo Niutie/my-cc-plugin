@@ -11,6 +11,46 @@
 
 ---
 
+## v0.1.16 — 2026-05-07 — 修 codex adversarial review 在 v0.1.13 / v0.1.14 上发现的 3 处 control-flow / 一致性缺陷
+
+### 触发
+
+solo-dev 跑 `/codex:adversarial-review` 审 0.1.13 + 0.1.14 + 0.1.15 三个未 push commit。verdict = `needs-attention`，3 处缺陷可复现：
+
+1. **[high] detector exit code 被吞** — `extract_harness_feedback.sh` 用 `$(... 2>/dev/null || true)` 包 detector 后再读 `$?`，`|| true` 让退出码恒为 0。`sprint-status.yaml` 缺失或 `retro_action_items` 块缺失时本应触发 `exit 2/3` 的路径被静默跳过，假报"已干净"。
+2. **[high] upgrade-deferred-work B 档先 mv 后 cp 且 PLUGIN_ROOT 未定义** — `/harness-zh:upgrade-deferred-work` 选 B（archive+greenfield）时，文档先 `mv deferred-work.md` 到归档，再 `cp "$PLUGIN_ROOT/templates/..."` 回填新模板。但该文档未定义 `PLUGIN_ROOT` 探测逻辑（注释说"复用 update §1"但没原样列出），LLM 照搬时会因 `PLUGIN_ROOT` 空字符串导致 `cp` 失败 → 主账本 `deferred-work.md` 永久缺失。
+3. **[medium] 迁移非事务化，部分失败会双追加** — `extract_harness_feedback.sh --apply` 先写 `upstream-feedback.md`，再改 `sprint-status.yaml`。若第二步失败，下次重跑 detector 仍认为同条目 unmigrated → 重复追加 UF。
+
+### 修
+
+**Fix #1**：`scripts/extract_harness_feedback.sh` detector 调用改用 `set +e` / `set -e` 块包，显式捕获真退出码。新增 `[ "$DETECT_EXIT" -ne 0 ]` 兜底分支处理意外退出码。fixture 测试覆盖 exit 0/2/3 三条路径。
+
+**Fix #2**：`commands/upgrade-deferred-work.md` 选 B 改为安全六步：
+1. 解析 `PLUGIN_ROOT`（同 update §1 探测：env var → cache/* → 任意 plugin.json）
+2. 决定 `SOURCE_MODE`（plugin-template 优先；探测失败 → inline-fallback）
+3. 算归档路径（防 collision；已存在则加时间戳后缀）
+4. `mv deferred-work.md → archive`（不可逆动作）
+5. 写新模板（cp 或 cat heredoc），**失败必 rollback** mv
+6. 同步 `deferred_work_mode → strict`
+
+inline fallback 模板内容直接写在步骤 5 heredoc 内（不再依赖文档别处的"参考"段；删除冗余尾注）。
+
+**Fix #3**：`scripts/extract_harness_feedback.sh --apply` 重写为原子 + 幂等：
+- 在 memory 里算好新 UF + 新 SS 内容，再走 `os.replace()` 原子写入（write `.tmp` + fsync + replace）
+- 写入顺序：UF 先 / SS 后（SS-mutation 是 ack；crash 在中间不会 data loss，只可能 retry 后 dedup）
+- 新增 `(epic, code)` dedup：扫现有 UF 文件中 `## From: <epic>` 段下的 `- **<code>**` bullet，已在的条目跳过 UF 追加（仍 mutate SS 翻状态）
+- 异常路径清理 .tmp 残文件 + 提示用户 retry 安全
+
+fixture 测试模拟 partial-failure（写完 UF 后回滚 SS）+ retry，验证：UF 不重复（grep -c 仍为 1）+ SS 重新翻 migrated-upstream。
+
+### 后续注意事项
+
+- Atomic write 在跨文件系统场景（如 `/tmp` 归档 vs 项目根 SS）会退化为 `EXDEV` — 当前实现 `.tmp` sibling 在同 fs 下，假设 SS / UF 同卷。如未来支持跨卷需改成"copy + rename"+"原 path unlink on success"。
+- Fix #2 文档化的探测逻辑较长（~20 行 bash）— 后续如新增"投放空模板"路径（不止 deferred-work.md，可能 upstream-feedback.md 也需 greenfield 模式），考虑抽出 `scripts/locate_plugin_template.sh` 共享脚本。
+- Codex review verdict `needs-attention` 已闭环；本 commit 后建议再跑一次 review 确认 fix 落地。
+
+---
+
 ## v0.1.15 — 2026-05-07 — 命令 frontmatter `argument-hint` 字段：autocomplete 提示参数
 
 ### 触发
