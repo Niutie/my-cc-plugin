@@ -443,6 +443,81 @@ else
 fi
 
 # ============================================================================
+# F4-16: codex review fix #1 — frontend_dir 含单引号 + 磁盘上含恶意目录时
+#        sh -c 命令注入回归（v0.1.21 — 把 `sh -c "cd '${var}'..."` 改成
+#        `bash -c '... "$1" ...' _ "$var"` 后应彻底拦死）
+# ============================================================================
+echo "F4-16: codex fix #1 — sh -c 命令注入回归（恶意 frontend_dir + 磁盘 evil dir）"
+F16_REPO="$WORKDIR/repo-injection-regression"
+mkdir -p "$F16_REPO/.claude/harness"
+PWN_FILE="$WORKDIR/f16-codex-finding1-pwn-marker"
+rm -f "$PWN_FILE"
+# 在 repo 内建一个名字含单引号的"前端目录"，并在内部建 framework 路径，
+# 让 [-d] check 通过、走到 version_check（注入触发面）
+EVIL_NAME="web'; touch '$PWN_FILE'; cd '"
+mkdir -p "$F16_REPO/$EVIL_NAME/node_modules/@playwright/test"
+cat > "$F16_REPO/.claude/harness/harness-project-config.yaml" <<EOF
+extra:
+  frontend_dir: "${EVIL_NAME}"
+EOF
+F16_PW_CACHE="$WORKDIR/pw-cache-injection"
+mkdir -p "$F16_PW_CACHE/chromium-1129"
+
+# Mock pnpm-lock.yaml 触发 pkg manager = pnpm 路径（含 sh -c）
+touch "$F16_REPO/$EVIL_NAME/pnpm-lock.yaml"
+
+run_probe "$F16_REPO" "$F16_PW_CACHE" >/dev/null 2>&1
+
+if [ ! -f "$PWN_FILE" ]; then
+    echo "  ✓ F4-16 sh -c 注入被拦截（PWN_FILE 未创建 — bash -c '... \$1 ...' 不做插值）"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-16 注入仍触发：$PWN_FILE 被创建" >&2
+    rm -f "$PWN_FILE"
+    FAIL=$((FAIL+1))
+fi
+rm -rf "$F16_REPO"
+
+# ============================================================================
+# F4-17: codex review fix #2 — yaml 字段含裸双引号时 JSON 输出仍合法
+#        (v0.1.21 — printf 改 python3 json.dumps 后应自动转义)
+# ============================================================================
+echo "F4-17: codex fix #2 — yaml 含裸双引号 → JSON 输出合法（python3 编码）"
+F17_REPO="$WORKDIR/repo-json-escape"
+mkdir -p "$F17_REPO/.claude/harness"
+mkdir -p "$F17_REPO/web/node_modules/@playwright/test"
+# yaml single-quoted scalar 内的 " 不转义，是 JSON 输出的真实压力测试
+cat > "$F17_REPO/.claude/harness/harness-project-config.yaml" <<'YAML'
+e2e_framework: 'Cypress "v13"'
+
+extra:
+  frontend_dir: 'web'
+YAML
+F17_PW_CACHE="$WORKDIR/pw-cache-json-escape"
+mkdir -p "$F17_PW_CACHE/chromium-1129"
+
+OUT="$(run_probe "$F17_REPO" "$F17_PW_CACHE")"
+# 用 python3 真解析 — 0.1.20 之前会 JSONDecodeError；0.1.21 之后应通过
+if echo "$OUT" | python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+    if d.get('e2e_framework') == 'Cypress \"v13\"':
+        print('OK')
+    else:
+        print('PARSE_OK_BUT_VALUE_WRONG:', repr(d.get('e2e_framework')))
+except json.JSONDecodeError as e:
+    print('PARSE_FAIL:', e)
+" 2>/dev/null | grep -q "^OK$"; then
+    echo "  ✓ F4-17 含裸双引号 yaml → JSON 仍合法 + 字段值正确"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-17 JSON 转义未修好 — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
+rm -rf "$F17_REPO"
+
+# ============================================================================
 # F4-15: 多个 lockfile 共存 → pnpm-lock.yaml 优先（priority cascade 验证）
 # ============================================================================
 echo "F4-15: pnpm-lock + yarn.lock 共存 → pnpm 优先"

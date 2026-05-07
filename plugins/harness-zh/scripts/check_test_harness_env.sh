@@ -148,9 +148,13 @@ if [ -f "$_HARNESS_CONFIG" ]; then
         ' "$_HARNESS_CONFIG" 2>/dev/null)"
     fi
     if [ -n "$_fd_val" ]; then
-        # 去外层引号 + 尾随空白
-        _fd_val="${_fd_val#\'}"; _fd_val="${_fd_val%\'}"
-        _fd_val="${_fd_val#\"}"; _fd_val="${_fd_val%\"}"
+        # 去外层引号 — single OR double 二选一（不是两轮都剥）
+        # v0.1.21 fix：原版盲目剥 single + double 两轮，遇到 yaml 单引号外层
+        # 包裹 + 内部含双引号的场景（如 'Cypress "v13"'）会把内部双引号误吞。
+        case "$_fd_val" in
+            \'*\') _fd_val="${_fd_val#\'}"; _fd_val="${_fd_val%\'}" ;;
+            \"*\") _fd_val="${_fd_val#\"}"; _fd_val="${_fd_val%\"}" ;;
+        esac
         _fd_val="${_fd_val%"${_fd_val##*[![:space:]]}"}"
         # 空字符串（template 默认 '' 或被清空）→ 保 fallback 'console-web'
         if [ -n "$_fd_val" ]; then
@@ -170,9 +174,12 @@ if [ -f "$_HARNESS_CONFIG" ]; then
     if [ -n "$_ef_val" ]; then
         # strip inline comment 先（避免引号去剥 + 注释一起被当 value）
         _ef_val="$(printf '%s' "$_ef_val" | sed -E 's/[[:space:]]+#.*$//')"
-        # 去外层引号
-        _ef_val="${_ef_val#\'}"; _ef_val="${_ef_val%\'}"
-        _ef_val="${_ef_val#\"}"; _ef_val="${_ef_val%\"}"
+        # 去外层引号 — single OR double 二选一（不是两轮都剥）。
+        # v0.1.21 同 frontend_dir parser 修补。
+        case "$_ef_val" in
+            \'*\') _ef_val="${_ef_val#\'}"; _ef_val="${_ef_val%\'}" ;;
+            \"*\") _ef_val="${_ef_val#\"}"; _ef_val="${_ef_val%\"}" ;;
+        esac
         # 去尾随空白
         _ef_val="${_ef_val%"${_ef_val##*[![:space:]]}"}"
         E2E_FRAMEWORK="$_ef_val"
@@ -290,24 +297,29 @@ else
     fi
 
     # version_check: <PKG_MGR> exec/dlx/x playwright --version 在 5s 内退 0 + 输出含版本号
-    # 各 manager 调 dependency CLI 的语法不同，用 case 分流；统一 cd 进 frontend_dir
-    # 而非各自的 -C / --prefix / --cwd 标志（更可移植）
+    # 各 manager 调 dependency CLI 的语法不同，用 case 分流。
+    #
+    # v0.1.21 codex review fix #1（CWE-78 命令注入修补）：
+    # 原版用 `sh -c "cd '${_fd_abs}' && ..."` 字符串插值；当 yaml `frontend_dir`
+    # 含单引号 + 磁盘上真存在该路径时（含恶意 yaml 的 clone 场景）会执行任意命
+    # 令。改用 `bash -c '... "$1" ...' _ "$_fd_abs"` 把路径作位置参 $1 传入，
+    # 单引号包裹的 bash 命令字符串内**不**做变量插值，shell 元字符无法逃逸。
     VERSION_RC=1
     if [ "$FRAMEWORK_RC" = "0" ] && [ "$PKG_MGR_RC" = "0" ]; then
         case "$PKG_MGR" in
             pnpm)
-                PW_OUT="$(run_with_timeout 5 sh -c "cd '${_fd_abs}' && pnpm exec playwright --version" 2>/dev/null || true)"
+                PW_OUT="$(run_with_timeout 5 bash -c 'cd "$1" && pnpm exec playwright --version' _ "$_fd_abs" 2>/dev/null || true)"
                 ;;
             yarn)
                 # yarn classic: `yarn exec`；yarn berry: 也支持 `yarn exec`（berry 还有 `yarn dlx`）
-                PW_OUT="$(run_with_timeout 5 sh -c "cd '${_fd_abs}' && yarn exec playwright --version" 2>/dev/null || true)"
+                PW_OUT="$(run_with_timeout 5 bash -c 'cd "$1" && yarn exec playwright --version' _ "$_fd_abs" 2>/dev/null || true)"
                 ;;
             npm)
                 # npm 用 npx 或 `npm exec`；npx 兼容性更广
-                PW_OUT="$(run_with_timeout 5 sh -c "cd '${_fd_abs}' && npx playwright --version" 2>/dev/null || true)"
+                PW_OUT="$(run_with_timeout 5 bash -c 'cd "$1" && npx playwright --version' _ "$_fd_abs" 2>/dev/null || true)"
                 ;;
             bun)
-                PW_OUT="$(run_with_timeout 5 sh -c "cd '${_fd_abs}' && bun x playwright --version" 2>/dev/null || true)"
+                PW_OUT="$(run_with_timeout 5 bash -c 'cd "$1" && bun x playwright --version' _ "$_fd_abs" 2>/dev/null || true)"
                 ;;
             *)
                 PW_OUT=""
@@ -359,7 +371,31 @@ case "$REASON" in
 esac
 
 # 紧凑 JSON 单行
-printf '{"docker": %s, "pnpm": %s, "node": %s, "playwright": %s, "framework_installed": %s, "chromium_installed": %s, "runtime_ready": %s, "all_available": %s, "frontend_dir": "%s", "e2e_framework": "%s", "package_manager": "%s", "reason": "%s"}\n' \
+#
+# v0.1.21 codex review fix #2（JSON 转义修补）：
+# 原版用 printf '..."%s"...' 直接插字符串字段，当 yaml 含裸双引号 / 反斜杠 /
+# 换行（如 `e2e_framework: 'Cypress "v13"'`）会输出破坏的 JSON，下游
+# `json.loads` 抛 JSONDecodeError 让 run-test.md §0.1 解析炸。改用 python3
+# 标准 JSON encoder，所有字符串字段透过 sys.argv 传入，自动按 JSON spec 转义
+# 控制字符 + `"` + `\` + 非 ASCII。
+python3 -c '
+import json, sys
+data = {
+    "docker": sys.argv[1] == "true",
+    "pnpm": sys.argv[2] == "true",
+    "node": sys.argv[3] == "true",
+    "playwright": sys.argv[4] == "true",
+    "framework_installed": sys.argv[5] == "true",
+    "chromium_installed": sys.argv[6] == "true",
+    "runtime_ready": sys.argv[7] == "true",
+    "all_available": sys.argv[8] == "true",
+    "frontend_dir": sys.argv[9],
+    "e2e_framework": sys.argv[10],
+    "package_manager": sys.argv[11],
+    "reason": sys.argv[12],
+}
+print(json.dumps(data, ensure_ascii=False))
+' \
     "$(bool $DOCKER_RC)" \
     "$(bool $PNPM_RC)" \
     "$(bool $NODE_RC)" \

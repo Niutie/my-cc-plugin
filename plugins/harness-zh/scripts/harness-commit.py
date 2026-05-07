@@ -1023,15 +1023,23 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
     """
     letter = _epic_letter(epic)
     if letter is None:
-        # P2 fail-loud: previously silent return-empty. _epic_letter only maps
-        # 1..26; epic 27+ or non-integer epics now halt explicitly so the
-        # mismatch surfaces at stage 6 commit (not as a downstream ⑥.5 block-
-        # missing error).
-        raise RuntimeError(
-            f"_epic_letter returned None for epic={epic!r} — only integer "
-            f"epics 1..26 are supported. sprint-status.yaml retro_action_items "
-            f"cannot be seeded for this epic."
+        # v0.1.21 codex review fix #3：原 0.1.17 的 raise 把"plugin range
+        # 限制（epic > 26 或非整数）"和"用户写错 retro md schema"混在一起
+        # 处理；前者是 plugin 限制（用户无法控制），后者是 schema drift
+        # （用户能修）。区分语义：
+        #   - epic 越界 → WARN + return []（不阻 stage 6 commit；
+        #     plugin 的 1..26 letter mapping 是已知限制）
+        #   - schema drift（retro md 有 Action Items section 但 parser 0
+        #     命中）→ raise（用户应修 retro md 格式）
+        # 避免 stage 6 commit 在 epic 27+ 时因 plugin 限制 hard-halt。
+        print(
+            f"WARN [_seed_retro_action_items]: epic={epic!r} → _epic_letter "
+            f"returned None (plugin maps 1..26 only). Skipping retro_action_items "
+            f"seed; stage 6 commit continues. If you have epic 27+, file a "
+            f"feature request for multi-letter codes (AA/AB/...).",
+            file=sys.stderr,
         )
+        return []
 
     items = _parse_retro_action_items(retro_md_path, letter)
     if not items:

@@ -12,7 +12,7 @@
 #     T1.f6  P0 fail-loud: section found + 0 items (no H3/table/bold) → RuntimeError
 #     T1.f7  P1 Form 2 fallback: markdown table `| AI-N.M |` → code `<letter>-N-M` + WARN
 #     T1.f8  P1 Form 3 fallback: bold inline `**A1**` / `**A1/A2/A3**` shared title + WARN
-#     T1.f9  P2 fail-loud: epic > 26 (letter=None) → RuntimeError
+#     T1.f9  graceful skip: epic > 26 (letter=None) → WARN + return [] (v0.1.21 codex fix)
 #
 #   T2 — stage 5.5 commit message suffix unification
 #     T2.f1  T4 STAGES commit_msg含 "(run-sprint stage 5.5)"
@@ -461,8 +461,10 @@ fi
 rm -rf "${TMP}"
 
 # ----------------------------------------------------------------------------
-# T1.f9 — _seed_retro_action_items: epic > 26 → letter=None → RuntimeError
-#         (P2 fail-loud — previously silent return-empty)
+# T1.f9 — _seed_retro_action_items: epic > 26 → letter=None → WARN + return []
+#         (v0.1.21 codex review fix #3 — 区分 plugin range 限制 vs schema
+#          drift；前者 graceful skip，不再 raise hard-halt stage 6 commit。
+#          原 0.1.17 raise 行为已改成 WARN + return []。)
 # ----------------------------------------------------------------------------
 TMP="$(mktemp -d)"
 mkdir -p "${TMP}/_bmad-output/implementation-artifacts" "${TMP}/.claude/harness/scripts"
@@ -479,8 +481,14 @@ retro_action_items:
 
 test_status: {}
 YAML
-touch "${TMP}/_bmad-output/implementation-artifacts/epic-27-retro-2026-05-04.md"
+# 准备一个 dummy epic-27 retro md 含 Action Items section（验证不会因为
+# section-found+0-items 触发 schema-drift raise — 我们要的是 letter=None 路径）
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-27-retro-2026-05-04.md" <<'MD'
+# Epic 27 Retrospective
+MD
 
+# 抓 stderr 验证 WARN
+F9_STDERR="${TMP}/f9-stderr.txt"
 OUT=$(cd "${TMP}" && python3 -c "
 import sys
 sys.path.insert(0, '.claude/harness/scripts')
@@ -489,20 +497,22 @@ spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/har
 hc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hc)
 try:
-    hc._seed_retro_action_items('27', '_bmad-output/implementation-artifacts/epic-27-retro-2026-05-04.md', '_bmad-output/implementation-artifacts/sprint-status.yaml')
-    print('NO_RAISE')
-except RuntimeError as e:
-    msg = str(e)
-    if '1..26' in msg or '_epic_letter returned None' in msg:
-        print('RAISED_OK')
+    result = hc._seed_retro_action_items('27', '_bmad-output/implementation-artifacts/epic-27-retro-2026-05-04.md', '_bmad-output/implementation-artifacts/sprint-status.yaml')
+    if result == []:
+        print('OK_RETURNED_EMPTY')
     else:
-        print('RAISED_WRONG_MSG', msg)
-" 2>&1)
+        print('UNEXPECTED_RESULT', result)
+except RuntimeError as e:
+    print('UNEXPECTED_RAISE', str(e))
+" 2>"$F9_STDERR")
 RC=$?
-if [[ $RC -eq 0 ]] && grep -q "RAISED_OK" <<< "$OUT"; then
-    pass "T1.f9 — epic > 26 (letter=None) raises RuntimeError (P2 fail-loud)"
+STDERR_CONTENT="$(cat "$F9_STDERR" 2>/dev/null)"
+if [[ $RC -eq 0 ]] && grep -q "OK_RETURNED_EMPTY" <<< "$OUT" && \
+   grep -q "WARN.*epic.*'27'" <<< "$STDERR_CONTENT" && \
+   grep -q "1\\.\\.26" <<< "$STDERR_CONTENT"; then
+    pass "T1.f9 — epic > 26 (letter=None) WARN + return [] (codex fix #3)"
 else
-    fail "T1.f9 — letter=None fail-loud (rc=$RC out=$OUT)"
+    fail "T1.f9 — letter=None graceful skip (rc=$RC out=$OUT stderr=$STDERR_CONTENT)"
 fi
 rm -rf "${TMP}"
 
