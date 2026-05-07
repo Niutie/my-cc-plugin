@@ -164,6 +164,29 @@ fi
 
 **绝对不能**覆盖既有 yaml — 含 solo-dev 已填的项目字段（mid-project / 升级场景必须 preserve）。
 
+### A.3.b 投放 deferred-work.md 骨架（仅当父目录存在且文件不存在）
+
+```bash
+DW_DIR="_bmad-output/implementation-artifacts"
+DW_DST="$DW_DIR/deferred-work.md"
+DW_BOOTSTRAPPED=0
+if [ -d "$DW_DIR" ] && [ ! -f "$DW_DST" ]; then
+    cp "$PLUGIN_ROOT/templates/deferred-work.md.template" "$DW_DST"
+    DW_BOOTSTRAPPED=1
+fi
+```
+
+`deferred-work.md` 是 schema v1 强约束文件（pre-commit gate ② 拒绝任何 4-tag
+头不规范的 FU bullet）。给 dev / review agent 一个 known-good 起点，避免
+它们凭印象造一份违规 placeholder（典型症状：bullet 用 `[severity:medium]`
+这种非 schema v1 tag，被 gate ② 整批拒）。
+
+**前提**：`_bmad-output/implementation-artifacts/` 必须已存在（一般由 BMad
+planning 阶段产 `sprint-status.yaml` 时建出）。父目录缺失时跳过——本 init
+不主动创建 BMad 输出目录。
+
+**绝对不能**覆盖既有 `deferred-work.md`（可能含已写入的 FU）。
+
 ### A.4 装 git hooks
 
 先检测当前目录是否在 git 工作树内：
@@ -243,6 +266,7 @@ HELPER_GUIDANCE="$(printf '%s\n' "$HELPER_OUT" | grep -vE '^{' | grep -vE '^$')"
 【资产部署】
   - $INSTALLED installed / $UNCHANGED unchanged / $UPDATED updated（含 backup）
   - yaml: <bootstrapped from template | preserved existing>
+  - deferred-work.md: <bootstrapped from template | preserved existing | skipped — parent dir absent>
   - git hooks: <installed / unchanged | WARN: core.hooksPath ...>
 ```
 

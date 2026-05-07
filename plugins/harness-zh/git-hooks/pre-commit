@@ -36,9 +36,15 @@ DEFERRED_WORK_PATH="_bmad-output/implementation-artifacts/deferred-work.md"
 
 cd "$REPO_ROOT"
 
+# `-c core.quotepath=false` 让 git 对 CJK 路径返回原始 UTF-8 而非 C-style
+# 八进制转义；否则中文 retro / story 文件名会被双引号包裹，gate 触发 grep
+# 漏匹配。当前 trigger pattern 都是 ASCII，但任何未来的 CJK retro 命名会
+# 直接踩坑——一行防御性补丁，零成本。
+GIT="git -c core.quotepath=false"
+
 # E11: --diff-filter=A 仅命中"新增"路径；rename / delete / modify 现有 4-x-*.md
 # 不触发（避免清理 / 重命名旧 spec 时被本 hook 误阻）。
-ADDED_PATHS="$(git diff --cached --name-only --diff-filter=A || true)"
+ADDED_PATHS="$($GIT diff --cached --name-only --diff-filter=A || true)"
 
 # ── Gate ① retro action items ─────────────────────────────────────────
 if echo "$ADDED_PATHS" | grep -qE "$RETRO_TRIGGER"; then
@@ -85,9 +91,9 @@ fi
 #   (b) Legacy inline status suffix "— Resolved by Story X.Y (date):" forbidden
 #   (c) FU-RETRO-* namespace forbidden (retro action items live in
 #       sprint-status.yaml.retro_action_items)
-if git diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
+if $GIT diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
     # extract added lines (drop "+++" header marker; keep "+" body lines)
-    ADDED="$(git diff --cached --unified=0 -- "$DEFERRED_WORK_PATH" \
+    ADDED="$($GIT diff --cached --unified=0 -- "$DEFERRED_WORK_PATH" \
              | grep -E '^\+' | grep -vE '^\+\+\+')"
 
     BAD_HEAD=""

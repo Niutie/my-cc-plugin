@@ -77,7 +77,20 @@ STAGE_SUBJECTS = {
 
 
 def run(cmd):
-    return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # Two CJK-safety fixes baked in for every subcommand:
+    #
+    # (a) Inject `-c core.quotepath=false` for git so CJK paths come back as
+    #     raw UTF-8 instead of C-style octal escapes — required for `git status
+    #     --porcelain` / `git diff --stat` to match downstream regexes against
+    #     CJK story keys (e.g. `1-1-后端工程脚手架与公共基础设施.md`).
+    #
+    # (b) `errors="replace"` on text decode — `git diff --stat` truncates long
+    #     filenames at column width and can chop a multi-byte UTF-8 sequence
+    #     mid-codepoint; default strict decode would raise UnicodeDecodeError
+    #     and crash status reporting.
+    if cmd and cmd[0] == "git" and (len(cmd) < 3 or cmd[1] != "-c" or not cmd[2].startswith("core.quotepath")):
+        cmd = ["git", "-c", "core.quotepath=false"] + list(cmd[1:])
+    return subprocess.run(cmd, capture_output=True, text=True, errors="replace", check=False)
 
 
 def tag_exists(tag):
