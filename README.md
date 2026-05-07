@@ -4,7 +4,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 
 | Plugin | Version | Purpose |
 |---|---|---|
-| **harness-zh** | 0.1.0 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **harness-zh** | 0.1.16 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 
 ---
 
@@ -106,10 +106,11 @@ This one-time bootstrap deploys plugin assets into the project's `.claude/harnes
 
 | Command | Purpose | Phase |
 |---|---|---|
-| `/harness-zh:init` | First-time bootstrap — deploy plugin assets + (optional) BMad-driven `harness-project-config.yaml` filling | Once per project |
+| `/harness-zh:init` | First-time bootstrap — deploy plugin assets + (optional) BMad-driven `harness-project-config.yaml` filling. Mid-project install also detects existing `deferred-work.md` schema state and `category:harness` retro residue, prompting solo-dev to migrate. | Once per project |
 | `/harness-zh:update` | After plugin upgrade — refresh project-side asset copies (does **not** touch yaml or run BMad extraction) | After each `/plugin marketplace update` |
 | `/harness-zh:run` | Main sprint loop — automatically processes `sprint-status.yaml` backlog stories through 5 stages (create-story → dev-story → codex adversarial review → dev fix → bmad final review), with retrospectives and retro-residue handling | Daily |
 | `/harness-zh:run-test` | Test automation sub-loop — single-story ATDD + E2E real-run (invoked by run-sprint stage 5.5 or directly) | As triggered |
+| `/harness-zh:upgrade-deferred-work` | Re-detect `deferred-work.md` schema-v1 conformance + 3-tier mode switch (advisory ↔ strict). For solo-dev who picked advisory at init time and later wants to flip back, or migrated history manually and wants to verify. | Ad-hoc |
 
 Run `/harness-zh:run --help` (or read `commands/run.md`) for flag reference (`--story`, `--epic`, `--continue`, etc.).
 
@@ -135,6 +136,11 @@ For full runtime architecture (5-stage state machine, sprint-status.yaml schema,
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.1.16 | 2026-05-07 | Codex adversarial review fixes: detector exit code propagation / upgrade-deferred-work safe `mv`-after-source-verify / atomic + idempotent migration writes |
+| 0.1.15 | 2026-05-07 | `argument-hint` frontmatter for slash-command autocomplete (`/harness-zh:run [--story ...]` etc.) |
+| 0.1.14 | 2026-05-07 | `category:harness` retro items split off `sprint-status.yaml` into `.claude/harness/upstream-feedback.md` (plugin-maintainer feedback channel) |
+| 0.1.13 | 2026-05-07 | Mid-project `deferred-work.md` schema v1 detection + 3-tier migration (advisory / archive+greenfield / manual backfill); new `/harness-zh:upgrade-deferred-work` command |
+| 0.1.11 - 0.1.12 | 2026-05-06/07 | CJK story-key support (sprint-status regex + git quotepath + utf-8 decode-safe) |
 | 0.1.0 | 2026-05-06 | Initial plugin extraction from Aegis AI Audit project's `.claude/harness/` |
 
 See [`plugins/harness-zh/changelog.md`](plugins/harness-zh/changelog.md) for detailed per-commit history.

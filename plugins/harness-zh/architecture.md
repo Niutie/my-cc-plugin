@@ -65,14 +65,15 @@
 
 代价：每个项目带一份资产副本（增加少量磁盘占用）；好处：所有现有路径引用（`.claude/harness/scripts/...` 等）零改动可用，git hook + markdown command bash 都跑得了。
 
-### 〇.3 四个命令的分工
+### 〇.3 五个命令的分工
 
 | 命令 | 职责 | 何时跑 |
 |---|---|---|
-| `/harness-zh:init` | 首次 bootstrap — mkdir 项目目录 → 探测 plugin path → cmp/backup/overwrite copy 资产 → 投放 yaml template（仅当不存在）→ 装 git hooks → 检测 BMad → 齐则进 §十一 14 字段提取 / 缺则报告引导 | 1 次/项目；后续 BMad 补齐后可重跑（merge 模式补填 yaml 空字段） |
+| `/harness-zh:init` | 首次 bootstrap — mkdir 项目目录 → 探测 plugin path → cmp/backup/overwrite copy 资产 → 投放 yaml template（仅当不存在）→ 装 git hooks → 检测 BMad → 齐则进 §十一 14 字段提取 / 缺则报告引导。**v0.1.13+** 半路接入项目时还检测 `deferred-work.md` schema state（§A.3.c 三档分支）+ `category:harness` retro 残余（§A.3.d 迁移到 upstream-feedback.md）。 | 1 次/项目；后续 BMad 补齐后可重跑（merge 模式补填 yaml 空字段） |
 | `/harness-zh:update` | 升级后刷资产 — 同 init 部署逻辑但**不**投 yaml、**不**跑 BMad 提取；只 sync `.claude/harness/*` + `.claude/commands/*` + 重装 git hooks | 每次 `/plugin marketplace update my-cc-plugin` 后 |
 | `/harness-zh:run` | runtime sprint loop — 详 §一-§五 | 日常开发主入口 |
 | `/harness-zh:run-test` | runtime test sub-loop — 详 §一 | 由 run 触发或手工 |
+| `/harness-zh:upgrade-deferred-work` | **v0.1.13+** 事后 deferred-work.md schema 复测 + mode 切换。跑 detector → 给三档（advisory / archive+greenfield / 手工 backfill 指南）→ 应用选择。供 init 时选 advisory 后想切回 strict、或手工 backfill 完想验证的场景。 | Ad-hoc，按需 |
 
 ### 〇.4 与 §十一「通用化与项目 config」的关系
 
@@ -393,7 +394,11 @@ C-bootstrap spec 内部 Q4 已 2026-05-03 标 RESOLVED。
 
 风险缓冲：主 agent **不**在 solo-dev 给其它指令时擅自跑；只在用户肯定回复"继续"时进入 chore 模式；任一步骤失败立即 halt + 报告状态。
 
-### Q4 ✅ RESOLVED 2026-05-05: retro_action_items 按 category 分流（B 方案）
+### Q4 ✅ RESOLVED 2026-05-05 → SUPERSEDED 2026-05-07 by v0.1.14: `category:harness` 改走完全分离 (A 方案变体)
+
+> **Supersession note (v0.1.14)**：B 方案落地后实际运行表明，把 plugin-maintainer 的债（`category: harness`）继续放在 sprint-status.yaml 里仍是 plugin **用户视角**的污染（用户感觉"项目背着插件作者的待办"+ `check_retro_action_items.sh` 反复 WARN）。v0.1.14 改为：retro skill 写入时直接分流 — `category: dev` 仍写 sprint-status（行为同 B 方案），`category: harness` 改写 `.claude/harness/upstream-feedback.md`（markdown 而非 yaml；用户复制粘贴提 GitHub issue 给作者）。`migrated-upstream` 加入合法 status enum；新 `extract_harness_feedback.sh` 工具 + `init §A.3.d` 自动检测残余。Q4 B 方案的 schema/gate/process 决策仍在；仅"两类共表"的物理位置改成"分两表"（A 方案变体 — `upstream-feedback.md` 而非 `improvement-backlog.yaml`）。详 changelog v0.1.14。
+
+
 
 **Problem**：retro 产出实证混合两类问题 — (i) **dev 类**（产品代码 / 测试 / 文档 / NFR / ADR / 业务功能优先级，blast radius 局限于一个 epic 的产品交付）和 (ii) **harness 类**（流程脚本 / hook / skill / template / convention / schema / 通用化，blast radius 跨所有后续 epic 的所有 story，metasystem 级）。原方案两类共用同一个 `retro_action_items` 表 + 同一个 pre-commit gate，等于把"基础设施改造"和"产线作业"挂在同一根保险丝上 — D5 那次 inheritance gate 误伤 epic-5 stage ③ codex-review.md 是典型表现（v1.3 复盘已删 gate ②）。
 
@@ -696,9 +701,11 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 
 ---
 
-## 十二、目录布局（53 文件，按功能分组）
+## 十二、目录布局（按功能分组；文件总数 ~60 个，随版本浮动）
 
 > 维护契约：新增脚本 / convention / template / hook 时同步在本段加一行（位置 = 对应功能组末尾）。本段是 onboarding / 自查的功能视角索引，与 [`changelog.md`](changelog.md)（时间视角）+ [`scripts/simulate_clone_test.sh`](scripts/simulate_clone_test.sh)（clone 拷贝清单）三视角互补。
+>
+> **真实文件数请以 `ls plugins/harness-zh/scripts/ commands/ templates/` 为准** —— 本段树形图随 plugin 版本可能落后；如发现不一致以实际文件系统为准。最近 0.1.13-0.1.16 新增的若干 detector / extract / upgrade-deferred-work 资产可能未列在树形图里（见 `changelog.md`）。
 
 ### 12.1 全树（标 portable / project-specific / 归属）
 
@@ -712,10 +719,12 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 ├── CLAUDE.md                                ← (A) harness 入口（起步约定 / chore 实施流程 / 严格禁止；含 ${project_display_name} 占位符）
 │
 ├── .claude/                                 ← (A) 100% harness-owned
-│   ├── commands/                                3 个 slash command（user 入口）
-│   │   ├── run-sprint.md                        主流程编排（5-stage + 6 retro + 6.5 residue）
-│   │   ├── run-test-sprint.md                   测试流程编排（T1/T3/T4 + 5.5 嵌入）
-│   │   └── run-sprint-init.md                   一次性 bootstrap（BMad → harness yaml 16 字段同步）
+│   ├── commands/                                5 个 slash command（user 入口）
+│   │   ├── run.md                               主流程编排（5-stage + 6 retro + 6.5 residue）
+│   │   ├── run-test.md                          测试流程编排（T1/T3/T4 + 5.5 嵌入）
+│   │   ├── init.md                              一次性 bootstrap（BMad → yaml 14 字段同步 + §A.3.c 旧 deferred-work 检测 + §A.3.d harness-residue 迁移）
+│   │   ├── update.md                            升级后资产同步（不动 yaml / 不跑 BMad 提取）
+│   │   └── upgrade-deferred-work.md             事后 deferred-work schema 复测 + mode 切换（advisory / archive+greenfield / 手工 backfill）
 │   │
 │   └── harness/
 │       ├── architecture.md                      ← 设计单一权威来源（本文件；100% portable）
@@ -763,9 +772,14 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 │           │   ├── grep_deferred_buckets.sh                       bucket 总账（含 §1 §1.1/§1.2/§1.3）
 │           │   ├── grep_deferred_status.sh                        schema tag 状态查询
 │           │   ├── grep_pending_deferred_for_story.sh + _test.sh  按 story key 找 pending FU
-│           │   ├── backfill_resolved_markers.sh + _test.sh + _prompt.md  fresh agent backfill resolved
+│           │   ├── backfill_resolved_markers.sh + _test.sh + _prompt.md  fresh agent backfill resolved（schema v1 后 deprecated；FORCE_LEGACY_BACKFILL=1 才跑）
+│           │   ├── detect_deferred_work_schema.sh                 v0.1.13 新增；扫 deferred-work.md 算 v1 conformance（pristine/v1_clean/mixed/legacy）
 │           │   ├── diff_guardrail.sh                              backfill 改动越界守门
 │           │   └── pre_commit_deferred_schema_test.sh             pre-commit gate ② 测试
+│           │
+│           ├── [Harness upstream-feedback 流（v0.1.14 新增）]
+│           │   ├── detect_harness_residue.sh                      扫 sprint-status.yaml 找未迁 category:harness 条目
+│           │   └── extract_harness_feedback.sh                    迁移工具（--dry-run / --apply；原子 write + (epic,code) dedup，0.1.16 强化）
 │           │
 │           ├── [Spec 质量 gate]
 │           │   ├── check_spec_length.sh                           spec 长度上限
