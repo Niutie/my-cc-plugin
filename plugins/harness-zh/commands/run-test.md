@@ -1,5 +1,6 @@
 ---
 description: 测试 harness 单 story 入口（atdd 红相 + e2e 实跑 + sandbox graceful skip）；可独立触发或由 run-sprint stage 5.5 自动调用
+argument-hint: '--story <key>'
 ---
 
 # Test Sprint Loop（chore C-bootstrap 第一版）

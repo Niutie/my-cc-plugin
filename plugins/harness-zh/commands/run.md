@@ -1,5 +1,6 @@
 ---
 description: 自动按 sprint-status 跑完所有 backlog story（主 agent 编排：create → dev → codex adversarial review → dev fix → bmad code review）
+argument-hint: '[--story [<key>] | --epic [<num>] | --continue | --dry-run]'
 ---
 
 # Sprint 自动开发循环

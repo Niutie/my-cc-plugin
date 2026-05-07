@@ -11,6 +11,30 @@
 
 ---
 
+## v0.1.15 — 2026-05-07 — 命令 frontmatter `argument-hint` 字段：autocomplete 提示参数
+
+### 触发
+
+solo-dev 注意到其它 plugin（如 codex 的 `/codex:adversarial-review`）在 slash command autocomplete 菜单上显示参数提示（`[--wait|--background] [--base <ref>] ...`），harness-zh 的 5 条命令都没显示。Claude Code slash command frontmatter 支持 `argument-hint` 字段（man-page 风格 — 方括号可选 / 竖线互斥 / 尖括号占位符），加上即可。
+
+### 修
+
+| 命令 | argument-hint |
+|---|---|
+| `/harness-zh:run` | `[--story [<key>] \| --epic [<num>] \| --continue \| --dry-run]` |
+| `/harness-zh:run-test` | `--story <key>` |
+| `/harness-zh:init` | `[--dry-run \| --force \| --merge]` |
+| `/harness-zh:update` | (无参数；省略 hint) |
+| `/harness-zh:upgrade-deferred-work` | (无参数；省略 hint) |
+
+仅改 frontmatter，不动命令正文 / 任何运行逻辑。
+
+### 后续注意事项
+
+无。后续新增命令记得带 `argument-hint`（无参数时省略字段，不写空字符串以免 autocomplete 显示空方框）。
+
+---
+
 ## v0.1.14 — 2026-05-07 — retro action items category:harness 与 sprint-status 解耦 → upstream-feedback.md
 
 ### 触发

@@ -1,5 +1,6 @@
 ---
 description: Harness 项目 bootstrap — 投递 plugin 资产到 .claude/harness/ + .claude/commands/ + 装 git hooks；若 BMad planning artifacts 已齐则继续从中提取 14 字段填 harness-project-config.yaml（merge 模式；--dry-run 预览；--force 覆盖二次确认）
+argument-hint: '[--dry-run | --force | --merge]'
 ---
 
 # /harness-zh:init — Harness 项目 bootstrap + config 初始化
