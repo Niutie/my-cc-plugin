@@ -1483,7 +1483,7 @@ def cross_story_ok(path, key, epic, cross_story_allowlist=None, chore_retro=Fals
     return False
 
 
-def is_expected_artifact(path, key, epic, spec):
+def is_expected_artifact(path, key, epic, spec, cross_story_allowlist=None):
     m = ARTIFACT_RE.match(path)
     if not m:
         return False
@@ -1501,10 +1501,15 @@ def is_expected_artifact(path, key, epic, spec):
         return True
     if spec.get("chore_retro") and epic and re.fullmatch(rf"chore-retro-c{re.escape(epic)}-[A-Z][A-Za-z0-9-]*-[a-z0-9-]+\.md", fname):
         return True
+    # Frontmatter `cross_story_artifacts:` whitelist — symmetric with gate 1
+    # (cross_story_ok line 1481). Both gates must honor the same declaration,
+    # else a properly-declared spec passes §-1.d step 3 but trips §0.5.
+    if cross_story_allowlist and fname in cross_story_allowlist:
+        return True
     return False
 
 
-def classify(path, key, epic, spec):
+def classify(path, key, epic, spec, cross_story_allowlist=None):
     """Return one of: 'expected', 'unexpected_artifact', 'project', 'forbidden'.
 
     'project' = staged. No path-level allowlist anymore — any project code is fine
@@ -1513,7 +1518,7 @@ def classify(path, key, epic, spec):
     See harness-changelog 2026-05-01 §J.
     """
     if ARTIFACT_RE.match(path):
-        if is_expected_artifact(path, key, epic, spec):
+        if is_expected_artifact(path, key, epic, spec, cross_story_allowlist):
             return "expected"
         return "unexpected_artifact"
     if spec["project_code"]:
@@ -1783,7 +1788,7 @@ def main():
     project = []
     forbidden = []
     for _, p in paths:
-        kind = classify(p, key, epic, spec)
+        kind = classify(p, key, epic, spec, cross_story_allowlist)
         if kind == "expected":
             expected.append(p)
         elif kind == "unexpected_artifact":
