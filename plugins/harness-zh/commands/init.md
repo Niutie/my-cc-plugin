@@ -41,17 +41,20 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 #    优先 cache/<marketplace>/<plugin>/<version>/（官方版本化安装路径）
 #    **过滤 orphaned 副本**：Claude Code 在版本切换 / 卸载时会留下旧版本目录，
 #    并放 `.orphaned_at` marker；这些目录内容是 stale 的，必须跳过
+#    **按 semver 降序选最高版**：cache 下升级历史会留多个 <version>/ 目录；
+#    find 顺序是 inode 序（macOS APFS 随机），过去的 first-match-wins 会让 init
+#    随机选版本，导致 update/init 反复在新旧版间横跳。改成 sort -V 取最高。
 if [ -z "$PLUGIN_ROOT" ]; then
-    while IFS= read -r manifest; do
-        if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
-            candidate="$(dirname "$(dirname "$manifest")")"
-            # 跳过 orphaned 缓存（Claude Code 留下的 stale 版本目录）
-            [ -f "$candidate/.orphaned_at" ] && continue
-            case "$candidate" in
-                */cache/*) PLUGIN_ROOT="$candidate"; break;;
-            esac
-        fi
-    done < <(find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null)
+    # bash 3.2 (macOS 默认) 在 $(...) 里 case+glob 有 quirk，用 [[ == ]] 替代
+    PLUGIN_ROOT="$(
+        find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
+            grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
+            cand="$(dirname "$(dirname "$manifest")")"
+            [ -f "$cand/.orphaned_at" ] && continue
+            [[ "$cand" == */cache/* ]] || continue
+            printf '%s\t%s\n' "$(basename "$cand")" "$cand"
+        done | sort -V -r -k1,1 | head -n 1 | cut -f2-
+    )"
 fi
 
 # 3) Cache miss → fallback 用任意命中（如 marketplaces/<...>/plugins/<plugin>/）

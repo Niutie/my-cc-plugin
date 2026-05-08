@@ -179,22 +179,27 @@ DW_DIR="_bmad-output/implementation-artifacts"
 DW_DST="$DW_DIR/deferred-work.md"
 
 # 步骤 1: 解析 plugin templates/ 路径（同 /harness-zh:update §1 探测逻辑）
+# cache 下多版本时按 semver 降序取最高版（避免 inode-order first-match-wins 的随机选版 bug）
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || PLUGIN_ROOT=""
 if [ -z "$PLUGIN_ROOT" ]; then
-    while IFS= read -r manifest; do
-        if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
+    # bash 3.2 (macOS 默认) 在 $(...) 里 case+glob 有 quirk，用 [[ == ]] 替代
+    PLUGIN_ROOT="$(
+        find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
+            grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
             cand="$(dirname "$(dirname "$manifest")")"
-            case "$cand" in
-                */cache/*) PLUGIN_ROOT="$cand"; break;;
-            esac
-        fi
-    done < <(find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null)
+            [ -f "$cand/.orphaned_at" ] && continue
+            [[ "$cand" == */cache/* ]] || continue
+            printf '%s\t%s\n' "$(basename "$cand")" "$cand"
+        done | sort -V -r -k1,1 | head -n 1 | cut -f2-
+    )"
 fi
 if [ -z "$PLUGIN_ROOT" ]; then
     while IFS= read -r manifest; do
         if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
-            PLUGIN_ROOT="$(dirname "$(dirname "$manifest")")"
+            cand="$(dirname "$(dirname "$manifest")")"
+            [ -f "$cand/.orphaned_at" ] && continue
+            PLUGIN_ROOT="$cand"
             break
         fi
     done < <(find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null)

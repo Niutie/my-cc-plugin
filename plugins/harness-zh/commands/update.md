@@ -35,22 +35,33 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || PLUGIN_ROOT=""
 
 # 2) 扫 plugin.json 找 name=harness-zh，优先 cache/ 版本化路径
+#    **关键**：cache 下 plugin 升级历史会留下多个 <version>/ 目录（Claude Code
+#    不一定立即清旧版）。find 顺序是 inode 序（macOS APFS 上随机），不带版本
+#    语义；过去的 first-match-wins 实现会让 update 随机选 cache 版本，导致
+#    项目副本被老版本反复覆盖（症状：脚本版本漂移、CJK regex 退化等）。
+#    改成：收集所有 cache 候选（过 .orphaned_at filter） → sort -V 按 semver
+#    降序 → head -1 取最高版。
 if [ -z "$PLUGIN_ROOT" ]; then
-    while IFS= read -r manifest; do
-        if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
-            candidate="$(dirname "$(dirname "$manifest")")"
-            case "$candidate" in
-                */cache/*) PLUGIN_ROOT="$candidate"; break;;
-            esac
-        fi
-    done < <(find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null)
+    # 注：bash 3.2 (macOS 默认) 在 $(...) 里解析 case+glob 有 quirk，
+    # 用 [[ == */cache/* ]] 替代 case 模式匹配，bash 3.2/4/5 均兼容
+    PLUGIN_ROOT="$(
+        find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
+            grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
+            cand="$(dirname "$(dirname "$manifest")")"
+            [ -f "$cand/.orphaned_at" ] && continue
+            [[ "$cand" == */cache/* ]] || continue
+            printf '%s\t%s\n' "$(basename "$cand")" "$cand"
+        done | sort -V -r -k1,1 | head -n 1 | cut -f2-
+    )"
 fi
 
-# 3) Fallback 任意 plugin.json 命中（marketplaces/git-clone 路径）
+# 3) Fallback 任意 plugin.json 命中（marketplaces/git-clone 路径，通常单实例）
 if [ -z "$PLUGIN_ROOT" ]; then
     while IFS= read -r manifest; do
         if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
-            PLUGIN_ROOT="$(dirname "$(dirname "$manifest")")"
+            cand="$(dirname "$(dirname "$manifest")")"
+            [ -f "$cand/.orphaned_at" ] && continue
+            PLUGIN_ROOT="$cand"
             break
         fi
     done < <(find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null)
