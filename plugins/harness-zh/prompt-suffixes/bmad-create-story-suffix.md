@@ -10,6 +10,10 @@
 > - 2026-05-04 C7: Epic 第一个 story 继承段约束（X-1-* 且 X > 1）。
 > - 2026-05-04 deferred-work-schema-v1: spec 引入新 FU bullet 时按 schema v1
 >   格式（详 §"deferred-work schema v1 写入约束"）。
+> - 2026-05-08 cross-story-artifacts: spec 写入跨 story implementation
+>   artifact 时必须声明 frontmatter 白名单 + 派给 dev agent 而非"主 agent"
+>   （详 §"cross-story artifacts 声明约束"；触发场景：retro AI 收口 / 跨
+>   story 引用状态翻转）。
 
 ---
 
@@ -33,6 +37,59 @@ schema v1 格式（权威：`.claude/harness/conventions/deferred-work-schema.md
 - **禁止**用 inline 后缀 `— Resolved by Story X.Y (date): ...` 标记状态变迁（status 字段才是真值；变迁记入 `历史` audit log 子项）
 
 详细变迁路径 + audit log 格式见 schema 文档 §3 / §2.2。
+
+---
+
+## cross-story artifacts 声明约束
+
+某些 spec 需要让 dev agent 在 stage 2 修改**不属于本 story** 的
+`_bmad-output/implementation-artifacts/*.md` 文件 —— 典型场景：retro action
+item 收口（翻 epic-N-retro-*.md 表格行状态）、跨 story 引用文件状态翻转。
+这类动作**必须**在 spec frontmatter 声明白名单，否则 stage 2 commit 时被
+`harness-commit.py` cross-story isolation gate 阻断（权威实现：`scripts/
+harness-commit.py` `cross_story_ok` / `read_cross_story_allowlist`）。
+
+### 何时声明
+
+spec body / Tasks / AC 要求 dev agent 写改下列任一文件时声明：
+
+- 其它 story 的 spec md（如 `1-7-proxy-fork-addon-framework-unix-socket.md`）
+- 跨 story 共享文件（如 `epic-N-retro-YYYY-MM-DD.md`、`spec-deferred-cleanup-*.md`）
+- 任何 `_bmad-output/implementation-artifacts/` 下、basename 不是 `<本 story key>.*` 的 `.md`
+
+> 默认已放行（不需要声明）：`<本 story key>.md` / `<本 story key>.dev-result.json`
+> / `deferred-work.md` / `sprint-status.yaml` / `chore-retro-c<epic>-*.md`
+
+### frontmatter 写法
+
+spec 头部第一行必须是 `---`，frontmatter 内加 `cross_story_artifacts:` list：
+
+```markdown
+---
+cross_story_artifacts:
+  - epic-1-retro-2026-05-07.md
+  - 1-7-proxy-fork-addon-framework-unix-socket.md
+---
+
+# Story X-Y-...
+```
+
+**约束**（违反则该条目被静默丢弃）：
+
+- 每条必须是 bare basename（不能含 `/` 或 `..`）
+- 必须 `.md` 结尾（`.json` / `.yaml` 是不同威胁面，不允许通过此白名单）
+- 不能列本 story 自己的文件（已默认放行；列了是 smell）
+
+### 编排措辞：动作必须派给 dev agent，不是"主 agent"
+
+spec Tasks / AC 提到 cross-story 文件修改时，**必须**派给 dev agent，**不要**写
+"主 agent 在编排路径中 …"：
+
+- ❌ "主 agent 在编排路径中翻 retro AI-3.3 状态 [resolved]" — run.md 5 阶段
+  流水线没有"主 agent 自己改 implementation artifacts"的动作；dev agent
+  看到 spec 任务会接手做，但若 frontmatter 没声明就撞 commit gate。
+- ✓ "dev agent 在 stage 2 任务 T8.3 中翻 retro AI-3.3 状态 [resolved]
+  （已在 frontmatter `cross_story_artifacts` 声明 epic-1-retro-2026-05-07.md）"
 
 ## Finalize sub-steps
 

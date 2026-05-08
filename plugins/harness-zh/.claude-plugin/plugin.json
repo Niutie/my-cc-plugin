@@ -1,6 +1,6 @@
 {
   "name": "harness-zh",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "description": "BMad-based sprint orchestration harness for solo-dev + AI workflows (zhenhua's flavor). Provides /harness-zh:run, /harness-zh:run-test, /harness-zh:init, /harness-zh:update, /harness-zh:upgrade-deferred-work commands plus shared scripts, conventions, and prompt suffixes.",
   "author": {
     "name": "zhenhua zhu"
