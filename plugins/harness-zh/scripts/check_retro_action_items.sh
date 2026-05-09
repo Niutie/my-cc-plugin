@@ -25,6 +25,19 @@
 # warn、E4 空块检测、E5 flexible indent、E6 重复 header 检测、E2 exit cap 200。
 # v2 (2026-05-05): category 分流 — dev 计 exit / harness WARN 不计；扩展 item
 # code regex 容纳 C-bootstrap / C-cond-triggers 等 alphanumeric-dash code。
+#
+# Format note (codex-review 2026-05-09 medium #3): the retro_action_items
+# block uses a NON-STANDARD YAML shape:
+#
+#     retro_action_items:
+#       epic-N-retro:
+#         A1: pending           # ← scalar value
+#           category: dev       # ← over-indented sub-field; not valid YAML
+#
+# Standard YAML parsers (PyYAML, etc.) reject this. We use an awk state
+# machine instead (lines 60-120 below); future tooling MUST follow suit
+# unless the format is migrated to nested-mapping form (out of scope for
+# v0.1.x — would break gate ① regression tests and process_retro_residue).
 
 set -euo pipefail
 

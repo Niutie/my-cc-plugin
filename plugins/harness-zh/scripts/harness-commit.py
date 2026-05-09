@@ -214,13 +214,13 @@ def auto_resolve_build_artifact(path):
     pattern = f"/{path}"
     gitignore = ".gitignore"
     try:
-        with open(gitignore, "r") as f:
+        with open(gitignore, "r", encoding="utf-8") as f:
             content = f.read()
     except OSError:
         content = ""
     existing_lines = set(line.strip() for line in content.splitlines())
     if pattern not in existing_lines:
-        with open(gitignore, "a") as f:
+        with open(gitignore, "a", encoding="utf-8") as f:
             if content and not content.endswith("\n"):
                 f.write("\n")
             f.write(f"# Auto-added by harness-commit: build artifact (Go cmd binary)\n")
@@ -381,7 +381,7 @@ def read_story_status(key):
     """
     path = f"{ARTIFACTS_DIR}{key}.md"
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 for pat in _status_re_lines:
                     m = pat.match(line)
@@ -416,7 +416,7 @@ def validate_dev_result(key):
     if not os.path.exists(path):
         return [("DEV_RESULT_MISSING", f"{path} not found — stage 2 requires the machine-readable completion gate")]
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             d = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         return [("DEV_RESULT_FAIL_PARSE", f"{path} parse error: {e}")]
@@ -477,7 +477,7 @@ def validate_review_findings(key):
     if not os.path.exists(path):
         return [("REVIEW_FINDINGS_MISSING", f"{path} not found — stage 5 requires the machine-readable completion gate")]
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             d = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         return [("REVIEW_FINDINGS_FAIL_PARSE", f"{path} parse error: {e}")]
@@ -1413,7 +1413,7 @@ def read_cross_story_allowlist(key):
     in_frontmatter = False
     in_field = False
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             for line_idx, line in enumerate(f):
                 stripped = line.rstrip()
                 if line_idx == 0:

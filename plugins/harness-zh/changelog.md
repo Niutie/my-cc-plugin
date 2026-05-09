@@ -11,6 +11,76 @@
 
 ---
 
+## v0.1.27 — 2026-05-09 — 工程化加固（codex 多轮 review 驱动）+ codex skip / catchup
+
+### 触发
+
+`/codex:adversarial-review` 在 v0.1.26 提交后跑了三轮，逐轮揭出工程化层面的问题：
+
+- **Round 1 critical**：marketplace.json 版本（0.1.16）与 plugin.json（0.1.26）漂移；`/harness-zh:report-issue` 命令的 `argument-hint` frontmatter 是非法 YAML（两个相邻 flow sequence），命令可能根本装不上
+- **Round 2 high**：`/harness-zh:update` 的 purge 实现是"对账整个 .claude/ 树"，会误删用户自定义 `.claude/commands/*.md` 与 personal helper 脚本（数据丢失风险）；CI 用 `KNOWN_STALE` 把多个测试静默 SKIP，新做的 schema 修改可能 silent 回归
+- **新功能需求**：codex-in-cc 不可用（未装 / 配额耗尽 / 未登录）时，原协议是 halt + 等用户。改成显式跳过 stage 3+4 + 留 marker + `/harness-zh:codex-catchup` 后置补跑
+
+### 改
+
+**释放门禁**
+
+- 新增 `scripts/release_check.sh`：两道闸门 — (1) marketplace.json 与 plugin.json 版本必须相等 (2) 6 个 `commands/*.md` frontmatter 必须能被 PyYAML 解析。任一失败 exit ≠ 0
+- `commands/report-issue.md:3` 的 `argument-hint` 加单引号修复 YAML 解析失败
+- `commands/init.md / run.md / run-test.md / update.md / upgrade-deferred-work.md / report-issue.md` 全部加 `allowed-tools` frontmatter；`update.md` / `upgrade-deferred-work.md` 补 `argument-hint`
+
+**Manifest-based purge**（替换 v0.1.26 prototype 的 blanket diff 实现）
+
+- `scripts/deploy_assets.sh` 每次部署后写 `.claude/harness/.deploy-manifest.txt`（本插件本次部署的文件清单）
+- `DEPLOY_PURGE=1` 模式只 purge "出现在旧 manifest 但不在新 manifest" 的文件，每个删之前先备份到 `<file>.bak.<TS>`
+- **从未进过 manifest 的文件永不动**：用户自定义命令 / 其他 plugin 文件 / personal helpers 都安全
+- 安全网：deploy 有 FAILED → purge 整体跳过 + manifest 不被覆盖；新 manifest 为空 → 拒绝 purge；半路接入（旧项目无 manifest）→ 首次 PURGE 跳过 + 留 manifest 给以后用
+- `deploy_assets.sh` 必需顶层文件（`architecture.md` / `answer-policy.md` / `changelog.md` / `test-stage-triggers.yaml`）missing 时不再静默跳过 — 通过 `deploy()` 内部的 FAILED++ 路径触发 exit 2
+
+**Codex skip + catchup**（新功能）
+
+- 新增 `scripts/check_codex_availability.sh`：cheap path probe，不调用 codex（不烧 quota），输出 JSON `{available, reason, binary_path, remediation}`
+- 新增 `commands/codex-catchup.md`（`/harness-zh:codex-catchup`）：扫描 `_bmad-output/implementation-artifacts/*.codex-skipped.json` marker → 对每条 KEY 重跑 stage 3 + stage 4 → 归档为 `*.codex-skipped.resolved.json`
+- `commands/run.md` 阶段 ③ 拆三段：
+  - §③.0 pre-flight 探测（调 `check_codex_availability.sh`）
+  - §③.1 skip 路径（不可用 → 写 `<KEY>.codex-skipped.json` + 显式 halt 模板风格通知 + 跳到 stage 5；触发条件 = pre-flight 命中 OR in-flight 关键词命中：`hit your limit` / `rate limit` / `usage limit` / `quota` / `not logged in` / `unauthorized` / `please log in` / `auth required`）
+  - §③.2 主体（codex 可用时正常 spawn）
+- `commands/run.md` 阶段 ④.0 pre-flight：检查 `<KEY>.codex-skipped.json` 是否存在；存在则 stage 4 整段跳过
+
+**dedup + 工程清理**
+
+- 抽 `scripts/discover_plugin_root.sh` + `scripts/deploy_assets.sh`：init / update / upgrade-deferred-work 三命令各自的 ~50 行复制粘贴块缩到 12 行 inline bootstrap + 调用共享脚本
+- `scripts/harness_config.py` 加 `--get <field>` / `--config-path` CLI 模式；`read_harness_config.sh:read_harness_config_field` / `eval_test_stage_triggers.sh:read_project_field` / `check_test_harness_env.sh` 三处 inline awk parser shell-out 到 Python（保留 awk fallback 防 python3 缺失）
+- 同时修 `_strip_yaml_scalar` 对 `'val' # comment` 形式的语义错误（v0.1.26 之前缺这一支处理）
+- 抽 `scripts/deferred_work_schema_lib.sh`：`git-hooks/pre-commit` gate ② 与 `scripts/lint_deferred_work.sh` 共用同一份 schema regex SoT
+- `harness-commit.py` + `harness-state.py` 全部 `open()` 加 `encoding="utf-8"`（CJK locale 安全）
+- `harness-state.py:120` cwd 相对路径调用 → `Path(__file__).resolve().parent / "sprint-status.py"`
+
+**测试 + CI**
+
+- 新增 `scripts/retro_category_round_trip_test.sh`：5 fixture 集成测试，覆盖 retro_action_items category 字段的 writer→reader round-trip（防 writer 漏 `category:` 字段静默退化为 NOCAT WARN）
+- 新增 `scripts/run_all_tests.sh`：中央 test runner，区分 PASS / FAIL / `KNOWN_STALE` SKIP
+- 新增 `.github/workflows/ci.yml`：双 job
+  - `source-tests` 跑 release_check + run_all_tests（10 个 source-tree 测试）
+  - `bootstrap-tests` 用 mktemp + `deploy_assets.sh` + `install_git_hooks.sh` + 真 `_bmad-output/` seed 构造下游项目 fixture，跑 4 个 env-dependent 测试（`pre_commit_deferred_schema_test.sh` / `harness_commit_isolation_test.sh` / `simulate_clone_test.sh` / `run_retro_self_audit_test.sh`）
+- bootstrap 这一道**当场抓到**了我自己 v0.1.27 改动里的一个 regression：pre-commit 的 `${VAR:-default}` fallback 因 default 含 `[0-9]{4}` 中的 `}` 被 bash 截断，regex 变成 `[0-9]{4--}` → legacy-inline-resolved fixture 静默 PASS（应 BLOCK）。不上 CI bootstrap 永远抓不到。改成显式 `if/else` 写法
+
+**其它**
+
+- 6 处 `bash` 脚本加 `set -o pipefail`；`read_harness_config.sh` 加 `set -o pipefail` 头
+- 4 处 broken cross-reference（`run.md` / `run-test.md`）
+- `plugin.json` 加 `"license": "UNLICENSED"`
+- README 加 `(0.1.17–0.1.25 internal-only)` 跳号注解
+- `pre_commit_deferred_schema_test.sh:16` worktree 兼容（`git rev-parse --git-path hooks/pre-commit`）
+
+### 后续
+
+- v0.2 候选：split harness-commit.py / harness-state.py god-object（1920 LOC / 870 LOC）
+- 字段数三方对齐（architecture.md `16 字段` vs README `14 fields` vs template 注释头 `11 + 3 = 14`，实际数 19）
+- README 加 troubleshooting / uninstall section
+
+---
+
 ## v0.1.26 — 2026-05-09 — 新增 `/harness-zh:report-issue` 一键提 issue 通道；退役 `upstream-feedback.md`（Q4 第二次 supersession）
 
 ### 触发
@@ -61,6 +131,12 @@ solo-dev 反馈：v0.1.14 引入的 `upstream-feedback.md` 中转通道实际反
 - 用户首次跑 `/harness-zh:report-issue` 前需保证 `gh` CLI 已装 + `gh auth login` 完成；`gh-cli` 不像 BMad / codex 是硬依赖（plugin.json `dependencies` 不申明），保持轻量
 - v0.1.14-0.1.25 期间项目侧落到磁盘的 `.claude/harness/upstream-feedback.md` 文件**不**主动删（用户私有数据；plugin 资产投递的 cmp/backup 路径里不包含此文件，`/harness-zh:update` 不会动）。用户可自行决定 archive / 删除 / 把里面剩余条目用 `/harness-zh:report-issue` 提为 issue 后再清理
 - `migrated-upstream` 仍是合法 status enum 用于历史兼容；将来某个版本（v0.2+）可考虑硬移除 + 配套 migration 工具
+
+---
+
+## v0.1.17 – v0.1.25 — _未公开发布_
+
+internal iteration only — squash-merged into v0.1.26 before marketplace publish；未单独打 marketplace tag、未单独投递 plugin store。版本号跳跃仅是内部迭代记账痕迹。
 
 ---
 

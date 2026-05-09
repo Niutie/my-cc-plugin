@@ -26,7 +26,7 @@
 #   4  — 同时缺 planning + sprint-status；优先报 planning（exit 2）
 #   1  — 参数错误 / 内部错误
 
-set -u
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=read_harness_config.sh

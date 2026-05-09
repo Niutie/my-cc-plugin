@@ -75,6 +75,7 @@
 | `/harness-zh:run-test` | runtime test sub-loop — 详 §一 | 由 run 触发或手工 |
 | `/harness-zh:upgrade-deferred-work` | **v0.1.13+** 事后 deferred-work.md schema 复测 + mode 切换。跑 detector → 给三档（advisory / archive+greenfield / 手工 backfill 指南）→ 应用选择。供 init 时选 advisory 后想切回 strict、或手工 backfill 完想验证的场景。 | Ad-hoc，按需 |
 | `/harness-zh:report-issue` | **v0.1.26+** 一键给 plugin 作者提 GitHub issue。自动收集 plugin 版本 / 当前 sprint+story 状态 / halt 现场 / 近期 commits 等上下文，gh CLI 直提到 `Niutie/my-cc-plugin`。halt 场景提完会附临时绕过方案，让用户不必等 plugin 修复就能继续推进项目。 | halt / 阶段收尾 / ad-hoc 任意时机 |
+| `/harness-zh:codex-catchup` | **v0.1.27+** 补跑被 `/harness-zh:run` 因 codex-in-cc 不可用（未装 / 配额耗尽 / 未登录）跳过的 stage 3+4。扫 `_bmad-output/implementation-artifacts/*.codex-skipped.json` marker → 对每条 KEY 重跑 stage 3 codex review + stage 4 dev fix → 归档 marker 为 `*.codex-skipped.resolved.json`。本命令开头会再跑一次 `check_codex_availability.sh` 探测；codex 仍不可用直接 halt（不静默重跳过）。 | codex 恢复后 |
 
 ### 〇.4 与 §十一「通用化与项目 config」的关系
 

@@ -17,7 +17,7 @@
 #
 # 退出码：0 = 全过；非 0 = 某步骤失败（stderr 含细节）
 
-set -u
+set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 

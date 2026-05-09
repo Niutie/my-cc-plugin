@@ -1,6 +1,7 @@
 ---
 description: 测试 harness 单 story 入口（atdd 红相 + e2e 实跑 + sandbox graceful skip）；可独立触发或由 run-sprint stage 5.5 自动调用
 argument-hint: '--story <key>'
+allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 ---
 
 # Test Sprint Loop（chore C-bootstrap 第一版）
@@ -74,7 +75,7 @@ EVAL_REASON=$(echo "$EVAL_JSON" | sed -nE 's/.*"reason":[[:space:]]*"([a-z_]+)".
 
 stage 跑或 skip 由后续每条 stage 的"触发判断"门决定（见 §1 各 stage）。
 
-> **5-5 commit 由本 subagent 内部 T4 stage 完成（chore-harness-epic-4-orchestration-observations T2.2，2026-05-04）**：当本 subagent 由 `/harness-zh:run` stage 5.5 自动调起时，run-sprint 主 agent **不会再调用** `harness-commit.py 5-5` 当 commit 路径——只会跑 5-5 命令做 sanity gate（期待 STATUS=skip 验证 worktree 已被 T3+T4 commit 清干净）。本 subagent 必须负责跑完整 T1/T3/T4 + 各自 commit；T4 commit message 含 "(run-sprint stage 5.5)" 后缀让 grep 稳定找。详 [`run-sprint.md`](run-sprint.md) §1 阶段 ⑤.5。
+> **5-5 commit 由本 subagent 内部 T4 stage 完成（chore-harness-epic-4-orchestration-observations T2.2，2026-05-04）**：当本 subagent 由 `/harness-zh:run` stage 5.5 自动调起时，run-sprint 主 agent **不会再调用** `harness-commit.py 5-5` 当 commit 路径——只会跑 5-5 命令做 sanity gate（期待 STATUS=skip 验证 worktree 已被 T3+T4 commit 清干净）。本 subagent 必须负责跑完整 T1/T3/T4 + 各自 commit；T4 commit message 含 "(run-sprint stage 5.5)" 后缀让 grep 稳定找。详 [`run.md`](run.md) §1 阶段 ⑤.5。
 
 ### 0.1 环境探测
 
@@ -308,9 +309,9 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 
 ## 引用
 
-- run-sprint 主流程：[`run-sprint.md`](run-sprint.md) — stage 5.5 嵌入由 chore C-bootstrap Phase C 落地
+- run-sprint 主流程：[`run.md`](run.md) — stage 5.5 嵌入由 chore C-bootstrap Phase C 落地
 - 代答政策：[`/answer-policy.md`](../answer-policy.md)
 - harness-commit T1/T3/T4 stage 路径白名单：[`/scripts/harness-commit.py`](../scripts/harness-commit.py)
 - env probe：[`.claude/harness/scripts/check_test_harness_env.sh`](../../.claude/harness/scripts/check_test_harness_env.sh)
 - bootstrap orchestrator：[`.claude/harness/scripts/bootstrap_test_harness.sh`](../../.claude/harness/scripts/bootstrap_test_harness.sh)
-- 4 份 chore 元设计：[`harness-architecture.md`](../harness-architecture.md) §二 / §五
+- 4 份 chore 元设计：[`architecture.md`](../harness/architecture.md) §二 / §五

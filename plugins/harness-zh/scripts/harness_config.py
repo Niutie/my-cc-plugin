@@ -35,7 +35,43 @@ import re
 import sys
 from pathlib import Path
 
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "harness-project-config.yaml"
+# Default config path: relative to this script's location (deployed under
+# .claude/harness/scripts/). Override priority (high → low):
+#   1. _OVERRIDE_CONFIG_PATH (set by --config-path CLI flag)
+#   2. HARNESS_CONFIG_PATH env var (set by callers that need to override
+#      against a tmp dir, e.g. test fixtures or AEGIS_ENV_PROBE_REPO)
+#   3. <this_file>/../harness-project-config.yaml (default, deployed layout)
+import os as _os
+
+_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "harness-project-config.yaml"
+_OVERRIDE_CONFIG_PATH: Path | None = None
+
+
+def _resolve_config_path() -> Path:
+    if _OVERRIDE_CONFIG_PATH is not None:
+        return _OVERRIDE_CONFIG_PATH
+    env_override = _os.environ.get("HARNESS_CONFIG_PATH")
+    if env_override:
+        return Path(env_override)
+    return _DEFAULT_CONFIG_PATH
+
+
+# Back-compat: existing callers reference CONFIG_PATH directly. Keep it as a
+# property-like dynamic lookup by re-resolving on attribute access. This works
+# because all internal readers go through _resolve_config_path(); we expose
+# CONFIG_PATH only for legacy module-level inspection.
+class _ConfigPathProxy:
+    def __fspath__(self) -> str:
+        return str(_resolve_config_path())
+
+    def __str__(self) -> str:
+        return str(_resolve_config_path())
+
+    def exists(self) -> bool:
+        return _resolve_config_path().exists()
+
+
+CONFIG_PATH = _ConfigPathProxy()
 
 # Hardcoded defaults — used when harness-project-config.yaml is missing
 # the corresponding field. Project owners should override via yaml; the
@@ -76,9 +112,20 @@ def _warn(msg: str) -> None:
 
 def _strip_yaml_scalar(val: str) -> str:
     val = val.strip()
-    # 去 inline 注释 (# ...) — 但保留引号内的 #
-    if val and val[0] not in ("'", '"'):
-        # 只在非引号 scalar 里 strip 注释
+    # 去 inline 注释 (# ...) — 三种情况：
+    #   (1) 非引号 scalar：foo # comment → foo
+    #   (2) 引号 scalar：'foo' # comment → 'foo'  (匹配 closing 引号后可有空格 + #)
+    #   (3) 引号内 #：'foo # bar' → 保留（跳过本步）
+    if val and val[0] in ("'", '"'):
+        q = val[0]
+        # find matching closing quote (first one on the line — yaml flow scalar
+        # 不支持 escape，所以第一个 q 就是 closing)
+        end = val.find(q, 1)
+        if end > 0 and end + 1 < len(val):
+            tail = val[end + 1:].lstrip()
+            if tail.startswith("#"):
+                val = val[:end + 1]
+    elif val:
         idx = val.find("#")
         if idx >= 0:
             val = val[:idx].rstrip()
@@ -89,10 +136,11 @@ def _strip_yaml_scalar(val: str) -> str:
 
 
 def _read_lines() -> list[str] | None:
-    if not CONFIG_PATH.exists():
+    cfg = _resolve_config_path()
+    if not cfg.exists():
         return None
     try:
-        return CONFIG_PATH.read_text(encoding="utf-8").splitlines()
+        return cfg.read_text(encoding="utf-8").splitlines()
     except OSError:
         return None
 
@@ -324,20 +372,113 @@ def get_fullstack_review_steps() -> list[dict[str, str]]:
     return out
 
 
+def _cli_get(key: str, default: str | None = None) -> tuple[str, str]:
+    """CLI --get <key> implementation. Returns (value, source) where source is
+    one of 'top', 'extra', 'default', 'missing'. Looks up:
+      1. top-level scalar (artifacts_root etc.)
+      2. extra.<key> scalar (frontend_dir etc.)
+    If both miss, falls back to default arg (if provided) or empty string.
+    """
+    val = _read_top_level_scalar(key)
+    if val is not None and val != "":
+        return val, "top"
+    val = _read_extra_scalar(key)
+    if val is not None and val != "":
+        return val, "extra"
+    if default is not None:
+        return default, "default"
+    return "", "missing"
+
+
+def _cli_main(argv: list[str]) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="harness_config.py",
+        description=(
+            "Read fields from harness-project-config.yaml. Used by Python "
+            "callers via import; bash callers via `python3 harness_config.py "
+            "--get <field>` to avoid duplicated yaml parsers."
+        ),
+    )
+    parser.add_argument(
+        "--config-path",
+        help="override harness-project-config.yaml location (test/AEGIS_ENV_PROBE_REPO)",
+    )
+    sub = parser.add_subparsers(dest="cmd")
+
+    p_get = sub.add_parser("get", help="print one field value to stdout")
+    p_get.add_argument("key", help="field name (looked up at top-level then extra.)")
+    p_get.add_argument("--default", default=None, help="fallback if key missing")
+    p_get.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress 'WARN: missing' on stderr (default off — silent stdout but warn on stderr)",
+    )
+
+    sub.add_parser("smoke", help="smoke-print all known fields (legacy __main__ behavior)")
+
+    # bash convenience: `--get` as top-level flag (no subcommand). We handle
+    # this by detecting `--get` before parse and rewriting to the subcommand
+    # form. Keeps backward-compat with simple shell wrappers.
+    if "--get" in argv and "get" not in argv:
+        # Rewrite "[--config-path X] --get KEY [--default D]" → "[opts] get KEY [--default D]"
+        new_argv = []
+        skip_next = False
+        for i, a in enumerate(argv):
+            if skip_next:
+                skip_next = False
+                continue
+            if a == "--get":
+                # the next token is the key
+                if i + 1 >= len(argv):
+                    print("ERROR: --get requires a key argument", file=sys.stderr)
+                    return 2
+                new_argv.append("get")
+                new_argv.append(argv[i + 1])
+                skip_next = True
+            else:
+                new_argv.append(a)
+        argv = new_argv
+
+    args = parser.parse_args(argv)
+
+    if args.config_path:
+        global _OVERRIDE_CONFIG_PATH
+        _OVERRIDE_CONFIG_PATH = Path(args.config_path)
+
+    if args.cmd == "get":
+        value, source = _cli_get(args.key, args.default)
+        if source == "missing" and not args.quiet:
+            print(
+                f"WARN [harness_config]: '{args.key}' not set in "
+                f"{_resolve_config_path()} (no --default provided)",
+                file=sys.stderr,
+            )
+        print(value)
+        return 0
+
+    if args.cmd == "smoke" or args.cmd is None:
+        print(f"config_path: {_resolve_config_path()}")
+        print(f"artifacts_root: {get_artifacts_root()}")
+        print(f"sprint_status_path: {get_sprint_status_path()}")
+        print(f"deferred_work_path: {get_deferred_work_path()}")
+        print(f"path_classifiers: {len(get_path_classifiers())} entries")
+        for label, rgx in get_path_classifiers()[:3]:
+            print(f"  - {label}: {rgx.pattern}")
+        print(f"verification_commands:")
+        for line in get_verification_commands().splitlines():
+            print(f"  {line}")
+        print(f"project_context:")
+        for line in get_project_context().splitlines():
+            print(f"  {line}")
+        print(f"fullstack_review_steps: {len(get_fullstack_review_steps())} entries")
+        for step in get_fullstack_review_steps()[:3]:
+            print(f"  - ({step['label']}) {step['file_path']}")
+        return 0
+
+    parser.print_help()
+    return 1
+
+
 if __name__ == "__main__":
-    # CLI smoke test for sanity
-    print(f"artifacts_root: {get_artifacts_root()}")
-    print(f"sprint_status_path: {get_sprint_status_path()}")
-    print(f"deferred_work_path: {get_deferred_work_path()}")
-    print(f"path_classifiers: {len(get_path_classifiers())} entries")
-    for label, rgx in get_path_classifiers()[:3]:
-        print(f"  - {label}: {rgx.pattern}")
-    print(f"verification_commands:")
-    for line in get_verification_commands().splitlines():
-        print(f"  {line}")
-    print(f"project_context:")
-    for line in get_project_context().splitlines():
-        print(f"  {line}")
-    print(f"fullstack_review_steps: {len(get_fullstack_review_steps())} entries")
-    for step in get_fullstack_review_steps()[:3]:
-        print(f"  - ({step['label']}) {step['file_path']}")
+    sys.exit(_cli_main(sys.argv[1:]))

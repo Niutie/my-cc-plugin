@@ -1,5 +1,7 @@
 ---
 description: 复测 deferred-work.md schema v1 conformance；按现状给 solo-dev 三档选择（advisory 共存 / archive+greenfield / 手工 backfill 指南）。半路接入项目时由 init §A.3.c 自动唤起；solo-dev 也可事后手工跑本命令切换 mode。
+argument-hint: ''
+allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 ---
 
 # /harness-zh:upgrade-deferred-work — deferred-work schema 复测 + 模式切换
@@ -178,12 +180,16 @@ emit OK：
 DW_DIR="_bmad-output/implementation-artifacts"
 DW_DST="$DW_DIR/deferred-work.md"
 
-# 步骤 1: 解析 plugin templates/ 路径（同 /harness-zh:update §1 探测逻辑）
-# cache 下多版本时按 semver 降序取最高版（避免 inode-order first-match-wins 的随机选版 bug）
+# 步骤 1: 解析 plugin templates/ 路径（同 /harness-zh:init §A.0 / update §1 同款 12 行 bootstrap）
+# 完整 fallback chain 由 $PLUGIN_ROOT/scripts/discover_plugin_root.sh 维护单份 SoT；
+# 若已 init 过，可直接 `bash .claude/harness/scripts/discover_plugin_root.sh` 取代本块。
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || PLUGIN_ROOT=""
+if [ -z "$PLUGIN_ROOT" ] && [ -x .claude/harness/scripts/discover_plugin_root.sh ]; then
+    PLUGIN_ROOT="$(bash .claude/harness/scripts/discover_plugin_root.sh 2>/dev/null || true)"
+fi
 if [ -z "$PLUGIN_ROOT" ]; then
-    # bash 3.2 (macOS 默认) 在 $(...) 里 case+glob 有 quirk，用 [[ == ]] 替代
+    # 最小自举（与 init/update §A.0 一致；bash 3.2 兼容 [[ == */cache/* ]]）
     PLUGIN_ROOT="$(
         find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
             grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
@@ -193,16 +199,6 @@ if [ -z "$PLUGIN_ROOT" ]; then
             printf '%s\t%s\n' "$(basename "$cand")" "$cand"
         done | sort -V -r -k1,1 | head -n 1 | cut -f2-
     )"
-fi
-if [ -z "$PLUGIN_ROOT" ]; then
-    while IFS= read -r manifest; do
-        if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
-            cand="$(dirname "$(dirname "$manifest")")"
-            [ -f "$cand/.orphaned_at" ] && continue
-            PLUGIN_ROOT="$cand"
-            break
-        fi
-    done < <(find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null)
 fi
 
 # 步骤 2: 决定 source mode（plugin-template 优先；探测失败 → inline-fallback）

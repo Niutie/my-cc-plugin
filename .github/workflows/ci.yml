@@ -1,0 +1,110 @@
+name: harness-zh CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-tests:
+    name: Source-tree tests + release gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Run release_check.sh (version + frontmatter gates)
+        run: bash plugins/harness-zh/scripts/release_check.sh
+
+      - name: Run plugin self-test suite (source-tree only)
+        run: bash plugins/harness-zh/scripts/run_all_tests.sh
+
+  bootstrap-tests:
+    name: Bootstrap-fixture tests (env-dependent)
+    runs-on: ubuntu-latest
+    needs: source-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Bootstrap fake downstream-project fixture
+        run: |
+          set -euo pipefail
+          PLUGIN_DIR="$GITHUB_WORKSPACE/plugins/harness-zh"
+          FIXTURE_DIR="$RUNNER_TEMP/fake-project"
+          mkdir -p "$FIXTURE_DIR/_bmad-output/implementation-artifacts"
+          cd "$FIXTURE_DIR"
+          git init -q .
+          git config user.email ci@example.com
+          git config user.name "CI Bot"
+
+          # Deploy plugin assets (also writes .deploy-manifest.txt)
+          DEPLOY_QUIET=1 bash "$PLUGIN_DIR/scripts/deploy_assets.sh" "$PLUGIN_DIR" "$FIXTURE_DIR"
+
+          # Install pre-commit hook (gate ② tests run against this)
+          bash .claude/harness/scripts/install_git_hooks.sh
+
+          # Seed minimal _bmad-output for tests that read it.
+          #
+          # NOTE on the retro_action_items shape: the `A1: resolved` followed
+          # by indented `category: dev` is INTENTIONALLY non-standard YAML.
+          # It's the bespoke format the harness uses for retro action items —
+          # parsed by an awk state machine in check_retro_action_items.sh
+          # (NOT by a YAML loader). Do not "fix" this to nested-mapping form;
+          # all of the retro tooling (gate ①, retro_category_round_trip_test,
+          # process_retro_residue) depends on this shape. See
+          # plugins/harness-zh/scripts/check_retro_action_items.sh:60-120 for
+          # the parser.
+          cat > _bmad-output/implementation-artifacts/sprint-status.yaml <<'EOF'
+          development_status:
+            epic-1: done
+          retro_action_items:
+            epic-1-retro:
+              A1: resolved
+                category: dev
+          EOF
+          echo "# Deferred Work" > _bmad-output/implementation-artifacts/deferred-work.md
+
+          # Initial commit so subsequent test commits work
+          git add .
+          git commit -q -m "fixture init"
+
+          # Pin the fixture path for downstream test steps
+          echo "FIXTURE_DIR=$FIXTURE_DIR" >> "$GITHUB_ENV"
+
+      - name: Run pre_commit_deferred_schema_test.sh (gate ② regression)
+        working-directory: ${{ env.FIXTURE_DIR }}
+        run: bash .claude/harness/scripts/pre_commit_deferred_schema_test.sh
+
+      - name: Run harness_commit_isolation_test.sh
+        working-directory: ${{ env.FIXTURE_DIR }}
+        run: bash .claude/harness/scripts/harness_commit_isolation_test.sh
+
+      - name: Run simulate_clone_test.sh
+        working-directory: ${{ env.FIXTURE_DIR }}
+        run: bash .claude/harness/scripts/simulate_clone_test.sh
+
+      - name: Run run_retro_self_audit_test.sh
+        working-directory: ${{ env.FIXTURE_DIR }}
+        run: bash .claude/harness/scripts/run_retro_self_audit_test.sh

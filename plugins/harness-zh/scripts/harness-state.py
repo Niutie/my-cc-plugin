@@ -117,7 +117,8 @@ def find_commit_subject(subject):
 
 
 def read_sprint_status(key):
-    r = run([sys.executable, ".claude/harness/scripts/sprint-status.py", "status", key])
+    sprint_status_script = str(Path(__file__).resolve().parent / "sprint-status.py")
+    r = run([sys.executable, sprint_status_script, "status", key])
     if r.returncode == 0:
         return r.stdout.strip()
     return None
@@ -306,7 +307,7 @@ def count_story_tasks(key):
     todo = 0
     in_tasks_block = False  # True between `## Tasks` and the next `## ` / `# ` heading
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 m = re.match(r"^(#+)\s+(.+?)\s*$", line)
                 if m:
@@ -341,7 +342,7 @@ def count_codex_findings(key):
         return ({}, 0)
     sev = {}
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             content = f.read()
     except OSError:
         return ({}, 0)
@@ -359,7 +360,7 @@ def count_codex_handling_rows(key):
     in_section = False
     rows = 0
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 m = re.match(r"^(#+)\s+(.+?)\s*$", line)
                 if m:
@@ -380,7 +381,7 @@ def parse_review_progress(key):
     if not os.path.exists(path):
         return None
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             d = json.load(f)
     except (json.JSONDecodeError, OSError):
         return {"phase": "unparseable", "findings_total": 0, "findings_by_status": {}}
@@ -408,7 +409,7 @@ def has_section(key, section_title_substring):
     if not os.path.exists(path):
         return False
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 m = re.match(r"^(#+)\s+(.+?)\s*$", line)
                 if m and section_title_substring.lower() in m.group(2).lower():
@@ -821,7 +822,7 @@ def read_story_status_for_resume(key):
     if not os.path.exists(path):
         return None
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 m = re.match(r"^\s*\*?\*?Status:?\*?\*?\s*(\w+)\s*$", line, re.IGNORECASE)
                 if m:

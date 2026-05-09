@@ -4,7 +4,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 
 | Plugin | Version | Purpose |
 |---|---|---|
-| **harness-zh** | 0.1.26 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **harness-zh** | 0.1.27 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 
 ---
 
@@ -112,6 +112,7 @@ This one-time bootstrap deploys plugin assets into the project's `.claude/harnes
 | `/harness-zh:run-test` | Test automation sub-loop — single-story ATDD + E2E real-run (invoked by run-sprint stage 5.5 or directly) | As triggered |
 | `/harness-zh:upgrade-deferred-work` | Re-detect `deferred-work.md` schema-v1 conformance + 3-tier mode switch (advisory ↔ strict). For solo-dev who picked advisory at init time and later wants to flip back, or migrated history manually and wants to verify. | Ad-hoc |
 | `/harness-zh:report-issue` | One-shot bug/feedback channel — auto-collect plugin version + current sprint/story state + halt site + recent commits, then open a GitHub issue against `Niutie/my-cc-plugin` via `gh` CLI. Halt-mode submissions also include a temporary workaround so you don't have to wait for the plugin fix to keep moving. Replaces the v0.1.14-0.1.25 `upstream-feedback.md` channel. Requires `gh` CLI installed + `gh auth login` done. | Halt / sprint wrap-up / ad-hoc |
+| `/harness-zh:codex-catchup` | **v0.1.27+** Catch up on stages 3+4 (codex adversarial review + dev fix) that were auto-skipped during `/harness-zh:run` because codex-in-cc was unavailable (plugin not installed / quota exhausted / not logged in). Scans `*.codex-skipped.json` markers, re-runs review + fix per story, archives marker as `*.codex-skipped.resolved.json`. Refuses to run if codex still unavailable. | After codex availability is restored |
 
 Run `/harness-zh:run --help` (or read `commands/run.md`) for flag reference (`--story`, `--epic`, `--continue`, etc.).
 
@@ -137,7 +138,9 @@ For full runtime architecture (5-stage state machine, sprint-status.yaml schema,
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.1.27 | 2026-05-09 | Engineering hardening pass (codex multi-round review): release-gate script (`release_check.sh`) catches version drift + bad command frontmatter; manifest-based `/harness-zh:update` purge no longer touches user-owned `.claude/commands/*` files; new `/harness-zh:codex-catchup` plus stage-3 graceful skip when codex-in-cc unavailable; central `run_all_tests.sh` + GitHub Actions CI with bootstrap fixture; shared `deferred_work_schema_lib.sh` (pre-commit ↔ lint dedup); `harness_config.py --get` CLI eliminates 3 hand-rolled YAML parsers; UTF-8 `encoding=` everywhere. |
 | 0.1.26 | 2026-05-09 | New `/harness-zh:report-issue` — auto-context bug/feedback channel that opens GitHub issues via `gh` CLI; halt mode also yields a temporary workaround. Retires `upstream-feedback.md` (extract/detect scripts + template removed); retro skill no longer splits `category:harness` into a separate file. |
+| _(0.1.17 – 0.1.25)_ | – | Internal iteration only — squash-merged into 0.1.26; no public marketplace release. See `changelog.md` for detail. |
 | 0.1.16 | 2026-05-07 | Codex adversarial review fixes: detector exit code propagation / upgrade-deferred-work safe `mv`-after-source-verify / atomic + idempotent migration writes |
 | 0.1.15 | 2026-05-07 | `argument-hint` frontmatter for slash-command autocomplete (`/harness-zh:run [--story ...]` etc.) |
 | 0.1.14 | 2026-05-07 | `category:harness` retro items split off `sprint-status.yaml` into `.claude/harness/upstream-feedback.md` (plugin-maintainer feedback channel) |

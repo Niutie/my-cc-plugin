@@ -1,6 +1,7 @@
 ---
 description: Harness 项目 bootstrap — 投递 plugin 资产到 .claude/harness/ + .claude/commands/ + 装 git hooks；若 BMad planning artifacts 已齐则继续从中提取 14 字段填 harness-project-config.yaml（merge 模式；--dry-run 预览；--force 覆盖二次确认）
 argument-hint: '[--dry-run | --force | --merge]'
+allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 ---
 
 # /harness-zh:init — Harness 项目 bootstrap + config 初始化
@@ -27,25 +28,18 @@ argument-hint: '[--dry-run | --force | --merge]'
 
 ### A.0 探测 plugin 安装路径
 
-按下列顺序尝试，命中即用，全部 miss 则 halt。Claude Code 把 plugin 装在
-`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`（带版本子目录），
-所以单纯 `find -name harness-zh` 只能找到版本子目录的父级，**不**包含 `commands/`
-等实际文件。靠扫 `plugin.json` 的 `name` 字段定位才稳：
+完整发现逻辑（env var → cache scan with semver sort → fallback → halt）已抽到
+`scripts/discover_plugin_root.sh`，由 init/update/upgrade-deferred-work 共用，避免
+三处复制粘贴漂移（v0.1.23 sort -V 修复就是 drift 实证）。但 init 首跑时项目侧还没
+部署 helper，所以保留**最小 12 行 inline bootstrap**自举：
 
 ```bash
-# 1) Claude Code 注入的 env 变量（hooks 上下文必有；commands 上下文不保证 — 试一下）
+# 1) env var 优先（Claude Code 注入；hooks 必有，commands 不保证 — 试一下）
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || PLUGIN_ROOT=""
 
-# 2) 扫 ~/.claude/plugins 下所有 plugin.json，找 name="harness-zh" 的；
-#    优先 cache/<marketplace>/<plugin>/<version>/（官方版本化安装路径）
-#    **过滤 orphaned 副本**：Claude Code 在版本切换 / 卸载时会留下旧版本目录，
-#    并放 `.orphaned_at` marker；这些目录内容是 stale 的，必须跳过
-#    **按 semver 降序选最高版**：cache 下升级历史会留多个 <version>/ 目录；
-#    find 顺序是 inode 序（macOS APFS 随机），过去的 first-match-wins 会让 init
-#    随机选版本，导致 update/init 反复在新旧版间横跳。改成 sort -V 取最高。
+# 2) miss 则扫 cache：bash 3.2 (macOS 默认) 在 $(...) 里 case+glob 有 quirk，用 [[ == ]] 替代
 if [ -z "$PLUGIN_ROOT" ]; then
-    # bash 3.2 (macOS 默认) 在 $(...) 里 case+glob 有 quirk，用 [[ == ]] 替代
     PLUGIN_ROOT="$(
         find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
             grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
@@ -57,31 +51,22 @@ if [ -z "$PLUGIN_ROOT" ]; then
     )"
 fi
 
-# 3) Cache miss → fallback 用任意命中（如 marketplaces/<...>/plugins/<plugin>/）
-if [ -z "$PLUGIN_ROOT" ]; then
-    while IFS= read -r manifest; do
-        if grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null; then
-            candidate="$(dirname "$(dirname "$manifest")")"
-            [ -f "$candidate/.orphaned_at" ] && continue   # 同样过滤 orphaned
-            PLUGIN_ROOT="$candidate"
-            break
-        fi
-    done < <(find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null)
-fi
-
-# 4) 都没命中 → halt
+# 3) 全部 miss → halt（plugin 未装）
 if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT" ]; then
     cat >&2 <<EOF
 ERROR: 无法定位 harness-zh plugin 安装目录
-       已尝试: \${CLAUDE_PLUGIN_ROOT} env 变量，扫 ~/.claude/plugins/**/plugin.json
-       请确认 plugin 已通过以下流程装载：
-         /plugin marketplace add Niutie/my-cc-plugin
-         /plugin install harness-zh@my-cc-plugin
+       请先：/plugin marketplace add Niutie/my-cc-plugin
+             /plugin install harness-zh@my-cc-plugin
 EOF
     exit 1
 fi
 echo "PLUGIN_ROOT=$PLUGIN_ROOT"
 ```
+
+**说明**：本节是必要的"最小自举"——helper 脚本本身住在 plugin 内，自己定位自己存在
+chicken-and-egg。完整 fallback chain（含 `marketplaces/` 非 cache 路径兜底等）住在
+`$PLUGIN_ROOT/scripts/discover_plugin_root.sh`，未来想扩 detection 逻辑只改它一份；
+init.md / update.md / upgrade-deferred-work.md 三处 bootstrap 维持本同款 12 行短版即可。
 
 把 `$PLUGIN_ROOT` 绑定到对话上下文，§A.2 之后所有 cp 用它做源路径。
 
@@ -107,52 +92,27 @@ mkdir -p .claude/commands
 | `$PLUGIN_ROOT/prompt-suffixes/*` | `.claude/harness/prompt-suffixes/` |
 | `$PLUGIN_ROOT/prompt-templates/*` | `.claude/harness/prompt-templates/` |
 | `$PLUGIN_ROOT/git-hooks/*` | `.claude/harness/git-hooks/` |
+| `$PLUGIN_ROOT/templates/*` | `.claude/harness/templates/` |
 | `$PLUGIN_ROOT/commands/*.md` | `.claude/commands/` |
 
-**单文件投递逻辑**（沿用 `install_git_hooks.sh` 模式）：
+**单文件投递逻辑**：完整 cmp+backup+overwrite 实现住在 `scripts/deploy_assets.sh`，
+init/update 共用。init 首跑时项目侧还没部署副本，所以从 plugin 源直接调：
 
 ```bash
-TS="$(date +%Y%m%d-%H%M%S)"
-INSTALLED=0; UNCHANGED=0; UPDATED=0
-
-deploy() {
-    local src="$1" dst="$2"
-    if [ ! -f "$dst" ]; then
-        cp "$src" "$dst"
-        [ -x "$src" ] && chmod +x "$dst"
-        echo "installed: $dst"
-        INSTALLED=$((INSTALLED + 1))
-    elif cmp -s "$src" "$dst"; then
-        UNCHANGED=$((UNCHANGED + 1))
-    else
-        cp "$dst" "$dst.bak.$TS"
-        cp "$src" "$dst"
-        [ -x "$src" ] && chmod +x "$dst"
-        echo "updated:   $dst (backup → $(basename "$dst").bak.$TS)"
-        UPDATED=$((UPDATED + 1))
-    fi
-}
-
-# 顶层文件
-for f in architecture.md answer-policy.md changelog.md test-stage-triggers.yaml; do
-    deploy "$PLUGIN_ROOT/$f" ".claude/harness/$f"
-done
-
-# 子目录递归（用 find + process substitution 替代 shopt+glob — 兼容 bash 与 zsh，
-# 且不会因空子目录在 zsh 默认 NOMATCH 下中止脚本）
-for sub in scripts conventions prompt-suffixes prompt-templates git-hooks; do
-    while IFS= read -r src; do
-        [ -n "$src" ] && deploy "$src" ".claude/harness/$sub/$(basename "$src")"
-    done < <(find "$PLUGIN_ROOT/$sub" -maxdepth 1 -type f 2>/dev/null)
-done
-
-# commands（单层，只 .md）
-while IFS= read -r src; do
-    [ -n "$src" ] && deploy "$src" ".claude/commands/$(basename "$src")"
-done < <(find "$PLUGIN_ROOT/commands" -maxdepth 1 -type f -name '*.md' 2>/dev/null)
+# init: DEPLOY_PURGE=0（默认；首跑无项目侧 state 可对账）；DEPLOY_QUIET=0 看每文件状态
+SUMMARY="$(bash "$PLUGIN_ROOT/scripts/deploy_assets.sh" "$PLUGIN_ROOT" "$PWD")"
+echo "$SUMMARY"
+# 例：deploy: installed=69 unchanged=0 updated=0 purged=0
 ```
 
-把 `$INSTALLED / $UNCHANGED / $UPDATED` 绑定上下文，§A.6 报告时引用。
+deploy_assets.sh 自身的状态语义：
+- `installed=N` — 新增到项目侧（dst 之前不存在）
+- `unchanged=M` — 内容相同，跳过（cmp -s 命中）
+- `updated=K` — dst 已有但与 src 不同；备份到 `<dst>.bak.<TS>` 后覆盖
+- `purged=P` — 删除项目侧的"plugin 已不存在"孤儿（init 默认 0；update 设 `DEPLOY_PURGE=1`）
+
+把 summary 绑定上下文，§A.6 报告时引用。**solo-dev 看到 `updated=K > 0` 时**应该
+在 §A.6 后人工审看 `.bak.<TS>` 文件确认没丢自己的本地改动。
 
 ### A.3 投放 yaml（仅当不存在 — 永不覆盖既有 yaml）
 

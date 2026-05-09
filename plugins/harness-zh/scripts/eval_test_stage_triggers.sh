@@ -23,7 +23,7 @@
 #
 # 设计准则（与 C1 / C12 同款）：纯 bash + grep + awk + sed；不引 yq / Python / Node。
 
-set -u
+set -uo pipefail
 
 KEY="${1:-}"
 SPEC_PATH="${2:-}"
@@ -66,6 +66,8 @@ if [ ! -f "$TRIGGERS_YAML" ]; then
 fi
 
 # ---- project config 读取（缺失走占位 + WARN，不 abort） ----
+# v0.1.27+：shell-out 调 harness_config.py --get（消除 4-way YAML 解析重复；
+# python3 不在或 harness_config.py 损坏时退化到内联 awk 兜底）。
 read_project_field() {
     local key="$1"
     local default="${2:-<unset>}"
@@ -73,14 +75,22 @@ read_project_field() {
         echo "$default"
         return
     fi
+    local _epd
+    _epd="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local _harness_config_py="$_epd/harness_config.py"
+    if command -v python3 >/dev/null 2>&1 && [ -f "$_harness_config_py" ]; then
+        HARNESS_CONFIG_PATH="$PROJECT_CONFIG" \
+        python3 "$_harness_config_py" --get "$key" --default "$default" --quiet 2>/dev/null \
+            || echo "$default"
+        return
+    fi
+    # Fallback: inline awk parser (verbatim from pre-0.1.27)
     local val
-    # 顶层 scalar
     val="$(grep -E "^${key}:[[:space:]]" "$PROJECT_CONFIG" 2>/dev/null \
             | head -1 \
             | sed -E "s/^${key}:[[:space:]]+//" \
             | strip_yaml_value)"
     if [ -z "$val" ]; then
-        # 试 extra: map 下的二级 key
         val="$(awk -v k="$key" '
             /^extra:/ { in_extra=1; next }
             in_extra && /^[^[:space:]#]/ { in_extra=0 }

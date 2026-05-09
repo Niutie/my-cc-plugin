@@ -43,11 +43,21 @@ if [ ! -f "$DW_PATH" ]; then
     exit 1
 fi
 
-# Schema regexes (POSIX ERE)
-HEAD_FULL_RE='^- \*\*FU-[A-Za-z0-9._\-]+\*\* `\[status:[a-z\-]+\]` `\[bucket:[a-zA-Z0-9.+\-]+\]` `\[target:[^]`]*\]` `\[source:[^]`]*\]`'
-TARGET_VALID_RE='^(Story [0-9]+\.[0-9]+([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
-STATUS_VALID_RE='^(pending|in-progress|partial|resolved|deferred|needs-review|superseded)$'
-LEGACY_INLINE_RE='— (\*\*)?(Resolved|Partial resolution) by Story [0-9.]+(\*\*)? \([0-9]{4}-'
+# Schema regexes — v0.1.27+: source shared lib (single SoT for both this
+# scanner and pre-commit gate ②). Falls back to inline if lib missing.
+if [ -f "$SCRIPT_DIR/deferred_work_schema_lib.sh" ]; then
+    # shellcheck disable=SC1090
+    source "$SCRIPT_DIR/deferred_work_schema_lib.sh"
+    HEAD_FULL_RE="$DWSL_HEAD_FULL_RE"
+    TARGET_VALID_RE="$DWSL_TARGET_VALID_RE"
+    STATUS_VALID_RE="$DWSL_STATUS_VALID_RE"
+    LEGACY_INLINE_RE="$DWSL_LEGACY_INLINE_RE"
+else
+    HEAD_FULL_RE='^- \*\*FU-[A-Za-z0-9._\-]+\*\* `\[status:[a-z\-]+\]` `\[bucket:[a-zA-Z0-9.+\-]+\]` `\[target:[^]`]*\]` `\[source:[^]`]*\]`'
+    TARGET_VALID_RE='^(Story [0-9]+\.[0-9]+([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
+    STATUS_VALID_RE='^(pending|in-progress|partial|resolved|deferred|needs-review|superseded)$'
+    LEGACY_INLINE_RE='— (\*\*)?(Resolved|Partial resolution) by Story [0-9.]+(\*\*)? \([0-9]{4}-'
+fi
 
 # Counters
 COUNT_A=0   # missing 4-tag head

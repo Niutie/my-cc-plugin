@@ -33,8 +33,16 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 RETRO_TRIGGER='_bmad-output/implementation-artifacts/[4-6]-.*\.md$'
 RETRO_CHECKER=".claude/harness/scripts/check_retro_action_items.sh"
 DEFERRED_WORK_PATH="_bmad-output/implementation-artifacts/deferred-work.md"
+SCHEMA_LIB="$REPO_ROOT/.claude/harness/scripts/deferred_work_schema_lib.sh"
 
 cd "$REPO_ROOT"
+
+# Source the shared schema validation library if present (v0.1.27+). Falls
+# back to inline regexes below if missing (e.g. project not yet updated).
+if [ -f "$SCHEMA_LIB" ]; then
+    # shellcheck disable=SC1090
+    source "$SCHEMA_LIB"
+fi
 
 # `-c core.quotepath=false` 让 git 对 CJK 路径返回原始 UTF-8 而非 C-style
 # 八进制转义；否则中文 retro / story 文件名会被双引号包裹，gate 触发 grep
@@ -107,43 +115,51 @@ if $GIT diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
     BAD_RETRO=""
     BAD_TARGET=""
 
+    # Use lib regexes if sourced, else fall back to inline (kept verbatim for
+    # back-compat when project hasn't yet pulled v0.1.27 update). NOTE: we use
+    # explicit `if` instead of `${VAR:-default}` because the default values
+    # contain `{4}` quantifiers — bash sees the inner `}` as the substitution
+    # terminator and truncates the regex (introduced 2026-05-09; caught by
+    # pre_commit_deferred_schema_test.sh fixture 3 in CI bootstrap).
+    if [ -n "${DWSL_HEAD_FULL_RE:-}" ]; then
+        HEAD_FULL_RE_LOCAL="$DWSL_HEAD_FULL_RE"
+        TARGET_VALID_RE_LOCAL="$DWSL_TARGET_VALID_RE"
+        LEGACY_INLINE_RE_LOCAL="$DWSL_LEGACY_INLINE_RE"
+    else
+        HEAD_FULL_RE_LOCAL='^- \*\*FU-[A-Za-z0-9._\-]+\*\* `\[status:[a-z\-]+\]` `\[bucket:[a-zA-Z0-9.+\-]+\]` `\[target:[^]`]*\]` `\[source:[^]`]*\]`'
+        TARGET_VALID_RE_LOCAL='^(Story [0-9]+\.[0-9]+([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
+        LEGACY_INLINE_RE_LOCAL='— (\*\*)?(Resolved|Partial resolution) by Story [0-9.]+(\*\*)? \([0-9]{4}-'
+    fi
+
     if [ -n "$ADDED" ]; then
-        # (a) FU bullet head must match 4-tag schema; strip leading "+"
-        BAD_HEAD="$(echo "$ADDED" \
-            | grep -E '^\+- \*\*FU-' \
-            | grep -vE '^\+- \*\*FU-[A-Za-z0-9._\-]+\*\* `\[status:[a-z\-]+\]` `\[bucket:[a-zA-Z0-9.+\-]+\]` `\[target:[^]`]*\]` `\[source:[^]`]*\]`' \
+        # All "+ ..." added lines (excluding +++ header) are passed in as
+        # ADDED already. Strip the leading "+" before applying lib regexes
+        # (which expect plain content lines).
+        STRIPPED="$(echo "$ADDED" | sed -E 's/^\+//')"
+
+        # (a) FU bullet head must match 4-tag schema
+        BAD_HEAD="$(echo "$STRIPPED" \
+            | grep -E '^- \*\*FU-' \
+            | grep -vE "$HEAD_FULL_RE_LOCAL" \
             || true)"
 
         # (b) legacy inline suffix
-        BAD_LEGACY="$(echo "$ADDED" \
-            | grep -E '— (\*\*)?(Resolved|Partial resolution) by Story [0-9.]+(\*\*)? \([0-9]{4}-' \
+        BAD_LEGACY="$(echo "$STRIPPED" \
+            | grep -E "$LEGACY_INLINE_RE_LOCAL" \
             || true)"
 
         # (c) FU-RETRO-* namespace
-        BAD_RETRO="$(echo "$ADDED" \
-            | grep -E '^\+- \*\*FU-RETRO-' \
+        BAD_RETRO="$(echo "$STRIPPED" \
+            | grep -E '^- \*\*FU-RETRO-' \
             || true)"
 
-        # (d) target tag value enumeration (v0.1.20)
-        # Whitelist (POSIX ERE):
-        #   Story X.Y           — Story 1.11
-        #   Story X.Y.Z         — Story 1.11.A (sub-letter or sub-digit)
-        #   Epic N              — Epic 6
-        #   Epic N retro        — Epic 6 retro
-        #   Epic N <kebab>      — Epic 6 production lockdown (allow trailing kebab phrase)
-        #   vX.Y+ <kebab>       — v0.2+ first-sprint / v1.0+ FR77 / v2.0+ customer-feedback
-        #   customer-feedback   — phase-agnostic
-        #   N/A                 — handled by other mechanism
-        # Strategy: only check FU bullet HEAD lines (those with full 4-tag
-        # block); extract each [target:<value>] and validate against whitelist.
-        # Non-bullet lines (history audit, body fields) ignored.
-        TARGET_VALID_RE='^(Story [0-9]+\.[0-9]+([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
-        BAD_TARGET="$(echo "$ADDED" \
-            | grep -E '^\+- \*\*FU-[A-Za-z0-9._\-]+\*\* `\[status:[a-z\-]+\]` `\[bucket:[a-zA-Z0-9.+\-]+\]` `\[target:[^]`]*\]` `\[source:[^]`]*\]`' \
+        # (d) target tag value enumeration: only check well-formed FU bullet
+        # heads (the ones that passed (a)); extract [target:<v>] and validate.
+        BAD_TARGET="$(echo "$STRIPPED" \
+            | grep -E "$HEAD_FULL_RE_LOCAL" \
             | while IFS= read -r line; do
-                # extract the target value: capture between `[target: ... ]`
-                target_val="$(printf '%s' "$line" | sed -E "s/.*\`\[target:([^]\`]*)\]\`.*/\1/")"
-                if ! printf '%s' "$target_val" | grep -qE "$TARGET_VALID_RE"; then
+                target_val="$(printf '%s' "$line" | sed -nE "s/.*\`\[target:([^]\`]*)\]\`.*/\1/p")"
+                if ! printf '%s' "$target_val" | grep -qE "$TARGET_VALID_RE_LOCAL"; then
                     printf '%s\n' "$line"
                 fi
               done \

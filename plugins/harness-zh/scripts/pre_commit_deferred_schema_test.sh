@@ -13,7 +13,14 @@
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-HOOK="$REPO_ROOT/.git/hooks/pre-commit"
+# Worktree-aware hooks dir: in the main checkout this resolves to .git/hooks/pre-commit;
+# in a worktree it resolves to .git/worktrees/<name>/hooks/pre-commit (where install_git_hooks.sh
+# actually places the hook). Hardcoding $REPO_ROOT/.git/hooks would mis-locate it under a worktree.
+HOOK="$(git rev-parse --git-path hooks/pre-commit)"
+case "$HOOK" in
+    /*) ;;  # already absolute
+    *)  HOOK="$REPO_ROOT/$HOOK" ;;
+esac
 DW_REL="_bmad-output/implementation-artifacts/deferred-work.md"
 DW_ABS="$REPO_ROOT/$DW_REL"
 

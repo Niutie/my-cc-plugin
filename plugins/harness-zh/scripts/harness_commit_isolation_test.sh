@@ -12,7 +12,7 @@
 #
 # 整脚本退出码 = 失败 fixture 数（0 = 全过）。
 
-set -u
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"

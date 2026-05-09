@@ -77,7 +77,7 @@
 #   bash .claude/harness/scripts/check_test_harness_env.sh
 #   FORCE_SANDBOX=1 bash .claude/harness/scripts/check_test_harness_env.sh
 
-set -u
+set -uo pipefail
 
 # ---- emit JSON helper（避免 bash bool 的奇怪写法） ----
 bool() {
@@ -124,42 +124,46 @@ fi
 PW_CACHE_DIR="${AEGIS_ENV_PROBE_PLAYWRIGHT_CACHE:-${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}}"
 
 # ---- frontend_dir：从 harness-project-config.yaml 读；缺则 fallback 'console-web' ----
-# 不 source read_harness_config.sh — 那个 helper 把 REPO_ROOT 绑定到自己的脚本路径，
-# 与本脚本通过 AEGIS_ENV_PROBE_REPO 控制 REPO_ROOT 的语义冲突。本地 inline 解析。
+# v0.1.27+：shell-out 调 harness_config.py（消除 4-way YAML 解析重复）。
+# 用 --config-path flag 而非 source read_harness_config.sh，保留本脚本通过
+# AEGIS_ENV_PROBE_REPO 控制 REPO_ROOT 的能力（read_harness_config.sh 把
+# REPO_ROOT 绑定到自己的脚本路径，与本脚本语义冲突）。
+# python3 不在或 harness_config.py 缺失时退化到内联 awk 兜底。
 FRONTEND_DIR="console-web"
 _HARNESS_CONFIG="${REPO_ROOT}/.claude/harness/harness-project-config.yaml"
+_CTHE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_HARNESS_CONFIG_PY="$_CTHE_DIR/harness_config.py"
 if [ -f "$_HARNESS_CONFIG" ]; then
-    # 顶层 scalar 优先
-    _fd_val="$(grep -E "^frontend_dir:[[:space:]]" "$_HARNESS_CONFIG" 2>/dev/null \
-              | head -1 \
-              | sed -E "s/^frontend_dir:[[:space:]]+//")"
-    # 退到 extra: 二级 scalar
-    if [ -z "$_fd_val" ]; then
-        _fd_val="$(awk '
-            /^extra:/ { in_extra=1; next }
-            in_extra && /^[^[:space:]#]/ { in_extra=0 }
-            in_extra && /^[[:space:]]+frontend_dir:[[:space:]]/ {
-                sub(/^[[:space:]]+frontend_dir:[[:space:]]+/, "")
-                # 同时去掉行尾 inline comment（`# foo` 段）
-                sub(/[[:space:]]+#.*$/, "")
-                print
-                exit
-            }
-        ' "$_HARNESS_CONFIG" 2>/dev/null)"
-    fi
-    if [ -n "$_fd_val" ]; then
-        # 去外层引号 — single OR double 二选一（不是两轮都剥）
-        # v0.1.21 fix：原版盲目剥 single + double 两轮，遇到 yaml 单引号外层
-        # 包裹 + 内部含双引号的场景（如 'Cypress "v13"'）会把内部双引号误吞。
+    if command -v python3 >/dev/null 2>&1 && [ -f "$_HARNESS_CONFIG_PY" ]; then
+        _fd_val="$(python3 "$_HARNESS_CONFIG_PY" \
+                       --config-path "$_HARNESS_CONFIG" \
+                       --get frontend_dir --default '' --quiet 2>/dev/null || true)"
+    else
+        # Fallback: inline awk parser (verbatim pre-0.1.27)
+        _fd_val="$(grep -E "^frontend_dir:[[:space:]]" "$_HARNESS_CONFIG" 2>/dev/null \
+                  | head -1 \
+                  | sed -E "s/^frontend_dir:[[:space:]]+//")"
+        if [ -z "$_fd_val" ]; then
+            _fd_val="$(awk '
+                /^extra:/ { in_extra=1; next }
+                in_extra && /^[^[:space:]#]/ { in_extra=0 }
+                in_extra && /^[[:space:]]+frontend_dir:[[:space:]]/ {
+                    sub(/^[[:space:]]+frontend_dir:[[:space:]]+/, "")
+                    sub(/[[:space:]]+#.*$/, "")
+                    print
+                    exit
+                }
+            ' "$_HARNESS_CONFIG" 2>/dev/null)"
+        fi
+        # 去外层引号（single OR double，不两轮都剥；v0.1.21 fix）
         case "$_fd_val" in
             \'*\') _fd_val="${_fd_val#\'}"; _fd_val="${_fd_val%\'}" ;;
             \"*\") _fd_val="${_fd_val#\"}"; _fd_val="${_fd_val%\"}" ;;
         esac
         _fd_val="${_fd_val%"${_fd_val##*[![:space:]]}"}"
-        # 空字符串（template 默认 '' 或被清空）→ 保 fallback 'console-web'
-        if [ -n "$_fd_val" ]; then
-            FRONTEND_DIR="$_fd_val"
-        fi
+    fi
+    if [ -n "$_fd_val" ]; then
+        FRONTEND_DIR="$_fd_val"
     fi
 fi
 

@@ -1,6 +1,7 @@
 ---
 description: 自动收集 plugin 版本 / 当前 sprint+story 状态 / halt 现场等上下文，用 gh CLI 直接给 Niutie/my-cc-plugin 提 GitHub issue。halt 时提完会附一个临时绕过方案。
-argument-hint: [--type bug|feature|halt|other] [--story KEY] [--epic N] [--halt-stage N] [--halt-command run|run-test|init|update|upgrade-deferred-work]
+argument-hint: '[--type bug|feature|halt|other] [--story KEY] [--epic N] [--halt-stage N] [--halt-command run|run-test|init|update|upgrade-deferred-work]'
+allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
 # /harness-zh:report-issue — 一键给 plugin 作者提 GitHub issue

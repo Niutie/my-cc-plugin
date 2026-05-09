@@ -1,6 +1,7 @@
 ---
 description: 自动按 sprint-status 跑完所有 backlog story（主 agent 编排：create → dev → codex adversarial review → dev fix → bmad code review）
 argument-hint: '[--story [<key>] | --epic [<num>] | --continue | --dry-run]'
+allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 ---
 
 # Sprint 自动开发循环
@@ -180,7 +181,7 @@ worktree **可以**不干净（这是续作的合法状态）。改跑这套：
 | 阶段 ⑥.5 `chore(retro-c$EPIC): process residue → N chore specs` | `chore-retro-c${EPIC}-<code>-<slug>.md` × N（NEW，由 fresh agent 生成）+ `sprint-status.yaml`（仅 retro_action_items.epic-${EPIC}-retro 子段加 `chore_spec` + `category` 两字段，category 值取自 fresh agent MANIFEST）。无残余时 STATUS=skip。 |
 | 阶段 ⑥ `epic($EPIC): mark done` | **仅** `sprint-status.yaml`（同时翻 `epic-${EPIC}-retrospective: done` 和 `epic-${EPIC}: done`）。如果两个 key 都已是 done 则 STATUS=skip。 |
 
-**测试 harness 独立 stage**（由 `/harness-zh:run-test` 触发，与 run-sprint 5-stage 命名空间隔离；详见 [`run-test-sprint.md`](run-test-sprint.md)）：
+**测试 harness 独立 stage**（由 `/harness-zh:run-test` 触发，与 run-sprint 5-stage 命名空间隔离；详见 [`run-test.md`](run-test.md)）：
 
 | 阶段 commit | 预期产出路径（脚本内置规则） |
 |---|---|
@@ -347,6 +348,96 @@ cross_story_artifacts:
 >
 > **另外**：`/codex:adversarial-review` 的 frontmatter 是 `disable-model-invocation: true`，**Skill tool 调不动它**——子 agent 必须直接跑底层 `node` 命令。下面 prompt 直接给出兜底命令，免得每个新 stage ③ 子 agent 都自己摸索一遍。
 
+#### 阶段 ③.0：Pre-flight — codex 可用性探测（v0.1.27+）
+
+在 spawn codex subagent **之前**先跑探测，避免"plugin 没装也去 spawn 一遍"的浪费：
+
+```bash
+CODEX_PROBE_JSON="$(bash .claude/harness/scripts/check_codex_availability.sh)"
+CODEX_AVAILABLE="$(printf '%s' "$CODEX_PROBE_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["available"])')"
+```
+
+**若 `CODEX_AVAILABLE = False`** → 走 §③.1 跳过流程（**不**进 §③ 主体的 spawn 流程）。
+否则按 §③ 主体（下面）spawn codex subagent 正常跑。
+
+#### 阶段 ③.1：Skip 路径（codex 不可用时显式跳过 stage 3+4）
+
+> **设计动机**：codex-in-cc 不可用是**预期可发生**的情况（额度耗尽、未登录、未装、网络
+> 抖动等）。原协议是 halt，让用户处理；现协议（v0.1.27+）允许显式跳过 stage 3+4，story
+> 走完 stage 5 → done，但留下 marker 供事后用 `/harness-zh:codex-catchup` 补跑。
+>
+> **绝不静默**：必须有清晰可视的通知（halt 模板风格），让用户当场知道"codex 这一档跳过了"
+> 而不是默默吃掉。
+>
+> **绝不污染主流程状态机**：不动 `dev_status` 字段。stage 5 把 dev_status 翻 done 是正常的；
+> codex-skipped 是正交的 audit-trail 关注点，由独立 marker 文件承担。
+
+触发本路径的两条来源：
+1. **§③.0 pre-flight 命中**：`CODEX_AVAILABLE = False`
+2. **§③ 主体 in-flight 命中**：codex subagent 返回文本含 `hit your limit` / `rate limit` /
+   `usage limit` / `quota` / `not logged in` / `unauthorized` / `auth required` / `please log in`
+   等关键词（保留 `reset` 时间提示也走本路径——不再用旧 §3 配额专属 halt 模板，改 catchup-friendly skip）
+
+两个来源都执行同一组操作：
+
+##### a) 写 marker 文件 `<KEY>.codex-skipped.json`
+
+```bash
+TS_ISO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+cat > "_bmad-output/implementation-artifacts/${KEY}.codex-skipped.json" <<EOF
+{
+  "key": "${KEY}",
+  "reason": "<reason>",
+  "skipped_at": "${TS_ISO}",
+  "skipped_at_stage": 3,
+  "stage2_base_sha": "<STAGE2_BASE>",
+  "remediation": "<remediation 文本>",
+  "catchup_command": "/harness-zh:codex-catchup --story ${KEY}"
+}
+EOF
+```
+
+`<reason>` 取值：
+- `not_installed`（pre-flight 命中：plugin 没装；reason 字段直接复用 probe JSON）
+- `quota_exhausted`（in-flight 命中：subagent 返回含 `hit your limit` / `rate limit` / `quota` / `usage limit` / `reset`）
+- `auth_failed`（in-flight 命中：含 `not logged in` / `unauthorized` / `please log in` / `auth required`）
+- `unknown`（in-flight 命中但匹配不到具体子类型）
+
+##### b) 显式通知用户（halt 模板风格，但**不退出**——只是显示给用户）
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ ⚠️  codex-in-cc 不可用 — stage 3+4 已跳过 <KEY>                  │
+│                                                                  │
+│   reason       : <reason>                                        │
+│   remediation  : <remediation 字段；pre-flight 来源直接拿 probe  │
+│                  JSON.remediation；in-flight 来源给一句"等额度    │
+│                  恢复 / gh auth login 后重跑"等具体引导>         │
+│                                                                  │
+│ Story 继续往下走 stage 5（bmad code review）+ done。             │
+│ marker 文件已写：                                                │
+│   _bmad-output/implementation-artifacts/<KEY>.codex-skipped.json │
+│                                                                  │
+│ 待 codex 恢复后跑：                                              │
+│   /harness-zh:codex-catchup --story <KEY>                        │
+│ 或 `/harness-zh:codex-catchup` 一次性补跑所有 skip 的 story。    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+##### c) 跳到 stage 5
+
+不跑 stage 3 commit、不跑 stage 4。直接进 §1 阶段 ⑤（bmad final review）。
+
+注意：`harness-commit.py 3` 与 `4` 都**不跑**——marker 文件是状态记录而非 commit 路径
+中间产物。stage 5 commit 时 `harness-commit.py 5` 会照常处理 sprint-status 里 dev_status
+状态推进（review → done），不受 skip 影响。
+
+> **Pre-flight pre-flight**：v0.1.27 之前已经有 `<CODEX_COMPANION_PATH>` 解析失败 → halt
+> 的兜底（§③ 主体下面 §③.2）。现在 §③.0 探测脚本与该兜底逻辑完全等价但更显式 +
+> 提供 catchup 路径——主 agent 默认走 §③.0；§③.2 路径 fallback 到一致的 marker 写入。
+
+#### 阶段 ③.2：主体（codex 可用时正常跑）
+
 - 调度 codex review：
 
   ```
@@ -398,6 +489,13 @@ cross_story_artifacts:
       ```
       `${CLAUDE_PLUGIN_ROOT}` 在主 agent 自身环境里通常已被注入；但 spawn 的 sub-agent 子进程**不一定**继承——主 agent 在调度前预解析能消除这种不稳定。如果两条路径都为空 → halt（codex companion 不可用，stage ③ 无法继续）。
 - 等待返回。
+- **In-flight 检测（v0.1.27+）**：subagent 返回的文本若含 codex 不可用的关键词，路由到
+  §③.1 skip 路径而非通用 §3 halt 模板。检测词：
+    - 配额：`hit your limit` / `rate limit` / `usage limit` / `quota` / `reset` 时间提示
+    - 认证：`not logged in` / `unauthorized` / `please log in` / `auth required`
+  命中任一 → 跳到 §③.1，写 marker 文件，继续 stage 5。
+  **本规则仅适用于 stage 3**——其它 stage（如 stage 5 bmad final review）的配额耗尽
+  仍按 §3 通用 halt 模板处理（因为它们没有 codex-skip 的等价 marker / catchup 通道）。
 - **验收**：
   - `_bmad-output/implementation-artifacts/$KEY.codex-review.md` 存在且非空（至少 200 字节）。
   - 文件包含 `base: <STAGE2_BASE>` frontmatter 行（说明 subagent 真的传了 `--base`）。
@@ -405,6 +503,24 @@ cross_story_artifacts:
 - **commit**：`python3 .claude/harness/scripts/harness-commit.py 3 $KEY`，按 §−1.d 退出码处理。
 
 ### 阶段 ④：Dev 续作修复（独立 fresh general-purpose agent，**有意 freelance，不调 BMad 工作流**）
+
+#### 阶段 ④.0：Skip 路径前置检查（v0.1.27+）
+
+stage 4 入口先检查 `<KEY>.codex-skipped.json` 是否存在：
+
+```bash
+if [ -f "_bmad-output/implementation-artifacts/${KEY}.codex-skipped.json" ]; then
+    echo "stage 4 skipped — codex review was unavailable for $KEY (see ${KEY}.codex-skipped.json)" >&2
+    # 跳到 stage 5，不 spawn dev fix subagent
+fi
+```
+
+如 marker 存在 → stage 4 整段**直接跳过**（包括 spawn / 验收 / commit）。理由：stage 4 的
+工作就是修 codex finding，没 finding 等于无活可干。stage 5 在 §③.1 已被设为下一站。
+
+如 marker 不存在（codex 正常跑过 stage 3）→ 按 §阶段 ④ 主体（下面）正常跑。
+
+#### 阶段 ④.1：主体（codex review 已落地时正常跑）
 
 **为什么本阶段不走 BMad skill 工作流**（这是有意设计，不要"修"）：本阶段本质是 **stage ② 的延续**——codex review 提出的每条 finding 都是"stage ② 没做好或漏掉的部分"，stage ④ 就是把这些缺口补上。
 
@@ -560,7 +676,7 @@ cross_story_artifacts:
 
 > **2026-05-04 commit 路径统一（chore-harness-epic-4-orchestration-observations T2.1）**：本 stage 已改为 **review-only** —— `/harness-zh:run-test` subagent 内部走 T3 + T4 双 commit（颗粒度更细 + atdd 红相 vs e2e 绿相分阶段诊断）；run-sprint 主 agent 不再调用 5-5 commit 当 commit 路径，只做 (a) spawn → (b) 等返回 → (c) 验收产物 → (d) 跑 5-5 期待 STATUS=skip 用作 sanity gate。详 spec 段 Q3 RESOLVED 决策。
 >
-> **触发评估在 /harness-zh:run-test 内部完成**：`/harness-zh:run-test --story $KEY` 启动头部会调 `.claude/harness/scripts/eval_test_stage_triggers.sh` 读 `.claude/harness/test-stage-triggers.yaml` + `.claude/harness/harness-project-config.yaml` 自决跑哪些 stage（T1/T3/T4 + 进阶 T5/T6/CI/test-review）。run-sprint 主流程不传额外参数，也不预先解析触发条件——阶段 ⑤.5 仅负责调用入口 + 5-5 sanity gate。详 [`run-test-sprint.md`](run-test-sprint.md) §0.0.5。
+> **触发评估在 /harness-zh:run-test 内部完成**：`/harness-zh:run-test --story $KEY` 启动头部会调 `.claude/harness/scripts/eval_test_stage_triggers.sh` 读 `.claude/harness/test-stage-triggers.yaml` + `.claude/harness/harness-project-config.yaml` 自决跑哪些 stage（T1/T3/T4 + 进阶 T5/T6/CI/test-review）。run-sprint 主流程不传额外参数，也不预先解析触发条件——阶段 ⑤.5 仅负责调用入口 + 5-5 sanity gate。详 [`run-test.md`](run-test.md) §0.0.5。
 
 **触发条件：** 阶段 ⑤ harness-commit 5 STATUS=ok 且 sprint-status `<KEY>` status=done。
 
@@ -748,8 +864,30 @@ loop:
 goto loop
 
 report "🎉 完成 (LOOP_SCOPE=<value>, target=<key 或 epic 或 -—>)"
+
+# Codex-skipped 提醒（v0.1.27+）：本轮（或更早）有 codex 不可用导致 stage 3+4 跳过的 story?
+SKIPPED_COUNT=$(ls _bmad-output/implementation-artifacts/*.codex-skipped.json 2>/dev/null | wc -l | tr -d ' ')
+if SKIPPED_COUNT > 0:
+    print loud notice 给用户:
+        ┌──────────────────────────────────────────────────────────────────┐
+        │ ⚠️  Codex review pending — 仍有 N 条 story 未做 stage 3+4         │
+        │                                                                  │
+        │ 这些 story 在 stage 3 时 codex-in-cc 不可用 → 显式跳过 + 留 marker │
+        │ 现在 sprint 已跑完，但 codex 对抗 review 这一档**还没做**。       │
+        │                                                                  │
+        │ Marker 文件：                                                    │
+        │   <列每个 *.codex-skipped.json basename + reason>                │
+        │                                                                  │
+        │ 待 codex 恢复后跑：                                              │
+        │   /harness-zh:codex-catchup                                      │
+        │                                                                  │
+        │ 一次性补上所有 skipped story 的 stage 3+4。                      │
+        └──────────────────────────────────────────────────────────────────┘
+
 report "💡 这一轮跑下来如果有任何 plugin 行为不顺手 / 文档误导 / 教学缺口 — 跑 /harness-zh:report-issue（自动收集本轮 sprint 上下文 + 一键直提到 Niutie/my-cc-plugin）"
 ```
+
+**主 agent 实操要点**：上面的 SKIPPED_COUNT 检查必须用 Bash + `ls | wc -l` 实跑（不是揣测），数字 > 0 时**必须**把 loud notice 完整打印给用户（不要悄悄省略 / 缩成一行）。这是 codex-skipped 显式可见性契约的最后一道——sprint 跑完前的最后机会，不让用户忘了 catchup（codex-review 2026-05-09 high #2 配套硬化）。
 
 **主 agent 在每次回到循环顶部时必须重新检查 LOOP_SCOPE**（不要假设"既然进了循环就一直跑"）——以防有 LOOP_SCOPE = `single-epic` 跑完目标 epic 后却继续跑别的 epic 的 bug。
 
