@@ -65,15 +65,16 @@
 
 代价：每个项目带一份资产副本（增加少量磁盘占用）；好处：所有现有路径引用（`.claude/harness/scripts/...` 等）零改动可用，git hook + markdown command bash 都跑得了。
 
-### 〇.3 五个命令的分工
+### 〇.3 六个命令的分工
 
 | 命令 | 职责 | 何时跑 |
 |---|---|---|
-| `/harness-zh:init` | 首次 bootstrap — mkdir 项目目录 → 探测 plugin path → cmp/backup/overwrite copy 资产 → 投放 yaml template（仅当不存在）→ 装 git hooks → 检测 BMad → 齐则进 §十一 14 字段提取 / 缺则报告引导。**v0.1.13+** 半路接入项目时还检测 `deferred-work.md` schema state（§A.3.c 三档分支）+ `category:harness` retro 残余（§A.3.d 迁移到 upstream-feedback.md）。 | 1 次/项目；后续 BMad 补齐后可重跑（merge 模式补填 yaml 空字段） |
+| `/harness-zh:init` | 首次 bootstrap — mkdir 项目目录 → 探测 plugin path → cmp/backup/overwrite copy 资产 → 投放 yaml template（仅当不存在）→ 装 git hooks → 检测 BMad → 齐则进 §十一 14 字段提取 / 缺则报告引导。**v0.1.13+** 半路接入项目时还检测 `deferred-work.md` schema state（§A.3.c 三档分支）；**v0.1.26+** §A.3.d 改为纯 advisory（不再迁移 category:harness 残余 — upstream-feedback.md 通道已退役，由 `/harness-zh:report-issue` 替代）。 | 1 次/项目；后续 BMad 补齐后可重跑（merge 模式补填 yaml 空字段） |
 | `/harness-zh:update` | 升级后刷资产 — 同 init 部署逻辑但**不**投 yaml、**不**跑 BMad 提取；只 sync `.claude/harness/*` + `.claude/commands/*` + 重装 git hooks | 每次 `/plugin marketplace update my-cc-plugin` 后 |
 | `/harness-zh:run` | runtime sprint loop — 详 §一-§五 | 日常开发主入口 |
 | `/harness-zh:run-test` | runtime test sub-loop — 详 §一 | 由 run 触发或手工 |
 | `/harness-zh:upgrade-deferred-work` | **v0.1.13+** 事后 deferred-work.md schema 复测 + mode 切换。跑 detector → 给三档（advisory / archive+greenfield / 手工 backfill 指南）→ 应用选择。供 init 时选 advisory 后想切回 strict、或手工 backfill 完想验证的场景。 | Ad-hoc，按需 |
+| `/harness-zh:report-issue` | **v0.1.26+** 一键给 plugin 作者提 GitHub issue。自动收集 plugin 版本 / 当前 sprint+story 状态 / halt 现场 / 近期 commits 等上下文，gh CLI 直提到 `Niutie/my-cc-plugin`。halt 场景提完会附临时绕过方案，让用户不必等 plugin 修复就能继续推进项目。 | halt / 阶段收尾 / ad-hoc 任意时机 |
 
 ### 〇.4 与 §十一「通用化与项目 config」的关系
 
@@ -394,9 +395,11 @@ C-bootstrap spec 内部 Q4 已 2026-05-03 标 RESOLVED。
 
 风险缓冲：主 agent **不**在 solo-dev 给其它指令时擅自跑；只在用户肯定回复"继续"时进入 chore 模式；任一步骤失败立即 halt + 报告状态。
 
-### Q4 ✅ RESOLVED 2026-05-05 → SUPERSEDED 2026-05-07 by v0.1.14: `category:harness` 改走完全分离 (A 方案变体)
+### Q4 ✅ RESOLVED 2026-05-05 → SUPERSEDED 2026-05-07 by v0.1.14 → SUPERSEDED 2026-05-09 by v0.1.26：`category:harness` 通过 `/harness-zh:report-issue` 直提 GitHub issue（取消 upstream-feedback.md 中转）
 
-> **Supersession note (v0.1.14)**：B 方案落地后实际运行表明，把 plugin-maintainer 的债（`category: harness`）继续放在 sprint-status.yaml 里仍是 plugin **用户视角**的污染（用户感觉"项目背着插件作者的待办"+ `check_retro_action_items.sh` 反复 WARN）。v0.1.14 改为：retro skill 写入时直接分流 — `category: dev` 仍写 sprint-status（行为同 B 方案），`category: harness` 改写 `.claude/harness/upstream-feedback.md`（markdown 而非 yaml；用户复制粘贴提 GitHub issue 给作者）。`migrated-upstream` 加入合法 status enum；新 `extract_harness_feedback.sh` 工具 + `init §A.3.d` 自动检测残余。Q4 B 方案的 schema/gate/process 决策仍在；仅"两类共表"的物理位置改成"分两表"（A 方案变体 — `upstream-feedback.md` 而非 `improvement-backlog.yaml`）。详 changelog v0.1.14。
+> **Supersession note (v0.1.26)**：v0.1.14 的 `upstream-feedback.md` 中转通道实际运行 ~3 周后发现：用户 review 该文件 → 复制粘贴到 GitHub issue 创建页 → 手填 title / 标 label，仍是 5+ 步手工损耗，多数项目积累几条后就懒得提了，反馈到达率低。v0.1.26 改为**直通管道**：新命令 `/harness-zh:report-issue` 自动收集 plugin 版本 / 当前 sprint+story 状态 / halt 现场 / 近期 commits 拼好 issue body，gh CLI 一键直提到 `Niutie/my-cc-plugin/issues`；halt 场景提完还附临时绕过方案让用户继续推进项目。`upstream-feedback.md` / `extract_harness_feedback.sh` / `detect_harness_residue.sh` / `templates/upstream-feedback.md.template` 全删；retro skill 不再分流（`category: dev` 与 `category: harness` 都写 sprint-status.yaml，仅 pre-commit gate 行为不同 — dev 阻 commit / harness 仅 WARN + hint 跑 `/harness-zh:report-issue`）。`migrated-upstream` status enum 保留兼容（v0.1.14-0.1.25 残余视同 done）。Q4 B 方案的 schema/gate/process 决策仍在。详 changelog v0.1.26。
+
+> **Supersession note (v0.1.14)**：B 方案落地后实际运行表明，把 plugin-maintainer 的债（`category: harness`）继续放在 sprint-status.yaml 里仍是 plugin **用户视角**的污染（用户感觉"项目背着插件作者的待办"+ `check_retro_action_items.sh` 反复 WARN）。v0.1.14 曾改为：retro skill 写入时直接分流 — `category: dev` 仍写 sprint-status（行为同 B 方案），`category: harness` 改写 `.claude/harness/upstream-feedback.md`（markdown 而非 yaml；用户复制粘贴提 GitHub issue 给作者）。该方案在 v0.1.26 被进一步取代（见上）。
 
 
 
@@ -777,10 +780,10 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 │           │   ├── diff_guardrail.sh                              backfill 改动越界守门
 │           │   └── pre_commit_deferred_schema_test.sh             pre-commit gate ② 测试
 │           │
-│           ├── [Harness upstream-feedback 流（v0.1.14 新增）]
-│           │   ├── detect_harness_residue.sh                      扫 sprint-status.yaml 找未迁 category:harness 条目
-│           │   └── extract_harness_feedback.sh                    迁移工具（--dry-run / --apply；原子 write + (epic,code) dedup，0.1.16 强化）
+│           ├── [Plugin issue 直通管道（v0.1.26 替代 v0.1.14 upstream-feedback.md 中转）]
+│           │   └── collect_issue_context.sh                       拼 issue body（plugin 版本 / sprint/story 状态 / halt 现场 / 近期 commits）；由 /harness-zh:report-issue 调用 → gh CLI 直提
 │           │
+
 │           ├── [Spec 质量 gate]
 │           │   ├── check_spec_length.sh                           spec 长度上限
 │           │   ├── check_inheritance_block.sh + _test.sh          epic 第一 story 继承段约束

@@ -218,7 +218,7 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 > 现场：[一两句话讲发生了什么]
 > 违反规则：[贴 harness-commit.py 的 BLACKLIST/CROSS_STORY/UNEXPECTED_ARTIFACT/UNSTAGED 行 verbatim]
 > 已落 commit：[git log --oneline harness/$KEY/start..HEAD]
-> 待用户决断：是否 [选项 1] 撤回 / [选项 2] 修复后续作 / [选项 3] 跳过本次 test sprint
+> 待用户决断：是否 [选项 1] 撤回 / [选项 2] 修复后续作 / [选项 3] 跳过本次 test sprint / [选项 4] 怀疑 plugin 缺陷 → /harness-zh:report-issue（自动收集 halt 现场 + gh CLI 直提 + 附临时绕过方案）
 
 ---
 

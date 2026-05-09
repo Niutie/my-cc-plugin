@@ -335,86 +335,47 @@ emit OK：
 
 把 `$DW_MODE_RESULT` 绑定到上下文，§A.6 报告时引用。
 
-### A.3.d harness residue 检测 → 迁移到 upstream-feedback.md（仅当 sprint-status.yaml 存在）
+### A.3.d harness residue 检测（advisory only — v0.1.26+ 已退役自动迁移）
 
-半路接入项目场景的另一处隔离需求：retro skill 历史产出的 `category: harness` 类
-action items 被写到了 `sprint-status.yaml.retro_action_items` 块。这是 plugin 维护方
-的债（非项目本身的债），混在项目 artifact 里污染视图。需要把它们迁到
-`.claude/harness/upstream-feedback.md`（plugin 用户事后复制粘贴提 GitHub issue）。
+> **历史背景**：v0.1.14 - 0.1.25 期间 plugin 维护方反馈走 `.claude/harness/upstream-feedback.md`
+> 通道：retro skill 把 `category: harness` 类 action items 分流到该文件，半路接入的
+> 项目用 `extract_harness_feedback.sh` 把历史残余从 sprint-status.yaml 批迁过去。
+> v0.1.26 起该通道**整体退役**：所有 plugin 反馈一律走新命令 `/harness-zh:report-issue`
+> 自动收集上下文 + gh CLI 直提到 https://github.com/Niutie/my-cc-plugin/issues。
+> `extract_harness_feedback.sh` / `detect_harness_residue.sh` / `templates/upstream-feedback.md.template`
+> 已删；retro skill 不再分流（详 `.claude/harness/prompt-suffixes/bmad-retrospective-suffix.md`）。
 
-新装 plugin 之后 retro skill 走 prompt-suffix v1.6+ 路径会自动分流（详
-`.claude/harness/prompt-suffixes/bmad-retrospective-suffix.md`）；本节只处理**历史**
-残余条目。
+本节因此简化为**纯 advisory**：仅检测 sprint-status.yaml 内是否还有遗留的 `category: harness`
+条目（v0.1.25 及更早版本写入；v0.1.26 起新 retro 不再产出此类条目），有则提示用户用
+`/harness-zh:report-issue` 把还想反馈的项目逐条提为 issue。**不**自动改 yaml、**不**调任何脚本。
 
 ```bash
-# 仅当 sprint-status.yaml 存在时进（BMad planning 未完成时此节天然 skip）
+HR_RESULT="skipped — no sprint-status.yaml"
 if [ -f "_bmad-output/implementation-artifacts/sprint-status.yaml" ]; then
-    HR_DETECT_JSON="$(bash .claude/harness/scripts/detect_harness_residue.sh 2>/dev/null || true)"
-    HR_DETECT_EXIT=$?
+    # 用 grep 简单计数：retro_action_items 块内 "category: harness" 行数
+    HR_LEGACY_COUNT="$(awk '
+      /^retro_action_items:/ { in_block=1; next }
+      in_block && /^[^[:space:]#]/ { in_block=0 }
+      in_block && /^[[:space:]]+category:[[:space:]]*['\''"]?harness['\''"]?[[:space:]]*$/ { c++ }
+      END { print c+0 }
+    ' "_bmad-output/implementation-artifacts/sprint-status.yaml")"
+    HR_RESULT="clean (0 legacy harness entries)"
+    if [ "${HR_LEGACY_COUNT:-0}" -gt 0 ]; then
+        echo "ℹ️  sprint-status.yaml.retro_action_items 内发现 ${HR_LEGACY_COUNT} 条 legacy"
+        echo "    category:harness 条目（v0.1.25 及更早 retro 产出；v0.1.26 已退役自动迁移）。"
+        echo
+        echo "    如想给 plugin 作者反馈，跑：/harness-zh:report-issue"
+        echo "    （会自动收集 plugin 版本 / 当前 sprint+story 状态 / 近期 commits 等上下文 +"
+        echo "     用 gh CLI 直提到 https://github.com/Niutie/my-cc-plugin/issues）"
+        echo
+        echo "    这些 legacy 条目可留在 yaml 不动 — check_retro_action_items.sh 对"
+        echo "    category:harness pending 仅 stderr WARN，不阻 commit。"
+        HR_RESULT="advisory — ${HR_LEGACY_COUNT} legacy harness entries (use /harness-zh:report-issue to file)"
+    fi
 fi
 ```
 
-按 detector exit code + JSON `count` 字段分支：
-
-| 路径 | 含义 | 行为 |
-|---|---|---|
-| sprint-status.yaml 不存在 | BMad planning 未完成 | skip 整节，`HR_RESULT="skipped — sprint-status absent"` |
-| `HR_DETECT_EXIT=2` | sprint-status 缺（罕见 race） | skip，`HR_RESULT="skipped — detector exit 2"` |
-| `HR_DETECT_EXIT=3` | retro_action_items 块缺 | skip，`HR_RESULT="skipped — no retro block"` |
-| `count = 0` | 无未迁残余 | silent OK，`HR_RESULT="clean (0 unmigrated)"` |
-| `count > 0` | 有未迁残余 | **走交互** ↓ |
-
-#### A.3.d.i `count > 0` 交互
-
-emit 现状 + dry-run 预览：
-
-```bash
-echo "⚠️ sprint-status.yaml.retro_action_items 内发现 ${count} 条 unmigrated category:harness 条目"
-echo "   这些是 plugin 维护方的优化建议（非项目本身的债），建议迁到"
-echo "   .claude/harness/upstream-feedback.md（用户事后复制提 GitHub issue）"
-echo
-bash .claude/harness/scripts/extract_harness_feedback.sh   # dry-run by default
-```
-
-然后用 `AskUserQuestion`（**单选**，header `Harness migrate`）：
-
-> **A) Migrate 现在（推荐）** — 跑 `extract_harness_feedback.sh --apply`：
->     1. 把 ${count} 条 harness 条目追加到 `.claude/harness/upstream-feedback.md`
->     2. sprint-status.yaml 内被迁条目 status 翻 `migrated-upstream`（保留行 + audit）
->     3. sprint-status.yaml 备份到 `.bak.<timestamp>`
->
-> **B) 跳过** — 不动；`category: harness` 条目继续躺在 sprint-status.yaml；
->    `check_retro_action_items.sh` 仍会 WARN（不阻 commit）。后续可手工跑
->    `bash .claude/harness/scripts/extract_harness_feedback.sh --apply` 完成迁移。
-
-##### 选 A）Migrate
-
-```bash
-bash .claude/harness/scripts/extract_harness_feedback.sh --apply
-HR_RESULT="migrated ${count} item(s) to upstream-feedback.md"
-```
-
-emit OK：
-
-```
-✅ 迁移完成：${count} 条 harness 条目已落到 upstream-feedback.md
-   - sprint-status.yaml 被迁条目 status: migrated-upstream（行保留）
-   - 备份: _bmad-output/implementation-artifacts/sprint-status.yaml.bak.<ts>
-   - 后续提 issue: https://github.com/Niutie/my-cc-plugin/issues
-```
-
-##### 选 B）跳过
-
-不操作。emit：
-
-```
-ℹ️ 跳过 harness residue 迁移（${count} 条仍在 sprint-status.yaml）
-   后续手工跑：bash .claude/harness/scripts/extract_harness_feedback.sh --apply
-```
-
-`HR_RESULT="skipped — ${count} item(s) deferred"`
-
-把 `$HR_RESULT` 绑定到上下文，§A.6 报告时引用。
+把 `$HR_RESULT` 绑定到上下文，§A.6 报告时引用。**本节绝不交互、绝不改文件**。
 
 ### A.4 装 git hooks
 
@@ -942,7 +903,7 @@ stdout 报告（按下表结构）：
 > 违反规则：[贴 helper / harness_config / simulate_clone 的 stderr verbatim]
 > yaml 当前状态：[`git diff --stat .claude/harness/harness-project-config.yaml`]
 > 已采取动作：[rollback / 无变更 / 部分写入 N 字段]
-> 待用户决断：是否 [选项 1] 撤回 yaml 改动 / [选项 2] 修复 BMad 产物后重跑 / [选项 3] 跳过本次 init
+> 待用户决断：是否 [选项 1] 撤回 yaml 改动 / [选项 2] 修复 BMad 产物后重跑 / [选项 3] 跳过本次 init / [选项 4] 怀疑 plugin 缺陷 → /harness-zh:report-issue（自动收集 halt 现场 + gh CLI 直提 + 附临时绕过方案）
 
 ---
 

@@ -163,7 +163,10 @@ if [ "$pending_harness" -gt 0 ]; then
     echo "" >&2
     echo "WARN: $pending_harness harness optimization suggestion(s) pending (non-blocking — does NOT gate epic 4/5/6 spec creation):" >&2
     printf '%s\n' "$result" | grep '^PENDING_HARNESS  ' | sed 's/^PENDING_HARNESS  /  /' >&2
-    echo "      To evaluate / implement these, tell the main agent: '评估 harness 优化' or '继续 harness <id>'." >&2
+    echo "      To file these as GitHub issues for the plugin maintainer, run:" >&2
+    echo "          /harness-zh:report-issue" >&2
+    echo "      （v0.1.26+ — 自动收集 plugin 版本 / sprint 状态 / 近期 commits + gh CLI 直提；" >&2
+    echo "        替代 v0.1.14-0.1.25 的 upstream-feedback.md 通道）。" >&2
 fi
 
 # v2: dev 类 pending — 计 exit code，与原 v1 行为一致

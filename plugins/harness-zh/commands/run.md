@@ -748,6 +748,7 @@ loop:
 goto loop
 
 report "🎉 完成 (LOOP_SCOPE=<value>, target=<key 或 epic 或 -—>)"
+report "💡 这一轮跑下来如果有任何 plugin 行为不顺手 / 文档误导 / 教学缺口 — 跑 /harness-zh:report-issue（自动收集本轮 sprint 上下文 + 一键直提到 Niutie/my-cc-plugin）"
 ```
 
 **主 agent 在每次回到循环顶部时必须重新检查 LOOP_SCOPE**（不要假设"既然进了循环就一直跑"）——以防有 LOOP_SCOPE = `single-epic` 跑完目标 epic 后却继续跑别的 epic 的 bug。
@@ -809,12 +810,16 @@ report "🎉 完成 (LOOP_SCOPE=<value>, target=<key 或 epic 或 -—>)"
      （主 agent 会重新拿 next backlog；本 $KEY 此时应已是 done 或被人为推进）
   5. （仅配额耗尽 halt 时）等到 reset 时间，告诉我"重启 stage <X>"我会重新调度该阶段子 agent
      （注意 stage ②/④/⑤ 的子 agent prompt 末尾带"断点续作约定"，重启时新 agent 会读 progress 文件跳过已完成项；不需要从零重做）
+  6. 怀疑这是 plugin 缺陷？跑 /harness-zh:report-issue
+     主 agent 会自动收集 plugin 版本 / 当前 story / halt 现场 / 近期 commits 拼好 issue body，
+     用 gh CLI 直接提到 https://github.com/Niutie/my-cc-plugin/issues/new。
+     提交成功后会附一个**临时绕过方案**让你不必等 plugin 修复就能继续推进项目。
 
 子 agent 完整返回 / 脚本完整 stdout 如下：
 <逐字粘贴子 agent 的最终消息或脚本输出>
 ```
 
-这是 halt 的硬约束——任何场景都打印这段，不要简化、不要替用户选 1/2/3/4/5。
+这是 halt 的硬约束——任何场景都打印这段，不要简化、不要替用户选 1/2/3/4/5/6。
 
 
 ---

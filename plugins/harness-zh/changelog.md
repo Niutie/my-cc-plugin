@@ -11,6 +11,59 @@
 
 ---
 
+## v0.1.26 — 2026-05-09 — 新增 `/harness-zh:report-issue` 一键提 issue 通道；退役 `upstream-feedback.md`（Q4 第二次 supersession）
+
+### 触发
+
+solo-dev 反馈：v0.1.14 引入的 `upstream-feedback.md` 中转通道实际反馈到达率低 — 用户 review 文件 → 复制粘贴到 GitHub issue 创建页 → 手填 title / 标 label，5+ 步手工损耗，多数项目积累几条后就不提了。同时 plugin 缺乏"用户在使用过程中遇到 plugin 缺陷时一键反馈"的入口；halt 时只能在选项 1-5 里给出"撤回 / 续作 / 调查 / 重启 / 等修复"，没有"提 issue 让作者去修"这一档。
+
+### 改
+
+**新增直通管道：**
+
+- `commands/report-issue.md` — 新 slash command `/harness-zh:report-issue`：
+  - 解析 `--type bug|feature|halt|other` / `--story` / `--epic` / `--halt-stage` / `--halt-command` / `--halt-reason` 等 flag（缺什么用 `AskUserQuestion` 兜底）
+  - 调 `collect_issue_context.sh` 拼好 issue body 给用户 review
+  - `AskUserQuestion` 三档：Submit / Edit body first / Cancel
+  - Submit 时 `gh auth status` preflight + `gh issue create --repo Niutie/my-cc-plugin --title "..." --body-file ... --label ...`
+  - **halt 场景特殊行为**：提交成功后必须输出一段「临时绕过方案」（基于手里的 halt 现场给具体的 git / shell 指令），让用户不必等 plugin 修复就能继续推进项目
+  - 失败兜底：gh 未装 / 未登录 / 提交失败时 emit 引导文字 + 手工 fallback（`pbcopy` + `open https://github.com/Niutie/my-cc-plugin/issues/new`）
+- `scripts/collect_issue_context.sh` — best-effort 上下文采集器：
+  - plugin 版本（先读 `.claude/harness/changelog.md` 顶部，缺则扫 `~/.claude/plugins/**/plugin.json` 取最高 semver）
+  - 环境（OS / shell / `CLAUDE_PLUGIN_ROOT` 注入状态）
+  - git 状态（branch / HEAD / dirty 行数 / 近 10 个 harness-asset commits / 近 5 个项目 commits）
+  - sprint 状态（`sprint-status.py count` + `next`）
+  - story 状态（如指定 `--story` 则 `harness-state.py $KEY`）
+  - halt block（仅 `--halt-stage` 时拼）
+  - `harness-project-config.yaml` fingerprint（仅 project_name / project_language / deferred_work_mode 三字段；privacy-conscious — 不抽路径或 org 字段）
+  - 全程 best-effort，缺哪个采哪个；`yaml` / `git` / `python3` 任一缺失也能退化产出 markdown
+
+**halt 模板植入：**
+
+- `commands/run.md` §3 末尾的 canonical halt 模板新增**选项 6**："怀疑这是 plugin 缺陷？跑 /harness-zh:report-issue ..." — 与原有选项 0-5 并列
+- `commands/run-test.md` / `commands/init.md` / `commands/update.md` / `commands/upgrade-deferred-work.md` 各自的短 halt 模板都加同一档新选项
+- `commands/run.md` §2 主循环出口的"🎉 完成"报告后加一行 mild hint：跑下来如有不顺手 → 跑 `/harness-zh:report-issue`
+
+**Q4 第二次 supersession — 退役 `upstream-feedback.md` 通道：**
+
+- 删 `scripts/extract_harness_feedback.sh`（迁移工具，353 行）
+- 删 `scripts/detect_harness_residue.sh`（残余检测器，155 行）
+- 删 `templates/upstream-feedback.md.template`
+- `prompt-suffixes/bmad-retrospective-suffix.md` 重写「retro action items 写入分流」段：
+  - retro skill 不再分流；`category: dev` 与 `category: harness` 都写 `sprint-status.yaml.retro_action_items`
+  - `category` 字段仅决定 pre-commit gate 行为：dev 阻 commit / harness 仅 stderr WARN + hint 跑 `/harness-zh:report-issue`
+- `commands/init.md` §A.3.d 重写为**纯 advisory**：仅检测 sprint-status.yaml 内是否还有 v0.1.25 残余的 `category: harness` 条目；有则 emit hint 引导跑 `/harness-zh:report-issue`，**不**自动改 yaml、**不**调任何脚本。`HR_RESULT` 字段仍在 §A.6 报告中露出。
+- `scripts/check_retro_action_items.sh` 对 `pending_harness > 0` 的 WARN 文本改为 hint `/harness-zh:report-issue`（不再 hint 已删的 `extract_harness_feedback.sh`）；`migrated-upstream` status enum 保留兼容（v0.1.14-0.1.25 残余视同 done，不阻不 WARN）
+- `architecture.md` 〇.3 命令分工表加一行 `/harness-zh:report-issue`；§六 Q4 加 v0.1.26 supersession note；scripts 树状图 [Harness upstream-feedback 流] 一节改为 [Plugin issue 直通管道]
+
+### 后续注意事项
+
+- 用户首次跑 `/harness-zh:report-issue` 前需保证 `gh` CLI 已装 + `gh auth login` 完成；`gh-cli` 不像 BMad / codex 是硬依赖（plugin.json `dependencies` 不申明），保持轻量
+- v0.1.14-0.1.25 期间项目侧落到磁盘的 `.claude/harness/upstream-feedback.md` 文件**不**主动删（用户私有数据；plugin 资产投递的 cmp/backup 路径里不包含此文件，`/harness-zh:update` 不会动）。用户可自行决定 archive / 删除 / 把里面剩余条目用 `/harness-zh:report-issue` 提为 issue 后再清理
+- `migrated-upstream` 仍是合法 status enum 用于历史兼容；将来某个版本（v0.2+）可考虑硬移除 + 配套 migration 工具
+
+---
+
 ## v0.1.16 — 2026-05-07 — 修 codex adversarial review 在 v0.1.13 / v0.1.14 上发现的 3 处 control-flow / 一致性缺陷
 
 ### 触发

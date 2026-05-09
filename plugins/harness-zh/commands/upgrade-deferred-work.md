@@ -65,7 +65,7 @@ DETECT_EXIT=$?
 |---|---|---|
 | `0` | 成功，JSON 含 classification | 进 §3 分类分支 |
 | `2` | deferred-work.md 不存在 | emit 提示 + 跑 `/harness-zh:init`（init §A.3.b 会 bootstrap）→ 退出 |
-| 其他 | detector 异常 | emit JSON + stderr verbatim + halt |
+| 其他 | detector 异常 | emit JSON + stderr verbatim + halt（怀疑 plugin 缺陷可跑 `/harness-zh:report-issue` 直提 issue） |
 
 从 JSON 提取（用 `python3 -c` 或 `jq`，按项目 toolchain 选）：
 
