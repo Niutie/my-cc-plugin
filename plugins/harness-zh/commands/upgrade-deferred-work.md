@@ -180,7 +180,7 @@ emit OK：
 DW_DIR="_bmad-output/implementation-artifacts"
 DW_DST="$DW_DIR/deferred-work.md"
 
-# 步骤 1: 解析 plugin templates/ 路径（同 /harness-zh:init §A.0 / update §1 同款 12 行 bootstrap）
+# 步骤 1: 解析 plugin templates/ 路径（同 /harness-zh:init §A.0 / update §1 同款 2-tier bootstrap）
 # 完整 fallback chain 由 $PLUGIN_ROOT/scripts/discover_plugin_root.sh 维护单份 SoT；
 # 若已 init 过，可直接 `bash .claude/harness/scripts/discover_plugin_root.sh` 取代本块。
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
@@ -188,16 +188,27 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 if [ -z "$PLUGIN_ROOT" ] && [ -x .claude/harness/scripts/discover_plugin_root.sh ]; then
     PLUGIN_ROOT="$(bash .claude/harness/scripts/discover_plugin_root.sh 2>/dev/null || true)"
 fi
+# 2a) cache 扫描（首选 — 按 semver 降序选最高版；bash 3.2 兼容用 [[ == ]]）
 if [ -z "$PLUGIN_ROOT" ]; then
-    # 最小自举（与 init/update §A.0 一致；bash 3.2 兼容 [[ == */cache/* ]]）
     PLUGIN_ROOT="$(
-        find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
+        find ~/.claude/plugins/cache -maxdepth 5 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
             grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
             cand="$(dirname "$(dirname "$manifest")")"
             [ -f "$cand/.orphaned_at" ] && continue
-            [[ "$cand" == */cache/* ]] || continue
             printf '%s\t%s\n' "$(basename "$cand")" "$cand"
         done | sort -V -r -k1,1 | head -n 1 | cut -f2-
+    )"
+fi
+# 2b) marketplaces 兜底（fresh install / cache 未 populated 时）
+if [ -z "$PLUGIN_ROOT" ]; then
+    PLUGIN_ROOT="$(
+        find ~/.claude/plugins/marketplaces -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
+            grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
+            cand="$(dirname "$(dirname "$manifest")")"
+            [ -f "$cand/.orphaned_at" ] && continue
+            echo "$cand"
+            break
+        done
     )"
 fi
 

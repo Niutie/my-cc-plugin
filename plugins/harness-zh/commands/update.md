@@ -32,23 +32,36 @@ allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 ## 1. Plugin 路径探测（同 init §A.0；最小 12 行 inline bootstrap）
 
 完整发现逻辑在 `scripts/discover_plugin_root.sh`，但 update 也可能遇上"项目侧旧脚本
-被损坏"的场景，所以同样保留 inline bootstrap 自举（与 init §A.0 完全一致）：
+被损坏"的场景，所以同样保留 inline bootstrap 自举（与 init §A.0 完全一致；
+v0.1.29 起 2-tier：cache 优先 + marketplaces 兜底）：
 
 ```bash
 # 1) env var 优先
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || PLUGIN_ROOT=""
 
-# 2) miss 则扫 cache（按 semver 降序选最高版；过 .orphaned_at filter；用 [[ == ]] 替代 case+glob 兼容 bash 3.2）
+# 2a) cache 扫描（首选 — 按 semver 降序选最高版；过 .orphaned_at filter；bash 3.2 兼容 [[ == ]]）
 if [ -z "$PLUGIN_ROOT" ]; then
     PLUGIN_ROOT="$(
-        find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
+        find ~/.claude/plugins/cache -maxdepth 5 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
             grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
             cand="$(dirname "$(dirname "$manifest")")"
             [ -f "$cand/.orphaned_at" ] && continue
-            [[ "$cand" == */cache/* ]] || continue
             printf '%s\t%s\n' "$(basename "$cand")" "$cand"
         done | sort -V -r -k1,1 | head -n 1 | cut -f2-
+    )"
+fi
+
+# 2b) marketplaces 兜底（fresh install / cache 未 populated — Claude Code 可能直接从 marketplaces 跑 plugin）
+if [ -z "$PLUGIN_ROOT" ]; then
+    PLUGIN_ROOT="$(
+        find ~/.claude/plugins/marketplaces -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
+            grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
+            cand="$(dirname "$(dirname "$manifest")")"
+            [ -f "$cand/.orphaned_at" ] && continue
+            echo "$cand"
+            break
+        done
     )"
 fi
 
@@ -61,8 +74,8 @@ fi
 echo "PLUGIN_ROOT=$PLUGIN_ROOT"
 ```
 
-**与 init.md §A.0 的一致性**：本块与 init §A.0 / upgrade-deferred-work §3.3 同款 12 行
-inline bootstrap；完整 fallback chain（含 marketplaces/ 非 cache 路径兜底）由
+**与 init.md §A.0 的一致性**：本块与 init §A.0 / upgrade-deferred-work §3.3 同款 2-tier
+inline bootstrap；完整 fallback chain（marketplaces/ 路径自动收）由
 `$PLUGIN_ROOT/scripts/discover_plugin_root.sh` 维护单份 SoT。
 
 ## 2. 项目侧目录预检 + 创建（防御 mid-update 删目录场景）

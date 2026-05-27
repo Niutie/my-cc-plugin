@@ -11,6 +11,49 @@
 
 ---
 
+## v0.1.29 — 2026-05-27 — inline bootstrap 2-tier 化（修复 fresh dev env 上探测失败）
+
+### 触发
+
+用户在另一台 fresh dev env 上跑 `/harness-zh:update` 报错：
+
+```
+ERROR: 无法定位 harness-zh plugin 安装目录
+```
+
+诊断：fresh install 时 Claude Code 直接从 `~/.claude/plugins/marketplaces/<name>/plugins/<plugin>/` 路径服务 plugin，**不**复制到 `~/.claude/plugins/cache/`。但 init/update/upgrade-deferred-work 三处的 inline bootstrap 都硬卡 `[[ "$cand" == */cache/* ]] || continue`，把 marketplaces 命中给跳过 → 全 miss → halt。
+
+`scripts/discover_plugin_root.sh` 自己 step 3 有 marketplaces fallback（注释里也写了"完整 fallback chain 由 helper 维护单份 SoT"），但 inline bootstrap 只是 helper 的简化版，丢了这层兜底。
+
+### 改
+
+**三处 inline bootstrap 全部改成 2-tier**（init.md §A.0 / update.md §1 / upgrade-deferred-work.md 步骤 1）：
+
+```bash
+# 2a) cache 扫描（首选 — 按 semver 降序选最高版）
+find ~/.claude/plugins/cache -maxdepth 5 -name plugin.json ...
+# 2b) marketplaces 兜底（fresh install / cache 未 populated）
+find ~/.claude/plugins/marketplaces -maxdepth 6 -name plugin.json ...
+```
+
+关键改动：
+- 移除 `[[ "$cand" == */cache/* ]] || continue` 硬过滤
+- `find` 根路径从 `~/.claude/plugins` 改成具体的 `~/.claude/plugins/cache` 或 `~/.claude/plugins/marketplaces`（更明确，少一次 path filter）
+- cache 仍优先（多版本时按 semver 选最新）；只有 cache 完全 miss 才走 marketplaces
+- marketplaces 找到第一个命中即 `break`（fresh install 只有一份）
+
+**`discover_plugin_root.sh` 不动** — 它的 step 3 已经有 marketplaces fallback。本次改动只对齐 inline bootstrap 与 helper 的语义。
+
+**周边教学文本同步更新**：init.md §A.0 / update.md §1 注释从"最小 12 行 inline bootstrap"改成"2-tier inline bootstrap"。
+
+### 注意事项 / 后续
+
+- **用户升级路径**：先 `/plugin marketplace update my-cc-plugin` 拉新 commits，再 `/plugin update harness-zh@my-cc-plugin` 把 0.1.29 进 cache（这一步用 Claude Code 内置命令，不走我们的 bootstrap，所以 0.1.27/0.1.28 用户也能正常升级）。新版进入 cache 后 `/harness-zh:update` 就用新 bootstrap 跑。
+- 0.1.28 等于本次 v0.1.29 改动**之前**的最后一版；marketplaces fallback 缺失导致 0.1.28 在 fresh env 上不可用，没人能用 /harness-zh:update 升上来 — 这是个 squash candidate，但 0.1.28 既已 push（commit `7b7ceee`），保留版本号防 cache/marketplace listing 漂移。
+- 未来若 inline bootstrap 还要改：先想想是不是该把逻辑挪进 `discover_plugin_root.sh`，让 inline 部分只保留"能不能找到 helper 自己"的最小自举。
+
+---
+
 ## v0.1.28 — 2026-05-27 — codex 改回可选依赖（解锁 codex 未装时的安装失败）
 
 ### 触发

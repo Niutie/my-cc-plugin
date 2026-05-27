@@ -28,26 +28,39 @@ allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 
 ### A.0 探测 plugin 安装路径
 
-完整发现逻辑（env var → cache scan with semver sort → fallback → halt）已抽到
+完整发现逻辑（env var → cache scan with semver sort → marketplaces fallback → halt）已抽到
 `scripts/discover_plugin_root.sh`，由 init/update/upgrade-deferred-work 共用，避免
 三处复制粘贴漂移（v0.1.23 sort -V 修复就是 drift 实证）。但 init 首跑时项目侧还没
-部署 helper，所以保留**最小 12 行 inline bootstrap**自举：
+部署 helper，所以保留 **2-tier inline bootstrap** 自举（cache 优先 + marketplaces 兜底；
+v0.1.29 修复：单 tier 在 fresh install 场景 cache 未 populated 时会 halt）：
 
 ```bash
 # 1) env var 优先（Claude Code 注入；hooks 必有，commands 不保证 — 试一下）
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || PLUGIN_ROOT=""
 
-# 2) miss 则扫 cache：bash 3.2 (macOS 默认) 在 $(...) 里 case+glob 有 quirk，用 [[ == ]] 替代
+# 2a) cache 扫描（首选 — 按 semver 降序选最高版；bash 3.2 兼容用 [[ == ]] 替代 case+glob）
 if [ -z "$PLUGIN_ROOT" ]; then
     PLUGIN_ROOT="$(
-        find ~/.claude/plugins -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
+        find ~/.claude/plugins/cache -maxdepth 5 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
             grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
             cand="$(dirname "$(dirname "$manifest")")"
             [ -f "$cand/.orphaned_at" ] && continue
-            [[ "$cand" == */cache/* ]] || continue
             printf '%s\t%s\n' "$(basename "$cand")" "$cand"
         done | sort -V -r -k1,1 | head -n 1 | cut -f2-
+    )"
+fi
+
+# 2b) marketplaces 兜底（fresh install / cache 未 populated — Claude Code 可能直接从 marketplaces 跑 plugin）
+if [ -z "$PLUGIN_ROOT" ]; then
+    PLUGIN_ROOT="$(
+        find ~/.claude/plugins/marketplaces -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
+            grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
+            cand="$(dirname "$(dirname "$manifest")")"
+            [ -f "$cand/.orphaned_at" ] && continue
+            echo "$cand"
+            break
+        done
     )"
 fi
 
@@ -64,9 +77,10 @@ echo "PLUGIN_ROOT=$PLUGIN_ROOT"
 ```
 
 **说明**：本节是必要的"最小自举"——helper 脚本本身住在 plugin 内，自己定位自己存在
-chicken-and-egg。完整 fallback chain（含 `marketplaces/` 非 cache 路径兜底等）住在
-`$PLUGIN_ROOT/scripts/discover_plugin_root.sh`，未来想扩 detection 逻辑只改它一份；
-init.md / update.md / upgrade-deferred-work.md 三处 bootstrap 维持本同款 12 行短版即可。
+chicken-and-egg。**2-tier 设计**：cache 命中优先（多版本时按 semver 选最新），cache miss
+时回退到 marketplaces/<name>/plugins/<plugin>/（fresh install 或 Claude Code 直接服务
+marketplaces 路径的场景）。未来想扩 detection 逻辑只改 `discover_plugin_root.sh` 一份；
+init.md / update.md / upgrade-deferred-work.md 三处 bootstrap 维持本同款 2-tier 短版即可。
 
 把 `$PLUGIN_ROOT` 绑定到对话上下文，§A.2 之后所有 cp 用它做源路径。
 
