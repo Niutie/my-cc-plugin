@@ -82,10 +82,12 @@ if [ -f "$HARNESS_REPO_ROOT/.claude/harness/changelog.md" ]; then
 fi
 if [ "$PLUGIN_VERSION" = "unknown" ]; then
     # Try ~/.claude/plugins/**/plugin.json (highest semver under cache/)
+    # v0.1.30: use `command grep` inside the pipe-fed while loop — see
+    # discover_plugin_root.sh comment for the grep-wrapper-subshell-exec hazard.
     pv="$(
         find "$HOME/.claude/plugins" -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r m; do
-            grep -q '"name":[[:space:]]*"harness-zh"' "$m" 2>/dev/null || continue
-            grep -oE '"version":[[:space:]]*"[^"]+"' "$m" | head -1 | sed -E 's/.*"([^"]+)"/\1/'
+            command grep -q '"name":[[:space:]]*"harness-zh"' "$m" 2>/dev/null || continue
+            command grep -oE '"version":[[:space:]]*"[^"]+"' "$m" | head -1 | sed -E 's/.*"([^"]+)"/\1/'
         done | sort -V -r | head -1
     )"
     [ -n "$pv" ] && PLUGIN_VERSION="$pv"

@@ -4,7 +4,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 
 | Plugin | Version | Purpose |
 |---|---|---|
-| **harness-zh** | 0.1.29 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **harness-zh** | 0.1.30 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 
 ---
 
@@ -138,6 +138,7 @@ For full runtime architecture (5-stage state machine, sprint-status.yaml schema,
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.1.30 | 2026-05-27 | Hostile-env hardening for plugin-discovery pipelines: switch to `command grep` inside `find \| while ... done` loops (5 critical-path locations across init / update / upgrade-deferred-work commands + `discover_plugin_root.sh` + `collect_issue_context.sh`). Closes a class of bugs where shell-function wrappers around `grep` (Claude Code injects one on some Linux dev envs) `exec`-replace the pipeline's subshell, killing the loop after one iteration. Bootstrap now survives the wrapped-grep environment. |
 | 0.1.29 | 2026-05-27 | inline bootstrap 改 2-tier（cache 优先 + marketplaces 兜底）— 修复 fresh dev env 上 `/harness-zh:init` / `update` / `upgrade-deferred-work` 探测不到 plugin 路径 halt（Claude Code 在某些 fresh install 场景直接从 `marketplaces/<name>/plugins/<plugin>/` 服务 plugin，不 populate `cache/`，老的硬 `*/cache/*` filter 误杀这条命中）。 |
 | 0.1.28 | 2026-05-27 | Drop hard `codex@openai-codex` dependency from `plugin.json` — plugin now installs cleanly without codex. `/harness-zh:init` adds §A.4.d codex availability probe (advisory only; surfaces install hint if missing). Existing graceful-skip / `codex-skipped.json` marker / `/harness-zh:codex-catchup` flow already handles the runtime side. |
 | 0.1.27 | 2026-05-09 | Engineering hardening pass (codex multi-round review): release-gate script (`release_check.sh`) catches version drift + bad command frontmatter; manifest-based `/harness-zh:update` purge no longer touches user-owned `.claude/commands/*` files; new `/harness-zh:codex-catchup` plus stage-3 graceful skip when codex-in-cc unavailable; central `run_all_tests.sh` + GitHub Actions CI with bootstrap fixture; shared `deferred_work_schema_lib.sh` (pre-commit ↔ lint dedup); `harness_config.py --get` CLI eliminates 3 hand-rolled YAML parsers; UTF-8 `encoding=` everywhere. |

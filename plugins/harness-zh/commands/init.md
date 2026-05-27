@@ -39,11 +39,15 @@ v0.1.29 修复：单 tier 在 fresh install 场景 cache 未 populated 时会 ha
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT" ] || PLUGIN_ROOT=""
 
-# 2a) cache 扫描（首选 — 按 semver 降序选最高版；bash 3.2 兼容用 [[ == ]] 替代 case+glob）
+# 2a) cache 扫描（首选 — 按 semver 降序选最高版）
+# 注：循环里**必须**用 `command grep`（绕开函数 wrapper）—— v0.1.30 修复：
+# 某些 dev env 上 grep 是个 shell function wrapper，pipe 右侧的 while 本身是
+# subshell，wrapper 命中"已在子进程→直接 exec"分支会把 while 所在的 subshell
+# 整个替换成 grep 进程 → 循环只跑一次就死。`command` 绕过 function lookup。
 if [ -z "$PLUGIN_ROOT" ]; then
     PLUGIN_ROOT="$(
         find ~/.claude/plugins/cache -maxdepth 5 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
-            grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
+            command grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
             cand="$(dirname "$(dirname "$manifest")")"
             [ -f "$cand/.orphaned_at" ] && continue
             printf '%s\t%s\n' "$(basename "$cand")" "$cand"
@@ -55,7 +59,7 @@ fi
 if [ -z "$PLUGIN_ROOT" ]; then
     PLUGIN_ROOT="$(
         find ~/.claude/plugins/marketplaces -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
-            grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
+            command grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
             cand="$(dirname "$(dirname "$manifest")")"
             [ -f "$cand/.orphaned_at" ] && continue
             echo "$cand"

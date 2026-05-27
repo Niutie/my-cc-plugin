@@ -188,11 +188,13 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 if [ -z "$PLUGIN_ROOT" ] && [ -x .claude/harness/scripts/discover_plugin_root.sh ]; then
     PLUGIN_ROOT="$(bash .claude/harness/scripts/discover_plugin_root.sh 2>/dev/null || true)"
 fi
-# 2a) cache 扫描（首选 — 按 semver 降序选最高版；bash 3.2 兼容用 [[ == ]]）
+# 2a) cache 扫描（首选 — 按 semver 降序选最高版）
+# 注：循环里**必须**用 `command grep`（绕开 function wrapper）— v0.1.30 修复，
+# 详细说明见 init.md §A.0 同款注释。
 if [ -z "$PLUGIN_ROOT" ]; then
     PLUGIN_ROOT="$(
         find ~/.claude/plugins/cache -maxdepth 5 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
-            grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
+            command grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
             cand="$(dirname "$(dirname "$manifest")")"
             [ -f "$cand/.orphaned_at" ] && continue
             printf '%s\t%s\n' "$(basename "$cand")" "$cand"
@@ -203,7 +205,7 @@ fi
 if [ -z "$PLUGIN_ROOT" ]; then
     PLUGIN_ROOT="$(
         find ~/.claude/plugins/marketplaces -maxdepth 6 -name plugin.json 2>/dev/null | while IFS= read -r manifest; do
-            grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
+            command grep -q '"name":[[:space:]]*"harness-zh"' "$manifest" 2>/dev/null || continue
             cand="$(dirname "$(dirname "$manifest")")"
             [ -f "$cand/.orphaned_at" ] && continue
             echo "$cand"

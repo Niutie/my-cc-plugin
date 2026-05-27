@@ -11,6 +11,66 @@
 
 ---
 
+## v0.1.30 — 2026-05-27 — plugin-discovery pipeline 加 `command grep`（修复敌对 shell wrapper 环境）
+
+### 触发
+
+0.1.29 push 完后，用户在 Linux dev env 重跑 `/harness-zh:update`，cache 里明明有 0.1.29 plugin.json，inline bootstrap 还是 halt：
+
+```
+ERROR: 无法定位 harness-zh plugin 安装目录
+```
+
+诊断过程（另一台机器的 agent 用 `set -x` 拆出来的）：
+
+1. `find ~/.claude/plugins/cache` 单独跑 → 4 个 manifest 全输出（codex + harness-zh 0.1.27/0.1.28/0.1.29）✓
+2. 但 `find ... | while IFS= read -r manifest; do ...; done` 循环里 read 只跑了 **1 次** ✗
+3. ground-truth `grep -c '"name":[[:space:]]*"harness-zh"' <manifest>` 单跑能命中 ✓ → grep 本身没坏
+4. 把 `grep` trace 出来看到：`exec -a ugrep ${_cc_bin} -G ... "$@"` —— Claude Code 在那台机器上注入了 `grep` shell function wrapper
+
+wrapper 内部逻辑（精简版）：
+
+```bash
+grep() {
+    if [[ $BASHPID != $$ ]]; then
+        # 已在 subshell → 省一次 fork，直接 exec 替换当前进程
+        exec -a ugrep "$_cc_bin" -G ... "$@"
+    else
+        # 主 shell → 包一层 subshell 避免污染
+        ( exec -a ugrep "$_cc_bin" -G ... "$@" )
+    fi
+}
+```
+
+`find | while read` 的右侧本身就是 subshell（`BASHPID != $$`），循环体里调 grep 命中第二条分支 → grep **把 while 循环所在的 subshell 进程整个 exec 替换掉了** → grep 跑完那个 subshell 就没了 → read 直接 EOF → 循环只迭代一次。
+
+后续 `</dev/null` redirect、`< <(process-sub)` 等都救不回来，因为问题在**进程被替换**，不在数据流被偷。
+
+### 改
+
+**5 个 critical-path 位置 grep → command grep**（`command` 内建绕过 function lookup → 直接调真 grep 二进制）：
+
+| 文件 | 行数 | 上下文 |
+|---|---|---|
+| `commands/init.md` | §A.0 2a + 2b | inline bootstrap cache + marketplaces 扫描 |
+| `commands/update.md` | §1 2a + 2b | 同上 |
+| `commands/upgrade-deferred-work.md` | 步骤 1 2a + 2b | 同上 |
+| `scripts/discover_plugin_root.sh` | step 2 + step 3 | helper 单份 SoT |
+| `scripts/collect_issue_context.sh` | line 87 + 88 | PLUGIN_VERSION 兜底扫描（issue 提单上下文收集） |
+
+每处加注释解释 wrapper-exec 隐患 + 为什么 `command` 救场。
+
+**未改的 `while` loops**（已扫一遍）：harness 其它 7 个 while-read 循环（`deploy_assets.sh` / `eval_test_stage_triggers.sh` / `process_retro_residue.sh` / `lint_deferred_work.sh` / `grep_prev_retro_action_items.sh` / `backfill_resolved_markers.sh` / `check_codex_availability.sh`）全部用 process-substitution `< <(...)` 喂数据，while 跑在主 shell 里，wrapper 走安全分支，**不**需要加 `command`。
+
+### 注意事项 / 后续
+
+- **未来新增 `find | while ... do ... grep ... done` 模式时**：必须用 `command grep`。如果改成 `while ... done < <(find ...)` process-substitution 形式也安全，但 critical-path 选择 `command grep` 不改循环结构，diff 最小。
+- 没有 blanket 把所有 grep 都换 `command grep` —— 99% 的 grep 调用不在 hostile subshell 上下文里，加 `command` 是噪音。只针对 5 处真有 hazard 的关键路径。
+- **wrapper 本身**：是 Claude Code 在某些 Linux dev env 上注入的（具体 trigger 条件未深查；可能是某个 shell init 钩子）。本插件不去碰它，只防御自己被坑。
+- **v0.1.28 / v0.1.29 squash 考虑**：0.1.28 的硬依赖修 + 0.1.29 的 2-tier bootstrap 修 + 本版的 wrapper 修，三轮都是为了让 fresh dev env 能装上 plugin。三个 commit 都已 push，回头不 squash；版本号留作 history trail。
+
+---
+
 ## v0.1.29 — 2026-05-27 — inline bootstrap 2-tier 化（修复 fresh dev env 上探测失败）
 
 ### 触发
