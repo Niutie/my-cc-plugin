@@ -11,6 +11,41 @@
 
 ---
 
+## v0.1.28 — 2026-05-27 — codex 改回可选依赖（解锁 codex 未装时的安装失败）
+
+### 触发
+
+用户反馈：`/plugin install harness-zh@my-cc-plugin` 报错 `Dependency "codex@openai-codex" is not installed`，要求用户先单独装 codex 才能装 harness。但 harness 自己已经有完整的 codex graceful-skip 通道（v0.1.27 引入 stage 3+4 pre-flight skip + `<KEY>.codex-skipped.json` marker + `/harness-zh:codex-catchup` 补跑），硬依赖与"codex 是可选增强"的设计意图直接冲突。
+
+### 改
+
+**`plugin.json` 摘掉硬依赖**
+
+- 删除 `dependencies` 段（之前是 `[{ "name": "codex", "marketplace": "openai-codex", "version": "*" }]`）
+- 影响：harness-zh 单独 `/plugin install` 不再报错；用户可以先用 harness，想要 stage 3+4 对抗式 review 再单独装 codex
+- runtime 行为不变：`/harness-zh:run` stage 3 pre-flight 仍调 `check_codex_availability.sh`，不可用就走 skip + marker 路径
+
+**`/harness-zh:init` 加 codex availability advisory（§A.4.d）**
+
+- §A.4 之后、§A.5（BMad detection）之前插入一段 advisory 探测：调 `scripts/check_codex_availability.sh`，结果绑定到 `$CODEX_RESULT`
+- §A.6 deployment summary 多一行 `codex (optional): <status>`：
+  - `available — stage 3+4 will run normally`
+  - `not installed — stage 3+4 will skip; install with /plugin marketplace add openai/codex-plugin-cc && /plugin install codex@openai-codex; then /harness-zh:codex-catchup`
+- 探测**不阻 init**（codex 是 optional），只是首次装 harness 时让 solo-dev 一眼知道当前 codex 状态
+
+**README + 顶层 versioning table 更新**
+
+- README `### Prerequisites > #### 2. codex plugin` 标题加 `(optional — v0.1.28+)` + 改述（不再说"hard dependency blocks install"，改说"install works without it；skip+marker+catchup 路径处理 codex 缺席场景"）
+- 顶层 versioning table 加 0.1.28 行；表格版本号 0.1.27 → 0.1.28
+
+### 注意事项 / 后续
+
+- marketplace.json + plugin.json 版本必须保持一致（v0.1.27 引入的 `release_check.sh` gate 会捕获 drift）
+- 用户半路 init 现有项目 → §A.4.d advisory 也会跑（不止首次 install 场景）；想跳过可以未来加 `--skip-codex-probe` flag，但本版不实现
+- `/harness-zh:codex-catchup` 命令、`check_codex_availability.sh` 脚本、`codex-skipped.json` marker 协议均**不变**
+
+---
+
 ## v0.1.27 — 2026-05-09 — 工程化加固（codex 多轮 review 驱动）+ codex skip / catchup
 
 ### 触发

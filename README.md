@@ -4,7 +4,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 
 | Plugin | Version | Purpose |
 |---|---|---|
-| **harness-zh** | 0.1.27 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **harness-zh** | 0.1.28 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 
 ---
 
@@ -72,7 +72,7 @@ npx bmad-method install \
 
 Without BMad, the planning artifacts (`_bmad-output/planning-artifacts/`) that `/harness-zh:init` depends on cannot be generated.
 
-#### 2. codex plugin
+#### 2. codex plugin (optional — v0.1.28+)
 
 Provides `/codex:rescue` and `/codex:setup` (adversarial review subagent invoked from `/harness-zh:run` stage 3 — story implementation review).
 
@@ -81,7 +81,7 @@ Provides `/codex:rescue` and `/codex:setup` (adversarial review subagent invoked
 /plugin install codex@openai-codex
 ```
 
-`harness-zh`'s `plugin.json` declares `codex` as a hard dependency — Claude Code blocks installation if codex is not present.
+**Optional since v0.1.28.** harness-zh no longer declares codex as a hard dependency — install works without it. If codex isn't present, `/harness-zh:run` will pre-flight detect this, **skip stages 3+4** for each story, and drop a `<KEY>.codex-skipped.json` marker. Once you've installed codex later, run `/harness-zh:codex-catchup` to retroactively replay the skipped adversarial-review + dev-fix passes for all backlog markers.
 
 ---
 
@@ -138,6 +138,7 @@ For full runtime architecture (5-stage state machine, sprint-status.yaml schema,
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.1.28 | 2026-05-27 | Drop hard `codex@openai-codex` dependency from `plugin.json` — plugin now installs cleanly without codex. `/harness-zh:init` adds §A.4.d codex availability probe (advisory only; surfaces install hint if missing). Existing graceful-skip / `codex-skipped.json` marker / `/harness-zh:codex-catchup` flow already handles the runtime side. |
 | 0.1.27 | 2026-05-09 | Engineering hardening pass (codex multi-round review): release-gate script (`release_check.sh`) catches version drift + bad command frontmatter; manifest-based `/harness-zh:update` purge no longer touches user-owned `.claude/commands/*` files; new `/harness-zh:codex-catchup` plus stage-3 graceful skip when codex-in-cc unavailable; central `run_all_tests.sh` + GitHub Actions CI with bootstrap fixture; shared `deferred_work_schema_lib.sh` (pre-commit ↔ lint dedup); `harness_config.py --get` CLI eliminates 3 hand-rolled YAML parsers; UTF-8 `encoding=` everywhere. |
 | 0.1.26 | 2026-05-09 | New `/harness-zh:report-issue` — auto-context bug/feedback channel that opens GitHub issues via `gh` CLI; halt mode also yields a temporary workaround. Retires `upstream-feedback.md` (extract/detect scripts + template removed); retro skill no longer splits `category:harness` into a separate file. |
 | _(0.1.17 – 0.1.25)_ | – | Internal iteration only — squash-merged into 0.1.26; no public marketplace release. See `changelog.md` for detail. |

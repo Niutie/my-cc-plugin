@@ -372,6 +372,29 @@ HOOKS_EXIT=$?
 
 如果 `in_git=yes` 但用户**仍**触发了"我想 init 一个新 repo"的请求（不该走到这里），**halt** + 提示「当前已在 git 仓库 `<repo-root>` 内，再 `git init` 会建嵌套 repo（不推荐）。退出 §A.4」。
 
+### A.4.d codex 可用性探测（advisory — v0.1.28+；不阻 init）
+
+v0.1.28 起 codex 是**可选**依赖（plugin.json 不再声明硬 dep）。在 init 当下跑一次 cheap probe（不调 codex，不烧 quota），让 solo-dev 第一时间知道：
+
+- `/harness-zh:run` stage 3+4 现在能不能跑（codex 已装 → 正常对抗式 review；codex 缺 → 自动 skip 留 marker，之后 `/harness-zh:codex-catchup` 补跑）
+- 不可用时 surfacing 具体的安装命令（避免用户跑了几条 story 才发现 stage 3+4 全 skip）
+
+```bash
+CODEX_JSON="$(bash .claude/harness/scripts/check_codex_availability.sh)"
+CODEX_AVAILABLE="$(printf '%s' "$CODEX_JSON" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("available", False))')"
+CODEX_REASON="$(printf '%s' "$CODEX_JSON" | python3 -c 'import sys,json; print(json.loads(sys.stdin.read()).get("reason", "unknown"))')"
+```
+
+按结果绑定 `$CODEX_RESULT`（§A.6 报告引用）：
+
+| `CODEX_AVAILABLE` | `CODEX_REASON` | `$CODEX_RESULT` |
+|---|---|---|
+| `True` | `ok` | `available — /harness-zh:run stage 3+4 will run normally` |
+| `False` | `not_installed` | `not installed — stage 3+4 will auto-skip + leave marker; install: /plugin marketplace add openai/codex-plugin-cc && /plugin install codex@openai-codex; then /harness-zh:codex-catchup to replay markers` |
+| 其它 | — | `unknown — codex probe returned unexpected JSON; see ${CODEX_JSON} verbatim` |
+
+**绝不 halt**：codex 是 optional dependency，缺席是合法状态。本节只填 `$CODEX_RESULT` 供 §A.6 引用，不做任何修复动作、不交互、不改文件。
+
 ### A.5 BMad artifacts 检测 → 流程分叉
 
 **单一权威源：调 `run_sprint_init_check_prereq.sh` helper 脚本**，根据 exit code + JSON stdout 决定流程。**不要**自己 inline 重写检测逻辑或按文件名直觉判断 —— helper 是 dual-form (单文件/sharded) 兼容的唯一可信入口。
@@ -420,6 +443,7 @@ HELPER_GUIDANCE="$(printf '%s\n' "$HELPER_OUT" | grep -vE '^{' | grep -vE '^$')"
   - deferred_work_mode: $DW_MODE_RESULT  （仅 deferred-work.md preserved 时有意义；bootstrapped / skipped 时省此行）
   - harness-residue: $HR_RESULT  （sprint-status.yaml 不存在时省此行）
   - git hooks: <installed / unchanged | WARN: core.hooksPath ...>
+  - codex (optional): $CODEX_RESULT
 ```
 
 ### A.7 BMad ready 分叉（按 §A.5 的 HELPER_EXIT）
