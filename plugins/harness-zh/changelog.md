@@ -11,6 +11,57 @@
 
 ---
 
+## v0.1.32 — 2026-05-28 — BLACKLIST `**/*credentials*` 收窄 + artifacts allow-list（fixes #2）
+
+### 触发
+
+GitHub issue #2（用户 caller 仓库 epic 53 跑 `/harness-zh:run` stage 1 halt）：
+
+```
+BLACKLIST=_bmad-output/implementation-artifacts/53-1-db-migration-credentials-表-agents-owner-user-id.md (**/*credentials*)
+```
+
+epic 53 主题就是「凭证管理」，4 条 backlog story 名字都含 `credentials` 子串
+（`53-1-db-migration-credentials-表-...` / `53-3-agent-凭证迁移-...-credentials` /
+`53-5-bff-credentials-crud-...`）→ stage 1 spec md / stage 2 源码改动 / stage 3
+codex-review.md / stage 5 review-findings.json 每个阶段 commit 都被同一模式
+误伤，epic 53 完全跑不通自动化。issue 由用户自己写得非常细致：root cause +
+方案 A/B/C + reproduction + workaround 全列了，本版按其推荐的 A+B 组合修。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/harness-commit.py`：
+  - **B（pattern 收窄）**: `BLACKLIST_PATTERNS` 删 `**/*credentials*`，替换为
+    精确命名集合 12 条：`**/credentials`、`**/credentials.{json,yaml,yml,ini,txt}`、
+    `**/*-credentials`、`**/*-credentials.{json,yaml,yml,ini}`、`**/*.credentials`。
+    业务命名中段含 `credentials` 子串（如 `credentials_service.go` /
+    `V53_create_credentials_table.sql` / `*-credentials-table.md`）不再误判。
+  - **A（artifacts allow-list 防御层 2）**: `matches_blacklist()` 入口加守卫
+    — `_bmad-output/implementation-artifacts/` 路径下后缀 md/json/yaml/yml 的
+    文件直接 return None（豁免 blacklist 扫描）。未来新增宽松 pattern 也不会
+    误伤 BMad 工程产物。allow-list 只覆盖 4 个 plugin 已识别的 artifact 后缀
+    （与 `ARTIFACT_RE` 对齐），不过度豁免 — `.pem` / `.key` 等真凭证后缀即使
+    放进 artifacts 目录也仍被原规则拦。
+- `plugins/harness-zh/scripts/orchestration_observations_test.sh` 新增 T1.f13
+  fixture：22 个用例覆盖 (a) issue 现场 spec/json/yaml PASS / (b) 业务源码命名
+  PASS / (c) 真凭证文件 BLOCK / (d) allow-list 后缀过滤（.pem under artifacts/
+  仍 BLOCK）。
+
+### 后续注意事项
+
+- `**/*secret*` 没列在原 BLACKLIST_PATTERNS，但同类风险存在（项目里出现 secret
+  字串的合法业务命名）。本版只修了 issue 报的 credentials，secret 类未来如需
+  添加 pattern，应直接走精确格式（不要再用 `*secret*` 宽 glob）。
+- glob_match 的 `**` 实现存在一个**独立 bug**：fullmatch 模式下 `**/foo` 不
+  匹配顶层 `foo`（顶层 `aws-credentials.json` / `.env` 当前不被拦）。本版没
+  fix 它（scope creep），但留作 known limitation；用户的真凭证一般落在子目录
+  （`~/.aws/credentials`、`config/credentials.yaml`），顶层文件被遗漏的实际
+  风险低。后续如需修可考虑把 `**/` 前缀展开为 `(.*/)?` 而非 `.*`。
+- T1.f13 覆盖 22 用例（8 PASS + 11 BLOCK + 3 边界）；retro parser fixture
+  T1.f6-f12 + 本 fixture 合计 T1 共 13 条。
+
+---
+
 ## v0.1.31 — 2026-05-28 — retro action items parser 兜底放宽 + follow-through 过滤（fixes #1）
 
 ### 触发

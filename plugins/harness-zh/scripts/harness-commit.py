@@ -262,12 +262,37 @@ def auto_prune_subagent_extra(path):
 
 
 # §-1.d step 2 — global blacklist patterns. Custom glob with ** = any-segment.
+#
+# v0.1.32 (issue #2): `**/*credentials*` was too wide — any file whose path
+# contained the substring "credentials" matched, including legitimate
+# engineering artifacts where the **business domain itself is "credentials"**
+# (e.g. epic 53 in caller repo had 4 backlog stories with `credentials` in
+# the slug → every stage 1 spec md / migration sql / source file halted).
+# Replaced with a precise set matching only actual credential-file naming
+# conventions: bare `credentials` (e.g. `~/.aws/credentials`), `credentials.*`
+# with common credential-format suffixes, `*-credentials[.ext]`, and
+# `*.credentials` suffix form. Business filenames with "credentials" in the
+# middle (e.g. `credentials_service.go`, `*-credentials-table.md`) no longer
+# match. Defense-in-depth: `matches_blacklist()` also allow-lists BMad
+# artifacts/ subtree so future broad patterns can't hit spec/json/yaml there.
 BLACKLIST_PATTERNS = [
     "**/.env*",
     "**/*.pem",
     "**/*.key",
     "**/*.p12",
-    "**/*credentials*",
+    # Credential file naming — precise formats only (issue #2)
+    "**/credentials",
+    "**/credentials.json",
+    "**/credentials.yaml",
+    "**/credentials.yml",
+    "**/credentials.ini",
+    "**/credentials.txt",
+    "**/*-credentials",
+    "**/*-credentials.json",
+    "**/*-credentials.yaml",
+    "**/*-credentials.yml",
+    "**/*-credentials.ini",
+    "**/*.credentials",
     "**/secrets/**",
     ".claude/settings*",
     ".claude/commands/**",
@@ -280,6 +305,15 @@ BLACKLIST_PATTERNS = [
     "**/*.swp",
     "**/.DS_Store",
 ]
+
+# v0.1.32 (issue #2) — BMad artifacts allow-list (defense layer 2).
+# Files under `_bmad-output/implementation-artifacts/` with engineering-product
+# suffixes (md/json/yaml/yml) are exempt from blacklist scanning entirely.
+# Premise: users don't drop real credential files (`.pem`, `aws-credentials.json`)
+# into the spec directory — that path is a curated BMad output tree. If a real
+# credential ever lands there, it's caught by review (not commit blacklist).
+_ARTIFACTS_ALLOW_PREFIX = "_bmad-output/implementation-artifacts/"
+_ARTIFACTS_ALLOW_SUFFIXES = (".md", ".json", ".yaml", ".yml")
 
 ARTIFACTS_DIR = _compute_artifacts_dir_str()
 ARTIFACT_RE = re.compile(r"^" + re.escape(ARTIFACTS_DIR) + r"([^/]+\.(?:md|json|yaml|yml))$")
@@ -1434,6 +1468,12 @@ def glob_match(path, pattern):
 
 
 def matches_blacklist(path):
+    # v0.1.32 (issue #2): BMad artifacts engineering products are exempt from
+    # blacklist scanning entirely — see _ARTIFACTS_ALLOW_PREFIX comment block
+    # above for the design rationale.
+    if path.startswith(_ARTIFACTS_ALLOW_PREFIX) and \
+       path.endswith(_ARTIFACTS_ALLOW_SUFFIXES):
+        return None
     for pat in BLACKLIST_PATTERNS:
         if glob_match(path, pat):
             return pat

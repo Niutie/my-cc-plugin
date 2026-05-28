@@ -659,6 +659,68 @@ else
 fi
 rm -rf "${TMP}"
 
+# ----------------------------------------------------------------------------
+# T1.f13 — matches_blacklist: business filenames containing "credentials"
+#          substring must NOT match (v0.1.32 issue #2 — old `**/*credentials*`
+#          was too wide; replaced with precise credential-file naming set +
+#          BMad artifacts allow-list).
+# ----------------------------------------------------------------------------
+OUT=$(python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '${SCRIPT_DIR}/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+
+cases_pass = [
+    # issue #2 halt site — BMad spec md with 'credentials' in slug
+    '_bmad-output/implementation-artifacts/53-1-db-migration-credentials-表.md',
+    '_bmad-output/implementation-artifacts/foo-credentials-table.md',
+    '_bmad-output/implementation-artifacts/codex-review-credentials.json',
+    # Business source / migration / test filenames
+    'migrations/V53_create_credentials_table.sql',
+    'src/credentials.py',
+    'src/credentials_service.go',
+    'internal/credentials/service.go',
+    'test/credentials_test.go',
+]
+cases_block = [
+    # Actual credential files — must still be blacklisted
+    'sub/credentials',
+    'sub/credentials.json',
+    'sub/credentials.yaml',
+    'sub/aws-credentials.json',
+    'sub/kong-credentials.yaml',
+    'sub/kong.credentials',
+    'configs/credentials.ini',
+    # Other unchanged rules — no regression
+    'sub/foo.pem',
+    'subdir/.env.local',
+    'sub/secrets/api-key.txt',
+    # Allow-list doesn't over-exempt: .pem under artifacts/ still blocked
+    '_bmad-output/implementation-artifacts/credentials.pem',
+]
+errors = 0
+for p in cases_pass:
+    r = hc.matches_blacklist(p)
+    if r is not None:
+        print(f'FAIL_PASS {p!r} → {r}')
+        errors += 1
+for p in cases_block:
+    r = hc.matches_blacklist(p)
+    if r is None:
+        print(f'FAIL_BLOCK {p!r}')
+        errors += 1
+print(f'ERRORS={errors}')
+" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && grep -q "^ERRORS=0$" <<< "$OUT"; then
+    pass "T1.f13 — blacklist: business names PASS, real credential files BLOCK (issue #2)"
+else
+    fail "T1.f13 — blacklist coverage (rc=$RC out=$OUT)"
+fi
+
 # ============================================================================
 # T2 — stage 5.5 commit message suffix unification
 # ============================================================================
