@@ -918,17 +918,39 @@ def _parse_retro_action_items(retro_md_path, letter):
 
     # Find Action Items section: any `## ` heading containing "action item"
     # (English) or "行动项" (Chinese).
+    #
+    # v0.1.31 (issue #1): retro md may include a §"Epic N retro Action items
+    # follow-through" section (BMad SKILL Step 3 prev-retro check) — that
+    # section recaps the *previous* epic's items and must NOT be seeded as
+    # the current epic's new action items. Filter such follow-through /
+    # carryover sections out by keyword; prefer the last remaining section
+    # (canonical §"Action items" sits near the end of BMad retros).
     section_re = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
     section_starts = [(m.start(), m.group(1)) for m in section_re.finditer(text)]
 
+    follow_through_kw = (
+        "follow-through", "follow through", "follow up", "follow-up",
+        "followup", "carryover", "carry-over",
+    )
+
+    candidate_sections = []
+    for i, (pos, title) in enumerate(section_starts):
+        tlow = title.lower()
+        if "action item" not in tlow and "行动项" not in title:
+            continue
+        if any(kw in tlow for kw in follow_through_kw):
+            continue
+        end = section_starts[i + 1][0] if i + 1 < len(section_starts) else len(text)
+        candidate_sections.append(text[pos:end])
+
     section_text = text  # default: scan whole file
     section_found = False
-    for i, (pos, title) in enumerate(section_starts):
-        if "action item" in title.lower() or "行动项" in title:
-            end = section_starts[i + 1][0] if i + 1 < len(section_starts) else len(text)
-            section_text = text[pos:end]
-            section_found = True
-            break
+    if candidate_sections:
+        # Prefer last canonical Action Items section — BMad retros place the
+        # new-this-epic action items near the end (§"Action items"), while
+        # any follow-through sections (already filtered above) sit earlier.
+        section_text = candidate_sections[-1]
+        section_found = True
 
     items = []
 
@@ -948,45 +970,79 @@ def _parse_retro_action_items(retro_md_path, letter):
     if items:
         return items
 
-    # Form 2 fallback — markdown table row `| AI-N.M | title | ... |`
-    # (the table separator row `| --- | --- |` won't match because col 1
-    # would be "---" not "AI-N.M").
+    # Form 2 fallback — markdown table row, accepts (col 1 variants):
+    #   `| AI-N.M | title | ... |`            (canonical fallback)
+    #   `| AI-N.X1 | title | ... |`            (sub-id is letter+digits like Y2)
+    #   `| AI-N.X (注释) | title | ... |`       (parenthetical annotation)
+    #   `| **AI-N.X (注释)** | title | ... |`   (bold-wrapped col 1)
+    # v0.1.31 expansion (issue #1): empirically BMad retrospective skill
+    # consistently writes sub-id as letter+digits (Y1..Y6, X1..X6, Z2 ...),
+    # often with bold + parenthetical annotation. Form 2 now accepts all.
+    # Normalized to code `{letter}-{S}-{I}` (epic 1 / AI-2.Y3 → A-2-Y3).
+    # The separator row `| --- | --- |` won't match (col 1 = "---").
     table_re = re.compile(
-        r"^\|\s*AI-(\d+)\.(\d+)\s*\|\s*([^|]+?)\s*\|",
+        r"^\|\s*\**\s*AI-(\d+)\.([A-Za-z]\w*|\d+)"
+        r"\s*(?:\([^)\n]*\))?\s*\**\s*\|"
+        r"\s*([^|\n]+?)\s*\|",
         re.MULTILINE,
     )
+    form2_hit = False
+    seen_codes = set()
     for m in table_re.finditer(section_text):
         sec, idx = m.group(1), m.group(2)
         title = m.group(3).strip()
-        items.append((f"{letter}-{sec}-{idx}", title))
+        code = f"{letter}-{sec}-{idx}"
+        if code in seen_codes:
+            continue
+        seen_codes.add(code)
+        items.append((code, title))
+        form2_hit = True
 
-    if items:
-        print(
-            f"WARN: _parse_retro_action_items used Form 2 (markdown table "
-            f"`| AI-N.M |`) fallback for {retro_md_path}; canonical form is "
-            f"`### {letter}1 — title`. Codes normalized to `{letter}-N-M`. "
-            f"See prompt-suffixes/bmad-retrospective-suffix.md "
-            f"§'Action items markdown 格式契约'.",
-            file=sys.stderr,
-        )
-        return items
+    # v0.1.31: Form 2 no longer short-circuits — BMad retros frequently mix
+    # markdown tables (§8.1-§8.4) with bold-inline bullets (§8.5 团队约定).
+    # Run Form 3 too and merge (dedup by code) so the hybrid retro layout
+    # produces full retro_action_items seed.
 
-    # Form 3 fallback — bold inline `**A1** title` / `**A1/A2/A3** shared-title`
+    # Form 3 fallback — bold inline. Accepts:
+    #   `**A1** title`           (canonical fallback — code in bold, title outside)
+    #   `**A1/A2/A3** shared`     (slash-shared codes)
+    #   `**A1 — title**`          (whole-bold, em/en/hyphen sep)
+    #   `**A1（title）**：rest`    (whole-bold, CJK paren sep — empirical BMad
+    #                              §"团队约定" 写法, v0.1.31 added per issue #1)
     bold_re = re.compile(
-        rf"\*\*({re.escape(letter)}\d+(?:/{re.escape(letter)}\d+)*)\*\*\s*([^\n*]+)",
+        rf"\*\*({re.escape(letter)}\d+(?:/{re.escape(letter)}\d+)*)"
+        rf"(?:\s*[—–\-（(]\s*([^*\n]+?))?\*\*"
+        rf"\s*([^\n*]*)",
     )
+    form3_hit = False
     for m in bold_re.finditer(section_text):
         code_span = m.group(1)
-        title = m.group(2).strip()
+        inner_title = (m.group(2) or "").strip().rstrip("）)").strip()
+        outer_title = (m.group(3) or "").strip()
+        # Strip leading CJK / ascii colon (whole-bold form leaves `：rest` after `**`)
+        outer_title = outer_title.lstrip("：:").strip()
+        title = inner_title or outer_title
         for code in code_span.split("/"):
-            items.append((code.strip(), title))
+            code = code.strip()
+            if code in seen_codes:
+                continue
+            seen_codes.add(code)
+            items.append((code, title))
+            form3_hit = True
 
     if items:
+        used = []
+        if form2_hit:
+            used.append("Form 2 (markdown table `| AI-N.M |` / `| AI-N.X1 |` / "
+                        "`| **AI-N.X (注释)** |`)")
+        if form3_hit:
+            used.append("Form 3 (bold inline `**" + letter + "N**` / "
+                        "`**" + letter + "N（title）**`)")
         print(
-            f"WARN: _parse_retro_action_items used Form 3 (bold inline "
-            f"`**{letter}N**`) fallback for {retro_md_path}; canonical form is "
-            f"`### {letter}1 — title`. See prompt-suffixes/"
-            f"bmad-retrospective-suffix.md §'Action items markdown 格式契约'.",
+            f"WARN: _parse_retro_action_items used {' + '.join(used)} fallback "
+            f"for {retro_md_path}; canonical form is `### {letter}1 — title`. "
+            f"See prompt-suffixes/bmad-retrospective-suffix.md "
+            f"§'Action items markdown 格式契约'.",
             file=sys.stderr,
         )
         return items
@@ -998,8 +1054,9 @@ def _parse_retro_action_items(retro_md_path, letter):
             f"retro markdown has Action Items section but parser found 0 items "
             f"matching any of 3 forms: "
             f"(1) H3 `### {letter}N — title`, "
-            f"(2) markdown table `| AI-N.M | title |`, "
-            f"(3) bold inline `**{letter}N** title`. "
+            f"(2) markdown table `| AI-N.M |` / `| AI-N.X1 |` / "
+            f"`| **AI-N.X (注释)** |`, "
+            f"(3) bold inline `**{letter}N** title` / `**{letter}N（title）**`. "
             f"Schema drift — see prompt-suffixes/bmad-retrospective-suffix.md "
             f"§'Action items markdown 格式契约' for canonical format. "
             f"Path: {retro_md_path}"

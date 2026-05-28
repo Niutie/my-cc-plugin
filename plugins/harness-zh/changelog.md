@@ -11,6 +11,70 @@
 
 ---
 
+## v0.1.31 — 2026-05-28 — retro action items parser 兜底放宽 + follow-through 过滤（fixes #1）
+
+### 触发
+
+GitHub issue #1（用户用 `/harness-zh:report-issue` 自动提）：epic-3 retro stage 6
+commit halt，第 3 个连续 epic 同样 root cause。诊断过程：
+
+1. issue 描述说 `### 3.1`/`### 4.1`/`### 5.1` numeric headers 是禁止形态 —— 这是
+   `/harness-zh:report-issue` 自动收集的**概述偏差**（取了 §三 What-went-well 的
+   `### 3.1` 之类 H3 当成 Action Items 的 H3）。
+2. 真实 retro `_bmad-output/.../epic-3-retro-2026-05-27.md` 实际格式：
+   - §六 "Epic 2 retro Action items follow-through" —— prev-epic recap section
+     （title 含 "Action items"，被旧 section detection 抢先命中，但其下表格行
+     `AI-N.M (注释)` 带括号注释 → 旧 Form 2 正则 `AI-(\d+)\.(\d+)\s*\|` 不匹配）
+   - §八 "Action items（行动项 — owner 统一为 solo-dev）" —— 真正的 epic 3 新增
+     17 条 + §8.5 团队约定 4 条 bullets，被 section detection 跳过未 scan
+3. 即使 section detection 命中 §八，§8.1-§8.4 表格用 `| AI-1.Y2 |`/`| **AI-1.X
+   (二次升级)** |`/`| AI-4.X1 (升级) |` 字母后缀 sub-id + bold/paren wrap，
+   旧 Form 2 正则全 0 命中 → fail-loud halt。
+
+3 个连续 epic 都触发是因为 BMad retrospective skill 在 prompt-suffix 引导下
+稳定输出这套"差不多但不全合规"的格式，老 fail-loud 哲学没让 skill 转向，每次
+都靠用户手工救场。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/harness-commit.py` `_parse_retro_action_items`：
+  - **section detection 改"取最后一个 canonical"**：增加 follow-through /
+    follow up / carryover 关键字过滤，跳过 prev-epic recap section；剩余
+    candidate 取 last（BMad retro 把新增 action items 放文末）。
+  - **Form 2 正则放宽接受 4 种 col 1 变体**：原 `AI-(\d+)\.(\d+)` 改为
+    `AI-(\d+)\.([A-Za-z]\w*|\d+)` 接受 letter+digits sub-id；前置 `\**\s*` +
+    后置 `(?:\([^)\n]*\))?\s*\**` 兼容 bold wrap + 括号注释。
+  - **Form 3 正则放宽接受 whole-bold 形态**：除原 `**A1** title` 外接受
+    `**A1 — title**` / `**A1（title）**：rest` 4 种变体；inner/outer title 都
+    剥分隔符 + 取非空者作为最终 title。
+  - **Form 2/3 改为共存合并**：原"Form 2 命中即 return"改为"Form 2 + Form 3
+    都跑、按 code 去重合并"。处理混合 retro 布局（§8.1-§8.4 表格 + §8.5
+    bullets）的实际场景。
+  - WARN 文案保留 `Form 2 (markdown table` / `Form 3 (bold inline` 老前缀
+    （兼容老 fixture grep 断言）+ 追加新格式说明。
+- `plugins/harness-zh/prompt-suffixes/bmad-retrospective-suffix.md` §"4. 兜底
+  匹配（Form 2/3）"：补 4 种 col 1 变体 + 4 种 whole-bold 变体清单；标记
+  v0.1.31 实测说明（"BMad skill 连续 3 轮稳定此格式 → 兜底已扩"）；记录
+  follow-through filter + §"团队约定"跨 epic A 系列的 known limitation。
+- `plugins/harness-zh/scripts/orchestration_observations_test.sh` 新增 3 条
+  fixture（T1.f10 follow-through 过滤 / T1.f11 Form 2 4 变体接受 / T1.f12
+  hybrid Form 2 + Form 3 合并 seed）。
+
+### 后续注意事项
+
+- BMad retrospective skill 的输出格式实际更接近"markdown 表格 + bullets 混合"
+  而非 prompt-suffix §"Form 1 H3" canonical。retro skill 是否未来真按 Form 1
+  写仍未知；v0.1.31 兜底已扩 + WARN 提示 + prompt-suffix 文档实测说明，先观察
+  epic-4 / 5 retro 的实际输出。如 BMad skill 仍稳定用 Form 2/3 → 考虑把"H3
+  canonical"哲学下调，把当前 Form 2 markdown 表格升为 canonical。
+- §"团队约定"跨 epic A 系列（`A7`-`A10` 在 epic-3 retro，但 letter=C）当前
+  作为 known limitation；如未来 retro skill 真切到 letter-strict 编码，可去
+  WARN。
+- T1.f10-f12 三新 fixture 增加 ~150 行测试代码，覆盖 issue #1 根因 + 兜底放宽
+  + section detection 多场景；retro action items parser 现总测试覆盖度 7 条。
+
+---
+
 ## v0.1.30 — 2026-05-27 — plugin-discovery pipeline 加 `command grep`（修复敌对 shell wrapper 环境）
 
 ### 触发

@@ -100,16 +100,41 @@ hyphen `-` 任一；title 可省）。section heading 必须 `## ` 且 title 含
 为兼容旧 retro md 与 BMad 默认衍生形态，harness 对下面两种形态做兜底匹配，
 但兜底命中后会在 stderr 打 WARN，提示**后续 retro 必须按 Form 1 写**：
 
-- **Form 2 — markdown 表格行**：`| AI-N.M | title | ... |` →
-  normalize 成 code `<letter>-N-M`（如 epic 1 / `AI-2.3` → `A-2-3`）
-- **Form 3 — bold inline**：`**A1** title` 或 `**A1/A2/A3** shared-title` →
-  按 `/` 分裂为多个 code，共享同一 title
+- **Form 2 — markdown 表格行**（v0.1.31 起接受 4 种 col 1 变体）：
+  - `| AI-N.M | title | ... |` —— canonical 纯数字 sub-id
+  - `| AI-N.X1 | title | ... |` —— letter+digits sub-id（如 `Y2`/`X3`/`Z2`）
+  - `| AI-N.X (注释) | title | ... |` —— 带括号注释
+  - `| **AI-N.X (注释)** | title | ... |` —— bold 包裹 col 1
+  - normalize 成 code `<letter>-N-M`（如 epic 1 / `AI-2.Y3` → `A-2-Y3`）
+
+- **Form 3 — bold inline**（v0.1.31 起接受 4 种变体）：
+  - `**A1** title` —— code 在 bold 内、title 在 bold 外
+  - `**A1/A2/A3** shared` —— `/` 分裂多 code 共享 title
+  - `**A1 — title**` —— whole-bold，em/en/hyphen 分隔符
+  - `**A1（title）**：rest` —— whole-bold，CJK 全角括号 + 后置内容
+
+- **v0.1.31 实测**：BMad retrospective skill 在 epic-1/2/3 连续 3 轮稳定使用
+  Form 2 markdown 表格（letter+digits sub-id + bold/paren wrap）+ Form 3
+  whole-bold CJK 括号形态。兜底已扩展至接住这些 empirical patterns；同时
+  Form 2/3 改为**共存合并**（之前 Form 2 命中即 return → 漏吃 §"团队约定" bullets；
+  v0.1.31 起两 form 都跑、按 code 去重合并 seed）。仍**强烈建议**未来 retro
+  按 Form 1 H3 写 — fallback 路径可能在 v0.2+ 收紧。
+
+- **v0.1.31 新增 follow-through section 过滤**：retro md 含
+  `## Epic N retro Action items follow-through`（BMad SKILL Step 3
+  prev-retro recap section）时，parser 自动跳过该 section（含
+  "follow-through" / "follow up" / "carryover" 任一关键字），优先取
+  最后一个 canonical §Action items section。避免把 prev-epic AI 项目
+  错误 seed 进 current epic retro_action_items 块。
 
 不要依赖兜底：
-- 兜底 normalize 后的 code（`A-1-1`）与 retro md 内显式引用（`AI-1.1`）对不齐，
+- 兜底 normalize 后的 code（`A-1-Y2`）与 retro md 内显式引用（`AI-1.Y2`）对不齐，
   cross-reference 会断
-- 兜底匹配范围窄（如 Form 2 仅认第一列 `AI-N.M`，不认 `Action 1.1` 等其他列模式）
-- 兜底版本可能在后续 plugin 版本去除
+- 兜底匹配范围窄（如 Form 2 仅认第一列 `AI-N.M` 系列前缀，不认 `Action 1.1`
+  / `P-C1` 等其他列模式）
+- §"团队约定"跨 epic A 系列（`A7`-`A10` 在 epic-3 retro，但 letter=C）会被
+  letter-strict 检查吃掉，需按当前 epic letter 重新编码（`C7`-`C10`）才会被
+  当 retro_action_items seed；目前作为 known limitation
 
 ### 5. retro skill 起草 action items 时的写作流程
 

@@ -516,6 +516,149 @@ else
 fi
 rm -rf "${TMP}"
 
+# ----------------------------------------------------------------------------
+# T1.f10 — _parse_retro_action_items: §"Action items follow-through" recap
+#          section is filtered out; the canonical §"Action items" wins.
+#          (v0.1.31 issue #1 fix — prev-epic carryover recap must not be
+#          mis-seeded as current epic's new action items.)
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d)"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts" "${TMP}/.claude/harness/scripts"
+cp "${SCRIPT_DIR}/harness-commit.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/sprint-status.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/harness_config.py" "${TMP}/.claude/harness/scripts/"
+cp "${REPO_ROOT}/.claude/harness/harness-project-config.yaml" "${TMP}/.claude/harness/"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-3-retro-2026-05-27.md" <<'MD'
+# Epic 3 Retrospective
+
+## 六、Epic 2 retro Action items follow-through
+
+### 6.3 carryover
+
+| Epic 2 AI ID | summary |
+| --- | --- |
+| AI-2.2 | recap A item — must NOT be seeded as epic-3 new |
+
+## 八、Action items（行动项）
+
+### 8.1 流程改进类 action items
+
+| ID | 行动 |
+| --- | --- |
+| AI-1.Y2 | 新增 action item |
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+items = hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-3-retro-2026-05-27.md', 'C')
+print('ITEMS', [c for c, t in items])
+" 2>&1)
+RC=$?
+# Expect only the new C-1-Y2 from §八 (follow-through §六 filtered out).
+if [[ $RC -eq 0 ]] && \
+   grep -q "ITEMS \['C-1-Y2'\]" <<< "$OUT" && \
+   ! grep -q "C-2-2" <<< "$OUT"; then
+    pass "T1.f10 — follow-through section filtered; canonical §Action items wins"
+else
+    fail "T1.f10 — follow-through filter (rc=$RC out=$OUT)"
+fi
+rm -rf "${TMP}"
+
+# ----------------------------------------------------------------------------
+# T1.f11 — _parse_retro_action_items: Form 2 with letter-suffix sub-id +
+#          bold-wrapped col 1 + parenthetical annotation (v0.1.31 issue #1
+#          empirical BMad format).
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d)"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts" "${TMP}/.claude/harness/scripts"
+cp "${SCRIPT_DIR}/harness-commit.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/sprint-status.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/harness_config.py" "${TMP}/.claude/harness/scripts/"
+cp "${REPO_ROOT}/.claude/harness/harness-project-config.yaml" "${TMP}/.claude/harness/"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md" <<'MD'
+# Epic 1 Retrospective
+
+## 五、Action items（行动项）
+
+| ID | 行动 |
+| --- | --- |
+| AI-1.Y2 | 字母后缀编号 |
+| **AI-1.X (二次升级)** | bold + 括号注释 |
+| AI-4.X1 (升级) | 半角括号注释 |
+| AI-2.3 | 纯数字（向后兼容）|
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+items = hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md', 'A')
+print('ITEMS', sorted([c for c, t in items]))
+" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && \
+   grep -q "ITEMS \['A-1-X', 'A-1-Y2', 'A-2-3', 'A-4-X1'\]" <<< "$OUT"; then
+    pass "T1.f11 — Form 2 accepts letter-suffix / bold-wrap / paren annotation"
+else
+    fail "T1.f11 — Form 2 expansion (rc=$RC out=$OUT)"
+fi
+rm -rf "${TMP}"
+
+# ----------------------------------------------------------------------------
+# T1.f12 — _parse_retro_action_items: hybrid retro layout — §8.1-8.4 table
+#          + §8.5 bullets — Form 2 + Form 3 both fire and merge (dedup by code).
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d)"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts" "${TMP}/.claude/harness/scripts"
+cp "${SCRIPT_DIR}/harness-commit.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/sprint-status.py" "${TMP}/.claude/harness/scripts/"
+cp "${SCRIPT_DIR}/harness_config.py" "${TMP}/.claude/harness/scripts/"
+cp "${REPO_ROOT}/.claude/harness/harness-project-config.yaml" "${TMP}/.claude/harness/"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md" <<'MD'
+# Epic 1 Retrospective
+
+## 五、Action items（行动项）
+
+### 5.1 表格类
+
+| ID | 行动 |
+| --- | --- |
+| AI-1.Y2 | 表格行 |
+
+### 5.2 团队约定 bullets
+
+- **A7** 自我约束第七条（旧 Form 3）
+- **A8（自我约束第八条）**：whole-bold form
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+items = hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md', 'A')
+print('ITEMS', sorted([c for c, t in items]))
+" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && \
+   grep -q "ITEMS \['A-1-Y2', 'A7', 'A8'\]" <<< "$OUT" && \
+   grep -q "Form 2.*+.*Form 3" <<< "$OUT"; then
+    pass "T1.f12 — hybrid Form 2 + Form 3 fire and merge, dual-WARN emitted"
+else
+    fail "T1.f12 — hybrid merge (rc=$RC out=$OUT)"
+fi
+rm -rf "${TMP}"
+
 # ============================================================================
 # T2 — stage 5.5 commit message suffix unification
 # ============================================================================
