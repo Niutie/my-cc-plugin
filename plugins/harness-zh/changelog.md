@@ -11,6 +11,35 @@
 
 ---
 
+## v0.1.34 — 2026-05-29 — `sprint-status.py` 兼容 BMad 多行块 `sprint-status.yaml`（closes #4）
+
+### 触发
+
+GitHub issue #4：用户仓库用 BMad v6.7.1 多行块格式的 `sprint-status.yaml`
+（`key:` 换行接 `status:`/`depends_on:`），`harness-zh:run` 完全跑不起来。
+
+根因：`STORY_KEY_RE` 只匹配单行 `key: status`，把多行块里 nested 的 `status:`
+行误当成一个名叫 "status" 的 story → `next` 吐 "status"、`status` / `epic-all-done`
+全失效。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/sprint-status.py`：
+  - `_iter_dev_status`：改 base_indent 状态机 + `BLOCK_KEY_RE` / `NESTED_STATUS_RE`，
+    多行块 entry 读 nested `status:` 子键；`line_index` 指向承载 status 值的行。
+    单行格式向后兼容。
+  - `cmd_set`：重写正则为通用 field 匹配（单行=key 行；多行块=status 行），保留
+    行尾 inline 注释；`depends_on` 等块内其他子键不受影响。
+  - `harness-commit.py` / `harness-state.py` 无需改（都 shell out 到本脚本）。
+
+### 验证
+
+单行 / 多行块 / 混合三格式 `_iter_dev_status` + `cmd_set` 回归全 PASS；真实
+232-story 多行块 yaml 上 `next` / `status` / `epic-all-done` / `set` 均正确，
+`set` 多行块结构无损。
+
+---
+
 ## v0.1.33 — 2026-05-29 — `/harness-zh:run` 启动前置自动兑现 retro DEV items（fixes #3）
 
 ### 触发
