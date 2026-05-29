@@ -121,6 +121,47 @@ stage 取值：`1` / `2` / `3` / `4` / `5` / `5-fallback` / `6` / `6-5` / `6-don
 
 把"整体计划"用一条简短消息告诉用户：本轮 LOOP_SCOPE=`<value>`，预计跑 N 条 story，第一条 `<key>`（如适用）。
 
+### 0.A.0 retro DEV items 兑现前置 gate（issue #3，v0.1.33+）
+
+**动机**：新 epic 4-6 story 的 stage ① 会创建 `<KEY>.md`（命中 pre-commit gate ① 触发模式 `[4-6]-*.md`）。若此时还有未兑现的 `category: dev` retro action item（上个 epic retro 落地的 D 类项），commit 会被 hook 拦——但**那时 stage ① subagent 的 token 已经烧掉了**。本前置在 spawn stage ① 之前先把这些 dev 项清掉，避免 token 浪费 + halt。
+
+**只在"会创建新 [4-6] spec"时跑**：本步在 §0.A（全新启动）末尾、进入 §1 主流程**之前**执行。先判断本轮第一条要起跑的 story key 是否命中 gate ① 触发模式：
+
+1. 取本轮第一条 backlog story key（`all` / `single-epic`：`python3 .claude/harness/scripts/sprint-status.py next`；`single-story`：`TARGET_KEY`）。
+2. 如果该 key **不**匹配 `^[4-6]-` → gate ① 不会触发，**跳过本节**直接进 §1。
+3. 如果匹配 → 跑下面的检测 + 兑现循环。
+
+**检测**：
+
+```bash
+bash .claude/harness/scripts/grep_pending_dev_retro_items.sh
+```
+
+stdout 每个待兑现 dev 项一行（TAB 分隔 5 列）`ITEM<TAB><epic-N-retro><TAB><CODE><TAB><status><TAB><chore_spec|->`，末尾三行汇总 `_PENDING_DEV_:<N>` / `_WITH_SPEC_:<M>` / `_NO_SPEC_:<K>`（这是 gate ① 的同口径计数——与 `check_retro_action_items.sh` 一致）。
+
+- `_PENDING_DEV_:0` → 无阻塞项，跳过兑现，进 §1。
+- `_PENDING_DEV_:N`（N>0）→ 进入兑现循环。先用一条简短消息告诉用户：检测到 N 条未兑现 dev retro 项（M 条有 chore_spec 可自动兑现 / K 条缺 spec），将在 stage ① 之前先清掉。
+
+**兑现循环**（对每个 `_WITH_SPEC_` 的 ITEM 行，逐项串行；`chore_spec` = `-` 的项见末尾"缺 spec 兜底"）：
+
+设当前项 `CODE` / `EPIC`（从 `epic-${EPIC}-retro` 取数字）/ `SPEC`（chore_spec 文件名，完整路径 `_bmad-output/implementation-artifacts/$SPEC`）。
+
+1. **实现**：spawn 一个 fresh general-purpose subagent，prompt = `$SPEC` 全文 + 一句指令"按本 chore spec 的 Tasks & Acceptance 段实现项目代码；这是一次性 chore 兑现，**不走** atdd / codex / bmad review 循环；完成后在 spec 的 Tasks checkbox 打勾。只动 spec 描述范围内的项目代码，不碰其它 story 的 artifacts。" 末尾附 `python3 .claude/harness/scripts/harness-prompt-suffix.py 2`（代答政策段；用 stage 2 的 dev 口径）。
+2. **翻状态**：subagent 完成后，主 agent 用 Edit 工具把 `sprint-status.yaml` 里 `retro_action_items.epic-${EPIC}-retro.${CODE}` 的 status 从 `pending` / `in-progress` 翻成 `done`（只动这一行；retro_action_items 没有 `sprint-status.py` setter，必须 Edit）。
+3. **收口 commit**（脚本是单一可信源，主 agent 不自己 `git add`）：
+
+   ```bash
+   python3 .claude/harness/scripts/harness-commit.py retro-fulfill <CODE> --epic <EPIC>
+   ```
+
+   `STATUS=ok` → 按 §−1.d 用脚本 `SUGGEST_COMMIT_MSG`（`chore(retro-c<EPIC>-<CODE>): fulfill retro dev item`）HEREDOC commit；本 stage 无 `SUGGEST_TAG`。`STATUS=halt`（典型：cross-story 隔离 / blacklist）→ 按 §3 halt 模板停，交 solo-dev。
+
+4. 下一项。全部 `_WITH_SPEC_` 项兑现完后，重跑 `grep_pending_dev_retro_items.sh` 确认 `_PENDING_DEV_` 已降到只剩 `_NO_SPEC_` 项（或 0）；再进 §1。
+
+**缺 spec 兜底（`chore_spec` = `-`）**：这类 dev 项还没 stage 6.5 落地的 chore spec（多半是 retro residue 没处理完）。主 agent **不**自动臆造实现——把这 K 条列给用户，给两条路：① 先跑 `bash .claude/harness/scripts/process_retro_residue.sh --epic <EPIC>` 补 chore spec 再重跑本命令；② solo-dev 评估后手工兑现 / `git commit --no-verify` 显式跳过（须在该项 yaml 行加注释留痕）。在缺 spec 项未清掉前，stage ① commit 仍会被 gate ① 拦——据实告诉用户，不要假装已清零。
+
+> **范围说明**：本前置只覆盖**启动那一刻**的 gate ① 阻塞。`all` 模式跑到 epic 边界时，上个 epic 的 stage ⑥ retro 会**新 seed** 一批 dev 项，下个 epic 的 stage ① 仍可能被拦——那属于 mid-run epic 切换，沿用既有 stage 6.5 → 手工兑现路径，不在本前置范围内。
+
 ### 0.B 续作（LOOP_SCOPE = `continue-single`，或 `single-story` 且 `harness/<TARGET_KEY>/start` tag 已存在）
 
 worktree **可以**不干净（这是续作的合法状态）。改跑这套：
@@ -180,6 +221,7 @@ worktree **可以**不干净（这是续作的合法状态）。改跑这套：
 | 阶段 ⑥ `epic($EPIC): retrospective` | `epic-${EPIC}-retro-*.md` + `sprint-status.yaml` + `deferred-work.md`（retro 期间发现的 epic 级别延后项可写入此处） |
 | 阶段 ⑥.5 `chore(retro-c$EPIC): process residue → N chore specs` | `chore-retro-c${EPIC}-<code>-<slug>.md` × N（NEW，由 fresh agent 生成）+ `sprint-status.yaml`（仅 retro_action_items.epic-${EPIC}-retro 子段加 `chore_spec` + `category` 两字段，category 值取自 fresh agent MANIFEST）。无残余时 STATUS=skip。 |
 | 阶段 ⑥ `epic($EPIC): mark done` | **仅** `sprint-status.yaml`（同时翻 `epic-${EPIC}-retrospective: done` 和 `epic-${EPIC}: done`）。如果两个 key 都已是 done 则 STATUS=skip。 |
+| 前置 `retro-fulfill <CODE> --epic <EPIC>`（§0.A.0，issue #3）`chore(retro-c$EPIC-<CODE>): fulfill retro dev item` | 项目代码 + `sprint-status.yaml`（主 agent Edit 翻 `retro_action_items.epic-${EPIC}-retro.<CODE>` status → done）+ `deferred-work.md`（实现中遇到的延后项）+ `chore-retro-c${EPIC}-<CODE>-*.md`（dev 勾 Tasks checkbox；chore_retro 通道豁免）。位参是 retro item 的 `<CODE>`（非 story key）。 |
 
 **测试 harness 独立 stage**（由 `/harness-zh:run-test` 触发，与 run-sprint 5-stage 命名空间隔离；详见 [`run-test.md`](run-test.md)）：
 
@@ -191,7 +233,7 @@ worktree **可以**不干净（这是续作的合法状态）。改跑这套：
 
 （路径前缀 `_bmad-output/implementation-artifacts/` 上面的路径都省略，下面同。）
 
-**"项目代码"是什么**：脚本里凡是不匹配 `_bmad-output/implementation-artifacts/*.md` / `*.json` / `*.yaml` 的路径都被当作"项目代码"——典型如 `src/`、`apps/`、`packages/`、`tests/`、`pyproject.toml` / `package.json` / `Cargo.toml` / `go.mod` 等构建文件、`docs/`、`deploy/`、`.github/workflows/`、`config/` 等。stage ②/④/⑤/⑤.5/T1/T3/T4 允许这类路径，stage ①/③/`5-fallback`/⑥/`6-done` 拒绝。`test_artifacts/` 子目录路径（`_bmad-output/implementation-artifacts/test_artifacts/...`）也走"项目代码"通道——ARTIFACT_RE 限定无斜杠后缀，子目录天然不匹配 → 落到 project_code 桶（仅 stage ⑤.5/T1/T3/T4 允许）。
+**"项目代码"是什么**：脚本里凡是不匹配 `_bmad-output/implementation-artifacts/*.md` / `*.json` / `*.yaml` 的路径都被当作"项目代码"——典型如 `src/`、`apps/`、`packages/`、`tests/`、`pyproject.toml` / `package.json` / `Cargo.toml` / `go.mod` 等构建文件、`docs/`、`deploy/`、`.github/workflows/`、`config/` 等。stage ②/④/⑤/⑤.5/`retro-fulfill`/T1/T3/T4 允许这类路径，stage ①/③/`5-fallback`/⑥/`6-done` 拒绝。`test_artifacts/` 子目录路径（`_bmad-output/implementation-artifacts/test_artifacts/...`）也走"项目代码"通道——ARTIFACT_RE 限定无斜杠后缀，子目录天然不匹配 → 落到 project_code 桶（仅 stage ⑤.5/T1/T3/T4 允许）。
 
 **预期外路径如何处理**：脚本不区分"已知模块 / 未知模块"——只要不在黑名单 / 跨 story / 预期外 artifact 这三个 halt 类里，项目代码一律 stage。harness-changelog 2026-05-01 §J 解释了为什么删掉之前的"白名单 + PROJECT_CODE 标记"双轨制（标记本身没改变过任何决策，只是 commit message 噪音）。
 

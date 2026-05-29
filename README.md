@@ -4,7 +4,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 
 | Plugin | Version | Purpose |
 |---|---|---|
-| **harness-zh** | 0.1.32 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **harness-zh** | 0.1.33 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 
 ---
 
@@ -138,6 +138,7 @@ For full runtime architecture (5-stage state machine, sprint-status.yaml schema,
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.1.33 | 2026-05-29 | `/harness-zh:run` 启动前置自动兑现 retro DEV items (fixes #3). 新增 §0.A.0 gate：起跑首条 story 命中 `^[4-6]-` 时，先用 `grep_pending_dev_retro_items.sh` 枚举未兑现 `category: dev` retro 项 → 对每个有 chore_spec 的项 spawn fresh subagent 实现 → Edit 翻 status done → 新 `retro-fulfill` commit stage 收口，全清后才 spawn stage ①。避免「stage-1 subagent 干完活 → commit 撞 pre-commit gate ① → halt」的 token 浪费。缺 chore_spec 的项不臆造，列给用户走 `process_retro_residue.sh` 补 spec 或 `--no-verify` 留痕。范围限启动那一刻；mid-run epic 切换的新 seed dev 项沿用既有手工路径。 |
 | 0.1.32 | 2026-05-28 | BLACKLIST_PATTERNS `**/*credentials*` 太宽误伤业务命名 (fixes #2). 替换为精确凭证文件命名集合（`**/credentials[.{json,yaml,yml,ini,txt}]` / `**/*-credentials[.ext]` / `**/*.credentials`）；matches_blacklist 加防御层 2 — BMad artifacts/ 路径下 md/json/yaml/yml 一律豁免 blacklist。caller 仓库 epic 53 的 `53-1-db-migration-credentials-表-...md` 等合法 spec 不再被拦；`credentials_service.go` / `V53_create_credentials_table.sql` 等业务源码也不再误伤。真正凭证文件（`aws-credentials.json` / `.aws/credentials` / `kong.credentials`）继续被拦。 |
 | 0.1.31 | 2026-05-28 | retro_action_items parser 兜底放宽 + follow-through filter (fixes #1). `_parse_retro_action_items` 现接受 4 种 Form 2 col 1 变体（letter-suffix sub-id / bold-wrap / paren annotation）+ 4 种 Form 3 whole-bold 变体（em-dash / hyphen / CJK paren sep）。section detection 增加 follow-through / carryover 关键字过滤，prev-epic recap section 不再被误抢 → canonical §"Action items" 取 last。Form 2 + Form 3 改为共存合并（按 code 去重），处理 §8.1-§8.4 表格 + §8.5 bullets 混合 retro 布局。Closes the 3-epic-in-a-row halt cycle by adapting to BMad retrospective skill 's empirical output 而非 fail-loud 死等 skill 转向。 |
 | 0.1.30 | 2026-05-27 | Hostile-env hardening for plugin-discovery pipelines: switch to `command grep` inside `find \| while ... done` loops (5 critical-path locations across init / update / upgrade-deferred-work commands + `discover_plugin_root.sh` + `collect_issue_context.sh`). Closes a class of bugs where shell-function wrappers around `grep` (Claude Code injects one on some Linux dev envs) `exec`-replace the pipeline's subshell, killing the loop after one iteration. Bootstrap now survives the wrapped-grep environment. |

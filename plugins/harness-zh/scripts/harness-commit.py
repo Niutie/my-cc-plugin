@@ -677,6 +677,32 @@ STAGES = {
         "validate_review":  False,
         "suggest_tag":      None,
     },
+    "retro-fulfill": {
+        # issue #3 — retro DEV items 兑现前置 gate（/harness-zh:run §0.A.0）。
+        # 把一条 category: dev 的 retro action item 的 chore_spec 实现成项目代码，
+        # 在 stage 1 创建新 epic 4-6 story spec 之前就清掉 pre-commit gate ① 的
+        # 阻塞，避免「spawn stage-1 subagent → commit 被 hook 拦 → halt」的 token 浪费。
+        #
+        # `key` 位参 = retro action item 的 code（如 D7），不是 story key（本 stage
+        # 没有 story 概念）。commit_msg 用 {epic}+{key} 拼成 chore(retro-cN-CODE)。
+        # 允许路径 = 项目代码 + sprint-status.yaml（主 agent Edit 翻 retro_action_items
+        # 对应 code 的 status → done）+ deferred-work.md（实现中遇到的延后项）+
+        # chore-retro-c{epic}-*.md（dev 勾 Tasks checkbox；chore_retro 通道豁免，与
+        # stage 6-5 同）。_sync_sprint_status_for_stage 对本 stage no-op —— retro_action_items
+        # 的 status flip 没有 sprint-status.py setter，由主 agent Edit 落地后这里 stage。
+        "story_md":         False,
+        "story_json":       [],
+        "story_codex":      False,
+        "global_files":     ["sprint-status.yaml", "deferred-work.md"],
+        "epic_retro":       False,
+        "chore_retro":      True,
+        "project_code":     True,
+        "commit_msg":       "chore(retro-c{epic}-{key}): fulfill retro dev item",
+        "skip_if_empty":    False,
+        "validate_dev":     False,
+        "validate_review":  False,
+        "suggest_tag":      None,
+    },
     # ----------------------------------------------------------------------
     # Test harness stages (chore C-bootstrap; F1+F2 fixes 2026-05-04):
     #
@@ -1690,7 +1716,7 @@ def main():
         _run_seed_simulation(epic)
         sys.exit(0)
 
-    if args.stage in ("6", "6-5", "6-done", "T1") and not epic:
+    if args.stage in ("6", "6-5", "6-done", "T1", "retro-fulfill") and not epic:
         emit("STATUS=halt")
         emit(f"REASON=stage {args.stage} requires --epic")
         sys.exit(1)

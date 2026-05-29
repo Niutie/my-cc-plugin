@@ -11,6 +11,69 @@
 
 ---
 
+## v0.1.33 — 2026-05-29 — `/harness-zh:run` 启动前置自动兑现 retro DEV items（fixes #3）
+
+### 触发
+
+GitHub issue #3（用户仓库 epic 5，story `5-1-安全事件-crud-启停-筛选`，stage 1 halt）：
+
+```
+pre-commit hook BLOCKING: epic-4-retro 10 条 dev 类 pending action items
+(D7/D8/D9/D10/D11/D14/D15/D16/D18/D20) 未兑现
+```
+
+新 epic 4-6 story 的 stage ① 创建 `<KEY>.md` 命中 pre-commit gate ① 触发模式
+`[4-6]-*.md`。若上个 epic retro 落地的 `category: dev` action items 还没兑现，
+commit 被 hook 拦——但**此时 stage ① subagent 的 token 已经烧掉**。用户要求：
+`/harness-zh:run` 启动时自动检测这些 dev 项并**先兑现**，避免「spawn stage-1 →
+干活 → commit 被拦 → halt」的 token 浪费。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/grep_pending_dev_retro_items.sh`（NEW）：纯
+  enumerator —— 扫 `retro_action_items` 块，机器可读列出所有 `category: dev` 且
+  status ∈ {pending, in-progress} 的项（gate ① 同口径），每项附 epic/code/status/
+  chore_spec。复用 `check_retro_action_items.sh` 的 awk 状态机 + 新增 chore_spec
+  捕获。stdout 契约：`ITEM<TAB>epic<TAB>code<TAB>status<TAB>spec` 行 + `_PENDING_DEV_`
+  / `_WITH_SPEC_` / `_NO_SPEC_` 三行汇总。恒 exit 0（除文件缺失 exit 2）；块缺失 /
+  重复 header 走 WARN + 0 项（gate 自会拦，enumerator 不重复报错）。
+- `plugins/harness-zh/scripts/harness-commit.py`：新增 `retro-fulfill` commit
+  stage —— 把一条 dev retro item 的 chore_spec 实现成项目代码后收口 commit。允许
+  路径 = 项目代码 + `sprint-status.yaml`（主 agent Edit 翻 status → done）+
+  `deferred-work.md` + `chore-retro-c{epic}-*.md`（chore_retro 通道豁免，与 stage
+  6-5 同）。位参 `key` = retro item 的 `<CODE>`（非 story key）；commit_msg =
+  `chore(retro-c{epic}-{key}): fulfill retro dev item`。`_sync_sprint_status_for_stage`
+  对本 stage no-op（retro_action_items 无 setter，由主 agent Edit 落地）。同步把
+  `retro-fulfill` 加进「需 `--epic`」stage 列表。
+- `plugins/harness-zh/commands/run.md`：
+  - 新增 §0.A.0「retro DEV items 兑现前置 gate」——在 §0.A 末尾、进 §1 之前，先判
+    本轮第一条 story key 是否命中 `^[4-6]-`；命中则跑 enumerator 检测 → 对每个有
+    chore_spec 的 dev 项 spawn fresh subagent 实现 → Edit 翻 status → `retro-fulfill`
+    收口 commit → 全清后进 §1。缺 spec 项不臆造，列给用户走 `process_retro_residue.sh`
+    补 spec 或 `--no-verify` 留痕。
+  - §0.5 路径预期产出表加 `retro-fulfill` 行；「项目代码」允许 stage 列表加
+    `retro-fulfill`。
+- `plugins/harness-zh/scripts/grep_pending_dev_retro_items_test.sh`（NEW）：9 用例
+  覆盖 dev/harness/done/NOCAT 分流、with/no-spec 分桶、块缺失 / 重复 header /
+  文件缺失边界、+ 与 `check_retro_action_items.sh` dev 计数一致性回归锚。
+- `plugins/harness-zh/scripts/retro_fulfill_stage_test.sh`（NEW）：3 用例（源码树
+  直跑 `--dry-run`）覆盖 happy path（3 路径 staged + commit_msg）、缺 `--epic` halt、
+  cross-story 隔离 halt。
+
+### 后续注意事项
+
+- **范围**：本前置只覆盖**启动那一刻**的 gate ① 阻塞。`all` 模式跑到 epic 边界
+  时上个 epic 的 stage ⑥ retro 会**新 seed** dev 项，下个 epic stage ① 仍可能被
+  拦——属 mid-run epic 切换，沿用既有 stage 6.5 → 手工兑现路径，未纳入本前置（避免
+  在主循环里插 dev-loop 的复杂度 + 失控风险）。后续如需可把 §0.A.0 抽成 §1 stage ①
+  前可复用的子例程。
+- gate ① 触发模式 `[4-6]-*.md` 是单字符 epic（4/5/6）；epic 7+ / epic 53 这类
+  `^[4-6]-` 不命中的 epic，gate ① 本就不触发，§0.A.0 也据此跳过——与 hook 行为
+  对齐。这是 harness 围绕 1-6 epic 项目设计的既有限制，本版未扩。
+- `retro-fulfill` 一次只兑现一条（per-item commit），chore_retro 通道允许任意
+  `chore-retro-c{epic}-*.md`（非严格限定当前 CODE），与 stage 6-5 批处理一致；真正
+  的隔离靠 cross-story gate（foreign `<other-key>.md` 仍 halt）。
+
 ## v0.1.32 — 2026-05-28 — BLACKLIST `**/*credentials*` 收窄 + artifacts allow-list（fixes #2）
 
 ### 触发
