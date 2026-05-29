@@ -33,8 +33,13 @@
         → 输出该 epic 内的下一条 backlog story key（yaml 出现顺序最早的一条），
           找不到时退出码 1。run-sprint --epic 模式的循环退出条件用它。
 
-故意手写 yaml 解析（避免引入 PyYAML 依赖）。development_status 块下的所有
-story 行格式都是 `  <key>: <value>`，结构稳定。
+故意手写 yaml 解析（避免引入 PyYAML 依赖）。兼容 development_status 下两种布局：
+  - 单行：`  <key>: <status>`（含行尾 inline 注释）
+  - 多行块（BMad v6.7.1+ bmad-sprint-planning 默认，带 depends_on）：
+        <key>:
+          status: backlog
+          depends_on: [...]
+见 _iter_dev_status（读）/ cmd_set（写）。issue Niutie/my-cc-plugin#4。
 """
 
 from __future__ import annotations
@@ -63,16 +68,27 @@ SPRINT_FILE = get_sprint_status_path()
 # mapping key 不能含 whitespace 或 `:`；`#` 是行内注释起点 — 三者都可作
 # delimiter，把它们排除即可。整个 regex 只在 development_status 块内匹配
 # （见 _iter_dev_status 的 in_block 状态机），不会误吃其他 yaml 段。
+# 单行 entry：`  story-key: status  # comment`（value 与 key 同行）
 STORY_KEY_RE = re.compile(r"^\s+([^\s:#]+):\s*(\S+)\s*(?:#.*)?$")
+# 多行块 entry 的 key 行：`  story-key:`（冒号后无 value，value 在缩进更深的子键）
+BLOCK_KEY_RE = re.compile(r"^(\s+)([^\s:#]+):\s*(?:#.*)?$")
+# 多行块内的 status 子键：`    status: backlog  # comment`
+NESTED_STATUS_RE = re.compile(r"^\s+status:\s*(\S+)\s*(?:#.*)?$")
 
 
 def _iter_dev_status(include_epic_keys: bool = False) -> list[tuple[int, str, str]]:
-    """返回 [(line_index, key, status), ...]。默认仅 story；include_epic_keys=True 时含 epic-* 行。"""
+    """返回 [(line_index, key, status), ...]。默认仅 story；include_epic_keys=True 时含 epic-* 行。
+
+    兼容单行与多行块两种布局（issue #4）。line_index 指向**承载 status 值的那一行**：
+    单行 entry = key 行；多行块 = nested `status:` 行 —— 使 cmd_set 能就地改写正确的行。
+    """
     if not SPRINT_FILE.exists():
         sys.exit(f"missing {SPRINT_FILE} — 请先运行 /bmad-sprint-planning")
     lines = SPRINT_FILE.read_text(encoding="utf-8").splitlines()
     out: list[tuple[int, str, str]] = []
     in_block = False
+    base_indent: int | None = None
+    pending_key: str | None = None  # 多行块 entry key，等待其 nested status:
     for i, line in enumerate(lines):
         stripped = line.rstrip()
         if stripped.startswith("development_status:"):
@@ -82,13 +98,34 @@ def _iter_dev_status(include_epic_keys: bool = False) -> list[tuple[int, str, st
             continue
         if stripped and not stripped.startswith((" ", "\t", "#")):
             break
-        m = STORY_KEY_RE.match(stripped)
-        if not m:
+        if not stripped or stripped.lstrip().startswith("#"):
+            continue  # 空行 / 整行注释
+        indent = len(line) - len(line.lstrip())
+        if base_indent is None:
+            base_indent = indent
+        if indent <= base_indent:
+            # entry 级别行：单行 `key: value` 或 多行块 `key:`
+            pending_key = None
+            m_full = STORY_KEY_RE.match(stripped)
+            if m_full:
+                key = m_full.group(1)
+                status = m_full.group(2).strip().strip('"').strip("'")
+                if key.startswith("epic-") and not include_epic_keys:
+                    continue
+                out.append((i, key, status))
+                continue
+            m_block = BLOCK_KEY_RE.match(stripped)
+            if m_block:
+                pending_key = m_block.group(2)  # 等 nested status:
             continue
-        key, status = m.group(1), m.group(2).strip().strip('"').strip("'")
-        if key.startswith("epic-") and not include_epic_keys:
-            continue
-        out.append((i, key, status))
+        # indent > base_indent：多行块的 nested 子键
+        if pending_key is not None:
+            m_status = NESTED_STATUS_RE.match(stripped)
+            if m_status:
+                status = m_status.group(1).strip().strip('"').strip("'")
+                if not (pending_key.startswith("epic-") and not include_epic_keys):
+                    out.append((i, pending_key, status))
+                pending_key = None  # 已取到 status；块内 depends_on 等忽略
     return out
 
 
@@ -124,11 +161,14 @@ def cmd_set(key: str, new_status: str) -> int:
     text_lines = SPRINT_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
     idx = target_lines[0]
     line = text_lines[idx]
-    # 注意 [ \t] 而不是 \s — \s 会吃掉行末 \n 导致下一行粘连
-    m = re.match(r"^([ \t]+)(" + re.escape(key) + r"):[ \t]*\S+[ \t]*(\r?\n)?$", line)
+    # idx 指向承载 status 值的行：单行 entry 的 `key: value`，或多行块的 `  status: value`。
+    # field 名既可能是 story key 也可能是字面量 'status' —— 用通用 field 匹配，并保留行尾 inline 注释。
+    # 注意 [ \t] 而不是 \s — \s 会吃掉行末 \n 导致下一行粘连。
+    m = re.match(r"^([ \t]+)([^\s:#]+):[ \t]*\S+([ \t]*#.*)?(\r?\n)?$", line)
     if not m:
         sys.exit(f"failed to rewrite line {idx}: {line!r}")
-    text_lines[idx] = f"{m.group(1)}{m.group(2)}: {new_status}{m.group(3) or ''}"
+    trailing = m.group(3) or ""  # 保留行尾 inline 注释（如有）
+    text_lines[idx] = f"{m.group(1)}{m.group(2)}: {new_status}{trailing}{m.group(4) or ''}"
     today = datetime.date.today().isoformat()
     for j, l in enumerate(text_lines):
         if l.startswith("last_updated:"):
