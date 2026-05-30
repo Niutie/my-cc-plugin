@@ -11,6 +11,66 @@
 
 ---
 
+## v0.1.35 — 2026-05-31 — `harness-commit.py` 三连修：epic>26 letter / i18n 凭证误伤 / 非 artifacts 文件误 stage（closes #5）
+
+### 触发
+
+GitHub issue #5：用户仓库单次 `/harness-zh:run --epic`（epic 52 → 53）实跑暴露 3 个
+`harness-commit.py` / retro-residue pipeline 问题（项目 epic 编号在 50s）。
+
+1. **`_epic_letter()` epic > 26 封顶（HIGH）**：原实现 `1 <= n <= 26` 之外返回 `None`，
+   导致 stage 6 `_seed_retro_action_items` 拿不到 letter → `retro_action_items.epic-N-retro`
+   块永不 seed → `process_retro_residue.sh --epic 52/53` 永久 exit 1。50s 编号 epic 的
+   stage ⑥.5 residue pipeline 实际死掉。
+2. **凭证 BLACKLIST 误伤 i18n 语言包（MEDIUM）**：`**/*-credentials.json` 命中新建
+   i18n locale 文件 `web/src/i18n/locales/{zh-CN,en-US}/personal-credentials.json`
+   （纯 UI 翻译文本，零 secret 字段）→ stage 2 `STATUS=halt`。用户被迫把文件改名
+   （连字符→下划线）绕开。
+3. **非 impl-artifacts 文件误入 story commit（MEDIUM）**：`_bmad-output/` 下
+   `implementation-artifacts/` 以外的文件（本次是并行 `/bmad-brainstorming` 产出的
+   `brainstorming/brainstorming-session-*.md`，与当前 story 无关）被分类为 project code
+   自动 `git add` 进 story 53-2 的 stage-4 commit，主 agent 靠人工 `git restore --staged`
+   才发现。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/harness-commit.py`：
+  - `_epic_letter(epic)`：改双射 base-26（"电子表格列号"）：1→A、26→Z、27→AA、
+    52→AZ、53→BA、...；epic ≤ 26 字节级向后兼容；仅非正整数 / 非整数返回 `None`。
+    `_seed_retro_action_items` 的 `letter is None` 分支注释同步更新（现仅兜非法 epic arg）。
+  - 新增 `is_i18n_locale_json(path)` + `_I18N_LOCALE_DIR_SEGMENTS`（`i18n`/`locales`/
+    `locale`）：路径含 i18n/locale 目录段的 `.json` 在 `matches_blacklist` 里整体豁免
+    （与既有 BMad artifacts 豁免同手法）。真实凭证文件（`infra/aws-credentials.json`、
+    `.env*`、`*.pem`、`**/secrets/**`）继续被拦。
+  - 新增 `is_out_of_scope_bmad_output(path)` + `_BMAD_OUTPUT_PREFIX`/
+    `_BMAD_OUTPUT_INSCOPE_PREFIX`（由 `ARTIFACTS_DIR` 派生，跟随项目 `artifacts_root`）：
+    main() 新增 step 2.5 gate，`_bmad-output/` 下非 `implementation-artifacts/` 路径
+    → `STATUS=halt` + `OUT_OF_SCOPE_BMAD=` + GUIDANCE（提示单独提交 / 移入
+    implementation-artifacts）。跑在 blacklist gate 之后，故 `.harness-logs/**` 等仍报
+    `BLACKLIST=`。docstring 的 emit 行清单补 `OUT_OF_SCOPE_BMAD=`。
+- `plugins/harness-zh/prompt-suffixes/bmad-retrospective-suffix.md` §1：letter 命名规则
+  补 epic > 26 多字母示例（27→AA、52→AZ），声明 `_epic_letter()` 为权威。
+- `plugins/harness-zh/scripts/harness_commit_issue5_test.sh`（新增）：5 fixture，源树
+  直跑（tmp git repo + `--dry-run`，无需 deployed `.claude/harness/`）。
+
+### 验证
+
+`harness_commit_issue5_test.sh` 5/5 PASS（I1 epic-letter >26 + 向后兼容；I2a i18n
+locale 凭证放行 + I2b 真凭证仍拦；I3a 越界 `_bmad-output/` halt + I3b
+`implementation-artifacts/` 不误伤）。`run_all_tests.sh` 全绿（13 PASS / 0 FAIL；
+8 known-stale skip 均为需 deployed fixture 的既有项，与本次无关）。`process_retro_residue.sh`
+的 code 正则 `[A-Z][A-Za-z0-9-]*` 本就兼容多字母 code，无需改 —— epic 52 失败的根因
+就是块从未被 seed，`_epic_letter` 修复后即可正常 seed + 处理。
+
+### 后续注意
+
+issue #5 secondary 提到的「retro skill 输出 `| # | 行动项 |` 纯数字表格 → 三种 Form
+均 0 命中」属 skill 输出与 parser 契约漂移，已在 bmad-retrospective-suffix.md §3
+列为禁止形态；上游 skill 不可改（CLAUDE.md 约束），靠 prompt-suffix 覆盖纠偏，本次
+不动。
+
+---
+
 ## v0.1.34 — 2026-05-29 — `sprint-status.py` 兼容 BMad 多行块 `sprint-status.yaml`（closes #4）
 
 ### 触发

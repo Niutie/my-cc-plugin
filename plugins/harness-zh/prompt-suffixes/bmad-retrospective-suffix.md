@@ -61,9 +61,12 @@ solo-dev 在 paste 后必须为每行：
 
 ### 1. code 命名规则
 
-- **letter** = epic 编号映射（1→A、2→B、...、26→Z），由 `_epic_letter()` 给定
+- **letter** = epic 编号映射，由 `_epic_letter()` 给定（**权威**，本表只是示例）：
+  - epic 1..26 → 单字母 `A..Z`（1→A、2→B、...、26→Z）
+  - epic > 26 → 双射 base-26（"电子表格列号"）多字母前缀：27→`AA`、52→`AZ`、
+    53→`BA`、...（v0.1.35 起，issue #5；此前 epic > 26 静默禁用 seeding）
 - **code** 形式 2 选 1：
-  - `<letter><digits>` — 如 `A1`、`A2`、`A23`（推荐，简单）
+  - `<letter><digits>` — 如 `A1`、`A2`、`A23`；epic 52 则 `AZ1`、`AZ2`（推荐，简单）
   - `<letter>-<kebab>` — 如 `A-route-authz`、`A-test-coverage`（kebab **必小写**起头）
 
 ### 2. 合规 markdown 格式（**仅这一种是 Form 1 / 一等公民**）

@@ -35,6 +35,7 @@ Behavior:
          STAGED=<path>                              (one line per path that was staged)
          BLACKLIST=<path> (<pattern>)                (only on halt — global blacklist hit)
          CROSS_STORY=<path>                          (only on halt — wrong story key)
+         OUT_OF_SCOPE_BMAD=<path>                     (only on halt — _bmad-output/ file outside implementation-artifacts/, issue #5)
          UNEXPECTED_ARTIFACT=<path>                  (only on halt — artifact outside spec)
          FORBIDDEN=<path>                            (only on halt — non-artifact in stage that bans them)
          UNSTAGED=<path>                             (only on halt — leftover after add)
@@ -315,8 +316,33 @@ BLACKLIST_PATTERNS = [
 _ARTIFACTS_ALLOW_PREFIX = "_bmad-output/implementation-artifacts/"
 _ARTIFACTS_ALLOW_SUFFIXES = (".md", ".json", ".yaml", ".yml")
 
+# v0.1.35 (issue #5) — i18n locale allow-list (blacklist defense exemption).
+# Locale JSON files are commonly named `<feature>-credentials.json` when the
+# feature *domain* is "credentials" (e.g.
+# `web/src/i18n/locales/zh-CN/personal-credentials.json` — pure UI translation
+# strings, zero secret fields). These false-positived on the
+# `**/*-credentials.json` blacklist pattern → stage 2 STATUS=halt. Any `.json`
+# whose path contains a conventional i18n directory segment is exempt from
+# blacklist scanning entirely (mirrors the BMad artifacts allow-list above).
+# Real credential files never live in a locale tree; if one ever does it's
+# caught by review, not the commit blacklist.
+_I18N_LOCALE_DIR_SEGMENTS = ("i18n", "locales", "locale")
+
 ARTIFACTS_DIR = _compute_artifacts_dir_str()
 ARTIFACT_RE = re.compile(r"^" + re.escape(ARTIFACTS_DIR) + r"([^/]+\.(?:md|json|yaml|yml))$")
+
+# v0.1.35 (issue #5) — out-of-scope _bmad-output/ guard prefixes.
+# `implementation-artifacts/` is the ONLY curated story-output subtree; sibling
+# subdirs (brainstorming/, planning-artifacts/, research/, ...) hold cross-
+# cutting BMad planning docs that are frequently edited in a *parallel* bmad
+# session unrelated to the active story. The classifier used to bucket those as
+# "project code" and auto-`git add` them into the story commit, silently
+# mislabeling them under the current story. Derived from ARTIFACTS_DIR so the
+# guard follows a project's configured artifacts_root. _BMAD_OUTPUT_PREFIX is
+# None when ARTIFACTS_DIR has no parent segment (guard disabled — fail-open).
+_BMAD_OUTPUT_INSCOPE_PREFIX = ARTIFACTS_DIR
+_bmad_output_parent = "/".join(ARTIFACTS_DIR.rstrip("/").split("/")[:-1])
+_BMAD_OUTPUT_PREFIX = (_bmad_output_parent + "/") if _bmad_output_parent else None
 
 # --- Test artifact regex (chore: codex review F1 fix, 2026-05-04) ---
 #
@@ -910,15 +936,31 @@ def _sync_sprint_status_for_stage(stage, key, epic):
 
 
 def _epic_letter(epic):
-    """Map epic number to capital-letter prefix (1→A, 4→D, ...). Returns
-    None if epic is not a 1..26 integer."""
+    """Map epic number to a capital-letter prefix using bijective base-26
+    ("spreadsheet column" scheme): 1→A, 26→Z, 27→AA, 52→AZ, 53→BA, ...
+    Returns None only when epic is not a positive integer.
+
+    v0.1.35 (issue #5): previously capped at 26 (returned None for epic > 26),
+    which silently disabled retro_action_items seeding at stage 6 + the stage
+    ⑥.5 residue pipeline for ANY epic > 26 (e.g. the 50s-numbered epics in the
+    caller repo). The bijective base-26 extension keeps the 1→A..26→Z contract
+    fully backward-compatible (codes for epic ≤ 26 are byte-for-byte unchanged)
+    while giving epic > 26 a deterministic multi-letter prefix. The retro
+    markdown contract (`### {letter}{N} — title`) defers to this function, so
+    multi-letter codes like `### AZ1` are emitted/parsed automatically for
+    epic > 26 — see prompt-suffixes/bmad-retrospective-suffix.md §1.
+    """
     try:
         n = int(epic)
     except (TypeError, ValueError):
         return None
-    if 1 <= n <= 26:
-        return chr(ord("A") + n - 1)
-    return None
+    if n < 1:
+        return None
+    letters = []
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters.append(chr(ord("A") + rem))
+    return "".join(reversed(letters))
 
 
 def _find_latest_retro_md(epic):
@@ -1140,20 +1182,18 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
     """
     letter = _epic_letter(epic)
     if letter is None:
-        # v0.1.21 codex review fix #3：原 0.1.17 的 raise 把"plugin range
-        # 限制（epic > 26 或非整数）"和"用户写错 retro md schema"混在一起
-        # 处理；前者是 plugin 限制（用户无法控制），后者是 schema drift
-        # （用户能修）。区分语义：
-        #   - epic 越界 → WARN + return []（不阻 stage 6 commit；
-        #     plugin 的 1..26 letter mapping 是已知限制）
-        #   - schema drift（retro md 有 Action Items section 但 parser 0
-        #     命中）→ raise（用户应修 retro md 格式）
-        # 避免 stage 6 commit 在 epic 27+ 时因 plugin 限制 hard-halt。
+        # v0.1.35 (issue #5): _epic_letter now supports epic > 26 via bijective
+        # base-26 (27→AA, ...), so the only remaining None case is a malformed
+        # epic arg (non-integer or non-positive) — a caller bug, not user-
+        # controllable schema drift. WARN + return [] keeps stage 6 commit
+        # non-blocking (the epic arg comes from the orchestrator, not the retro
+        # md; a bad arg shouldn't hard-halt an otherwise-valid retro commit).
+        # Schema drift (retro md HAS an Action Items section but parser finds 0)
+        # is still raised inside _parse_retro_action_items below.
         print(
             f"WARN [_seed_retro_action_items]: epic={epic!r} → _epic_letter "
-            f"returned None (plugin maps 1..26 only). Skipping retro_action_items "
-            f"seed; stage 6 commit continues. If you have epic 27+, file a "
-            f"feature request for multi-letter codes (AA/AB/...).",
+            f"returned None (epic arg is not a positive integer). Skipping "
+            f"retro_action_items seed; stage 6 commit continues.",
             file=sys.stderr,
         )
         return []
@@ -1493,12 +1533,42 @@ def glob_match(path, pattern):
     return re.fullmatch("".join(regex_parts), path) is not None
 
 
+def is_i18n_locale_json(path):
+    """Return True if `path` is a `.json` file living under a conventional
+    i18n / locale directory segment (issue #5). Used to exempt UI-translation
+    files (e.g. `.../i18n/locales/zh-CN/personal-credentials.json`) from the
+    credentials blacklist. The dir segment must be an interior path component
+    (not the basename), so a top-level file literally named `i18n.json` won't
+    qualify."""
+    if not path.endswith(".json"):
+        return False
+    segments = path.split("/")
+    return any(seg in _I18N_LOCALE_DIR_SEGMENTS for seg in segments[:-1])
+
+
+def is_out_of_scope_bmad_output(path):
+    """Return True if `path` lives under the _bmad-output/ tree but OUTSIDE the
+    in-scope implementation-artifacts/ subtree (issue #5). Such paths are
+    sibling BMad planning docs (brainstorming/, planning-artifacts/, research/,
+    ...) that must not be swept into a story commit. Returns False when the
+    guard is disabled (_BMAD_OUTPUT_PREFIX is None)."""
+    if _BMAD_OUTPUT_PREFIX is None:
+        return False
+    if not path.startswith(_BMAD_OUTPUT_PREFIX):
+        return False
+    return not path.startswith(_BMAD_OUTPUT_INSCOPE_PREFIX)
+
+
 def matches_blacklist(path):
     # v0.1.32 (issue #2): BMad artifacts engineering products are exempt from
     # blacklist scanning entirely — see _ARTIFACTS_ALLOW_PREFIX comment block
     # above for the design rationale.
     if path.startswith(_ARTIFACTS_ALLOW_PREFIX) and \
        path.endswith(_ARTIFACTS_ALLOW_SUFFIXES):
+        return None
+    # v0.1.35 (issue #5): i18n locale JSON files are exempt — see
+    # _I18N_LOCALE_DIR_SEGMENTS comment block above.
+    if is_i18n_locale_json(path):
         return None
     for pat in BLACKLIST_PATTERNS:
         if glob_match(path, pat):
@@ -1854,6 +1924,33 @@ def main():
         emit("REASON=blacklist hit (§-1.d step 2)")
         for p, pat in blacklist_hits:
             emit(f"BLACKLIST={p} ({pat})")
+        emit("CHANGED_ALL=" + "; ".join(p for _, p in paths))
+        sys.exit(1)
+
+    # 2.5 — out-of-scope _bmad-output/ guard (§-1.d; issue #5)
+    # Files under _bmad-output/ but OUTSIDE implementation-artifacts/ (e.g.
+    # brainstorming/, planning-artifacts/, research/) are cross-cutting BMad
+    # planning docs — often produced by a *parallel* bmad session unrelated to
+    # the active story. They previously fell through to the project-code bucket
+    # and were auto-`git add`ed into the story commit, mislabeling them under
+    # the current story. Halt and require the solo-dev to commit them
+    # separately (same spirit as cross-story isolation within
+    # implementation-artifacts/). Runs after the blacklist gate, so blacklisted
+    # _bmad-output/ paths (e.g. .harness-logs/**) still report as BLACKLIST=.
+    out_of_scope_bmad = [p for _, p in paths if is_out_of_scope_bmad_output(p)]
+    if out_of_scope_bmad:
+        emit("STATUS=halt")
+        emit("REASON=_bmad-output/ file outside implementation-artifacts/ — out of scope for story commits (issue #5)")
+        for p in out_of_scope_bmad:
+            emit(f"OUT_OF_SCOPE_BMAD={p}")
+        emit(
+            f"GUIDANCE=paths under {_BMAD_OUTPUT_PREFIX} but outside "
+            f"{_BMAD_OUTPUT_INSCOPE_PREFIX} (e.g. brainstorming/, "
+            f"planning-artifacts/) are not story artifacts. Commit them "
+            f"separately outside the sprint pipeline (likely from a parallel "
+            f"bmad session), or move them under implementation-artifacts/ if "
+            f"they are genuine story deliverables."
+        )
         emit("CHANGED_ALL=" + "; ".join(p for _, p in paths))
         sys.exit(1)
 

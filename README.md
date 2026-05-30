@@ -4,7 +4,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 
 | Plugin | Version | Purpose |
 |---|---|---|
-| **harness-zh** | 0.1.34 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **harness-zh** | 0.1.35 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 
 ---
 
@@ -138,6 +138,7 @@ For full runtime architecture (5-stage state machine, sprint-status.yaml schema,
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.1.35 | 2026-05-31 | `harness-commit.py` 三连修 (closes #5)，均为 epic 52/53 实跑暴露。**①** `_epic_letter()` 此前 epic > 26 返回 None → retro_action_items seeding + stage ⑥.5 residue pipeline 对 50s 编号 epic 静默失效；改双射 base-26（27→AA、52→AZ、53→BA），epic ≤ 26 完全向后兼容。**②** 凭证 BLACKLIST `**/*-credentials.json` 误伤 i18n 语言包（`web/src/i18n/locales/zh-CN/personal-credentials.json` 纯 UI 翻译文本）→ stage 2 halt；新增 i18n/locale 目录段 `.json` 豁免（真实凭证文件仍拦）。**③** `_bmad-output/` 下非 `implementation-artifacts/` 文件（如并行 `/bmad-brainstorming` 产出的 `brainstorming/*.md`）被当 project code 误 `git add` 进 story commit；新增 OUT_OF_SCOPE_BMAD gate 拦截 + 提示单独提交。新增 `harness_commit_issue5_test.sh`（5 fixture，源树直跑）。 |
 | 0.1.34 | 2026-05-29 | `sprint-status.py` 兼容 BMad 多行块 `sprint-status.yaml` (closes #4). `STORY_KEY_RE` 旧逻辑只匹配单行 `key: status`，把 BMad v6.7.1 多行块格式（`key:` 换行接 `status:`/`depends_on:`）里 nested 的 `status:` 行误当成名叫 "status" 的 story → `next` 吐 "status"、`status`/`epic-all-done` 全失效，`harness-zh:run` 在所有 BMad 多行块项目上跑不起来。修复双格式兼容（向后兼容单行）：`_iter_dev_status` 改 base_indent 状态机 + `BLOCK_KEY_RE`/`NESTED_STATUS_RE`，多行块 entry 读 nested status 子键、line_index 指向承载 status 值的行；`cmd_set` 改通用 field 匹配（单行=key 行；多行块=status 行），保留行尾 inline 注释，`depends_on` 等块内子键不受影响。单行/多行块/混合三格式回归全 PASS；真实 232-story 多行块 yaml 上 next/status/epic-all-done/set 均正确。 |
 | 0.1.33 | 2026-05-29 | `/harness-zh:run` 启动前置自动兑现 retro DEV items (fixes #3). 新增 §0.A.0 gate：起跑首条 story 命中 `^[4-6]-` 时，先用 `grep_pending_dev_retro_items.sh` 枚举未兑现 `category: dev` retro 项 → 对每个有 chore_spec 的项 spawn fresh subagent 实现 → Edit 翻 status done → 新 `retro-fulfill` commit stage 收口，全清后才 spawn stage ①。避免「stage-1 subagent 干完活 → commit 撞 pre-commit gate ① → halt」的 token 浪费。缺 chore_spec 的项不臆造，列给用户走 `process_retro_residue.sh` 补 spec 或 `--no-verify` 留痕。范围限启动那一刻；mid-run epic 切换的新 seed dev 项沿用既有手工路径。 |
 | 0.1.32 | 2026-05-28 | BLACKLIST_PATTERNS `**/*credentials*` 太宽误伤业务命名 (fixes #2). 替换为精确凭证文件命名集合（`**/credentials[.{json,yaml,yml,ini,txt}]` / `**/*-credentials[.ext]` / `**/*.credentials`）；matches_blacklist 加防御层 2 — BMad artifacts/ 路径下 md/json/yaml/yml 一律豁免 blacklist。caller 仓库 epic 53 的 `53-1-db-migration-credentials-表-...md` 等合法 spec 不再被拦；`credentials_service.go` / `V53_create_credentials_table.sql` 等业务源码也不再误伤。真正凭证文件（`aws-credentials.json` / `.aws/credentials` / `kong.credentials`）继续被拦。 |
