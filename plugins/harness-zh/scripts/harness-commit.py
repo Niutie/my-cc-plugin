@@ -1171,14 +1171,18 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
     """Stage 6 commit-time: seed retro_action_items.epic-<epic>-retro block.
 
     Idempotent: if block exists, only adds codes not already present (Q2
-    RESOLVED — 不覆盖 solo-dev 已手工补的 chore_spec 字段). If block is
-    absent under retro_action_items: parent, creates the subblock.
+    RESOLVED — 不覆盖 solo-dev 已手工补的 chore_spec 字段). If the
+    `epic-N-retro:` subblock is absent under the `retro_action_items:` parent,
+    creates the subblock. If the top-level `retro_action_items:` key itself is
+    absent, auto-bootstraps it at EOF (v0.1.36, issue #6) — symmetric with the
+    subblock auto-create; no longer halts + suggests /bmad-sprint-planning.
 
     Each new entry is `<code>: pending  # <title from md>` (no chore_spec —
     that's stage 6-5's responsibility per spec Boundaries).
 
-    Returns list of newly-seeded (code, title) tuples. Raises RuntimeError
-    on schema violation (parent block missing) or IO failure.
+    Returns list of newly-seeded (code, title) tuples. Raises RuntimeError only
+    on IO failure (or schema drift surfaced earlier by _parse_retro_action_items
+    — a §Action items section present but yielding 0 parseable items).
     """
     letter = _epic_letter(epic)
     if letter is None:
@@ -1274,16 +1278,30 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
     if block_idx is not None:
         # Append at end of existing block
         new_text = "".join(lines[:block_end_idx] + insert_lines + lines[block_end_idx:])
-    else:
-        if rai_idx is None:
-            raise RuntimeError(
-                "retro_action_items: parent block not found in sprint-status.yaml — "
-                "schema violation; cannot seed (run /bmad-sprint-planning to bootstrap)"
-            )
-        # Insert before rai_end (= block_end_idx if rai_idx is set + block missing)
-        # Trim trailing blank lines from insert region
+    elif rai_idx is not None:
+        # Parent `retro_action_items:` key exists but the epic-N-retro subblock is
+        # missing; insert_lines already begins with the `  epic-N-retro:` header.
+        # Insert at the recorded section end (or EOF when rai is the last block).
         insert_at = block_end_idx if block_end_idx is not None else len(lines)
         new_text = "".join(lines[:insert_at] + insert_lines + lines[insert_at:])
+    else:
+        # v0.1.36 (issue #6): the top-level `retro_action_items:` key itself is
+        # absent. Auto-bootstrap it at EOF rather than halting + suggesting
+        # /bmad-sprint-planning (which would regenerate the entire sprint —
+        # disproportionate for bootstrapping one empty parent key). Symmetric
+        # with the subblock auto-create above. We own our own newlines here so
+        # the human-edit footgun — a missing trailing newline merging
+        # `retro_action_items:` and `  epic-N-retro:` onto one physical line
+        # (malformed YAML) — cannot occur.
+        prefix = list(lines)
+        if prefix and not prefix[-1].endswith("\n"):
+            prefix[-1] = prefix[-1] + "\n"
+        # Separate the new top-level block from preceding content with one blank
+        # line (matches the file's block style) unless EOF is already blank.
+        sep = [] if (not prefix or prefix[-1].strip() == "") else ["\n"]
+        # insert_lines already starts with `  epic-N-retro:`; prepend the parent
+        # key so the result is a well-formed two-level block.
+        new_text = "".join(prefix + sep + [f"{rai_marker}\n"] + insert_lines)
 
     _atomic_write_file(sprint_status_path, new_text)
     return new_items

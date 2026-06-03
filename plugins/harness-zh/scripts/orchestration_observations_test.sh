@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # chore-harness-epic-4-orchestration-observations — self-test
 #
-# 17 fixtures across 4 task groups (T1=5 / T2=3 / T3=4 / T4=5):
+# 26 fixtures across 4 task groups (T1=14 / T2=3 / T3=4 / T4=5):
 #
 #   T1 — sprint-status auto-sync + retro_action_items seed + chore_spec fill
 #     T1.f1  stage 2 sync sets KEY=review (mock sprint-status.yaml)
@@ -12,7 +12,12 @@
 #     T1.f6  P0 fail-loud: section found + 0 items (no H3/table/bold) → RuntimeError
 #     T1.f7  P1 Form 2 fallback: markdown table `| AI-N.M |` → code `<letter>-N-M` + WARN
 #     T1.f8  P1 Form 3 fallback: bold inline `**A1**` / `**A1/A2/A3**` shared title + WARN
-#     T1.f9  graceful skip: epic > 26 (letter=None) → WARN + return [] (v0.1.21 codex fix)
+#     T1.f9  graceful skip: malformed epic arg (letter=None) → WARN + return [] (post-#5)
+#     T1.f10 follow-through recap section filtered; canonical §Action items wins (#1)
+#     T1.f11 Form 2 accepts letter-suffix / bold-wrap / paren annotation
+#     T1.f12 hybrid Form 2 + Form 3 fire and merge, dual-WARN emitted
+#     T1.f13 blacklist: business "credentials" names PASS, real cred files BLOCK (#2)
+#     T1.f14 absent retro_action_items: parent auto-bootstraps at EOF, no halt (#6)
 #
 #   T2 — stage 5.5 commit message suffix unification
 #     T2.f1  T4 STAGES commit_msg含 "(run-sprint stage 5.5)"
@@ -59,7 +64,7 @@ fail() { echo "${RED}FAIL${RESET}: $1"; FAIL=$((FAIL + 1)); }
 # ============================================================================
 
 echo ""
-echo "=== T1 group (5 fixtures) — sprint-status auto-sync helpers ==="
+echo "=== T1 group (14 fixtures) — sprint-status auto-sync helpers ==="
 
 # ----------------------------------------------------------------------------
 # T1.f1 — _sync_sprint_status_for_stage stage 2 → review
@@ -461,10 +466,13 @@ fi
 rm -rf "${TMP}"
 
 # ----------------------------------------------------------------------------
-# T1.f9 — _seed_retro_action_items: epic > 26 → letter=None → WARN + return []
-#         (v0.1.21 codex review fix #3 — 区分 plugin range 限制 vs schema
-#          drift；前者 graceful skip，不再 raise hard-halt stage 6 commit。
-#          原 0.1.17 raise 行为已改成 WARN + return []。)
+# T1.f9 — _seed_retro_action_items: malformed epic arg (non-positive int) →
+#         letter=None → WARN + return [] (graceful skip; stage 6 commit
+#         continues). v0.1.35 (issue #5) made _epic_letter support epic > 26
+#         via bijective base-26, so epic 27 now maps to "AA" (NOT None); the
+#         only remaining letter=None case is a non-integer / non-positive epic
+#         arg (a caller bug, not retro-md schema drift). This fixture used to
+#         probe epic 27 — retargeted to epic 0 to match the post-#5 contract.
 # ----------------------------------------------------------------------------
 TMP="$(mktemp -d)"
 mkdir -p "${TMP}/_bmad-output/implementation-artifacts" "${TMP}/.claude/harness/scripts"
@@ -481,13 +489,8 @@ retro_action_items:
 
 test_status: {}
 YAML
-# 准备一个 dummy epic-27 retro md 含 Action Items section（验证不会因为
-# section-found+0-items 触发 schema-drift raise — 我们要的是 letter=None 路径）
-cat > "${TMP}/_bmad-output/implementation-artifacts/epic-27-retro-2026-05-04.md" <<'MD'
-# Epic 27 Retrospective
-MD
 
-# 抓 stderr 验证 WARN
+# 抓 stderr 验证 WARN（letter=None 在 _parse 之前提前返回，故 retro md 不必存在）
 F9_STDERR="${TMP}/f9-stderr.txt"
 OUT=$(cd "${TMP}" && python3 -c "
 import sys
@@ -497,7 +500,7 @@ spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/har
 hc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(hc)
 try:
-    result = hc._seed_retro_action_items('27', '_bmad-output/implementation-artifacts/epic-27-retro-2026-05-04.md', '_bmad-output/implementation-artifacts/sprint-status.yaml')
+    result = hc._seed_retro_action_items('0', '_bmad-output/implementation-artifacts/epic-0-retro-2026-05-04.md', '_bmad-output/implementation-artifacts/sprint-status.yaml')
     if result == []:
         print('OK_RETURNED_EMPTY')
     else:
@@ -508,9 +511,9 @@ except RuntimeError as e:
 RC=$?
 STDERR_CONTENT="$(cat "$F9_STDERR" 2>/dev/null)"
 if [[ $RC -eq 0 ]] && grep -q "OK_RETURNED_EMPTY" <<< "$OUT" && \
-   grep -q "WARN.*epic.*'27'" <<< "$STDERR_CONTENT" && \
-   grep -q "1\\.\\.26" <<< "$STDERR_CONTENT"; then
-    pass "T1.f9 — epic > 26 (letter=None) WARN + return [] (codex fix #3)"
+   grep -q "WARN.*epic.*'0'" <<< "$STDERR_CONTENT" && \
+   grep -q "not a positive integer" <<< "$STDERR_CONTENT"; then
+    pass "T1.f9 — malformed epic arg (letter=None) WARN + return [] (post-#5)"
 else
     fail "T1.f9 — letter=None graceful skip (rc=$RC out=$OUT stderr=$STDERR_CONTENT)"
 fi
@@ -720,6 +723,73 @@ if [[ $RC -eq 0 ]] && grep -q "^ERRORS=0$" <<< "$OUT"; then
 else
     fail "T1.f13 — blacklist coverage (rc=$RC out=$OUT)"
 fi
+
+# ----------------------------------------------------------------------------
+# T1.f14 — _seed_retro_action_items: top-level `retro_action_items:` parent key
+#          ABSENT → auto-bootstrap at EOF instead of halt (v0.1.36 issue #6).
+#          Input file deliberately ends WITHOUT a trailing newline (the
+#          human-edit footgun): script must own its own newlines so the parent
+#          key and the `  epic-N-retro:` subblock never merge onto one physical
+#          line. Result must be well-formed YAML; re-run idempotent.
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d)"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts"
+# No `retro_action_items:` key at all, AND no trailing newline at EOF.
+printf 'last_updated: 2026-06-03\n\ndevelopment_status:\n  54-6-foo: done\n\ntest_status: {}' \
+    > "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-54-retro-2026-06-03.md" <<'MD'
+# Epic 54 Retrospective
+
+## 6. Action Items
+
+### BB1 — first thing
+### BB2 — second thing
+### BB3 — third thing
+MD
+SS="${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"
+F14_ERR="${TMP}/f14-stderr.txt"
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '${SCRIPT_DIR}/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+md = '_bmad-output/implementation-artifacts/epic-54-retro-2026-06-03.md'
+ss = '_bmad-output/implementation-artifacts/sprint-status.yaml'
+try:
+    s1 = hc._seed_retro_action_items('54', md, ss)
+    s2 = hc._seed_retro_action_items('54', md, ss)  # idempotent
+    print('SEEDED1', [c for c, t in s1])
+    print('SEEDED2', len(s2))
+except RuntimeError as e:
+    print('UNEXPECTED_RAISE', str(e))
+" 2>"$F14_ERR")
+RC=$?
+# Footgun guard: the merged-line malformation looked like `retro_action_items:  epic-54-retro:`
+MERGED=$(grep -cE 'retro_action_items:.*epic-54-retro:' "${SS}" 2>/dev/null || true)
+# YAML well-formedness + structural check via python (PyYAML if present, else skip)
+YAML_OK=$(python3 -c "
+try:
+    import yaml
+except ImportError:
+    print('SKIP'); raise SystemExit
+d = yaml.safe_load(open('${SS}'))
+rai = d.get('retro_action_items') or {}
+blk = rai.get('epic-54-retro') or {}
+print('OK' if set(blk) == {'BB1','BB2','BB3'} and all(v=='pending' for v in blk.values()) else 'BAD '+repr(rai))
+" 2>/dev/null)
+if [[ $RC -eq 0 ]] && \
+   grep -q "SEEDED1 \['BB1', 'BB2', 'BB3'\]" <<< "$OUT" && \
+   grep -q "SEEDED2 0" <<< "$OUT" && \
+   [[ "$MERGED" -eq 0 ]] && \
+   { [[ "$YAML_OK" == "OK" ]] || [[ "$YAML_OK" == "SKIP" ]]; }; then
+    pass "T1.f14 — absent retro_action_items: parent auto-bootstraps, no halt, no merged line (issue #6)"
+else
+    fail "T1.f14 — parent auto-bootstrap (rc=$RC merged=$MERGED yaml=$YAML_OK out=$OUT err=$(cat "$F14_ERR" 2>/dev/null))"
+    cat "${SS}"
+fi
+rm -rf "${TMP}"
 
 # ============================================================================
 # T2 — stage 5.5 commit message suffix unification

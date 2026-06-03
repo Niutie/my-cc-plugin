@@ -11,6 +11,66 @@
 
 ---
 
+## v0.1.36 — 2026-06-03 — `_seed_retro_action_items` 顶层 `retro_action_items:` 父键缺失自动 bootstrap（closes #6）
+
+### 触发
+
+GitHub issue #6：v0.1.35（issue #5）放开 epic > 26 的 retro_action_items seeding 后，
+项目里**首个真正 seed retro_action_items 的 epic（epic 54）**实跑暴露：顶层
+`retro_action_items:` 父键此前从未被 bootstrap（epic 52/53 在 v0.1.35 前 epic>26
+seeding 静默禁用，从没走到过 stage 6 的 `_seed_retro_action_items`）。v0.1.35 一放开，
+stage 6 commit 首次实跑 `_seed_retro_action_items` → 父键不存在 → `raise` halt：
+
+```
+STATUS=halt
+REASON=retro_action_items: parent block not found in sprint-status.yaml — schema violation; cannot seed (run /bmad-sprint-planning to bootstrap)
+```
+
+`/bmad-sprint-planning` 会重生成整个 sprint（该项目 236 story），为 bootstrap 一个空
+父键付出的代价严重不成比例。用户手工补键绕开时还踩了二次坑：第一次补的 `retro_action_items:`
+漏了尾随换行 → 脚本把 `  epic-54-retro:` 追加到同一物理行 → `retro_action_items:  epic-54-retro:`
+（非法 YAML，`process_retro_residue.sh` 找不到块）。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/harness-commit.py::_seed_retro_action_items`：
+  - 原 `block_idx is None` 分支拆成 `elif rai_idx is not None`（父键在、子块缺 —— 行为
+    不变，子块插在 section 末尾）+ `else`（父键本身缺）两路。
+  - 新 `else` 路：顶层 `retro_action_items:` 缺失时，在 EOF **自动 bootstrap** 该父键 +
+    `  epic-N-retro:` 子块 + items，**不再 raise / 不建议 sprint-planning**。脚本自管换行：
+    先确保现有内容以 `\n` 收尾（规避手工补键漏尾随换行的人工坑），再按文件块风格补一个
+    空行分隔，最后落 `retro_action_items:\n` + `insert_lines`（已含 `  epic-N-retro:` 头）。
+    与既有「子块缺则自动创建」对称。
+  - docstring 同步：父键缺失改述为自动 bootstrap；`Raises RuntimeError` 收窄到仅 IO 失败
+    （或 `_parse_retro_action_items` 提前抛出的 §Action items 在场但 0 解析项的 schema drift）。
+- `plugins/harness-zh/scripts/orchestration_observations_test.sh`：
+  - **修陈旧 T1.f9**：原断言 epic 27 → `letter=None` → WARN `1..26`，但 v0.1.35 起
+    `_epic_letter(27)=="AA"`（非 None），唯一剩下的 `letter=None` 路是非整数 / 非正整数
+    epic arg。retarget 到 epic `0`，断言 WARN `not a positive integer` + return `[]`。
+  - **新增 T1.f14**：顶层 `retro_action_items:` 缺失（且输入文件 EOF 故意不带尾随换行 ——
+    复现人工坑）→ 自动 bootstrap、不 halt、无 `retro_action_items:  epic-N-retro:` 并行行、
+    结果 YAML 结构正确（PyYAML 在则校验、不在则 skip）、re-run idempotent。
+  - 头部 fixture 清单 / group count 补 f10–f14。
+
+### 验证
+
+`orchestration_observations_test.sh` T1 组 14/14 PASS（含修后的 f9 + 新 f14）。
+`harness_commit_issue5_test.sh` 5/5、`check_retro_action_items_test.sh` 8/8、
+`process_retro_residue_test.sh` 4/4 全 PASS（refactor 未碰子块/父键既有路径）。T2/T3/T4
+组的 FAIL 为既有「需 deployed `.claude/harness/` fixture」环境项（该测试本就在
+`run_all_tests.sh` 的 KNOWN_STALE，bootstrap CI 跑），与本次无关。
+
+### 后续注意
+
+issue #6 secondary（lower priority）：BMad retrospective skill 本次输出 action items 为
+markdown 数字表格（`| 1 | <action> | |`）而非 Form 1 `### <code> — title`，触发 stage 6
+*另一个*（正确/预期的）fail-loud schema-drift halt，逼 orchestrator 手工 reformat。该
+fail-loud 是 `prompt-suffixes/bmad-retrospective-suffix.md` Form 1 契约的有意行为；上游 skill
+不可改（CLAUDE.md 约束），仅靠 prompt-suffix 覆盖纠偏。本次**不动** —— 与父键 bootstrap 正交，
+单列后续若反复出现再考虑加强 suffix 的输出侧约束。
+
+---
+
 ## v0.1.35 — 2026-05-31 — `harness-commit.py` 三连修：epic>26 letter / i18n 凭证误伤 / 非 artifacts 文件误 stage（closes #5）
 
 ### 触发
