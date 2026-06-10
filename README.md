@@ -4,7 +4,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 
 | Plugin | Version | Purpose |
 |---|---|---|
-| **harness-zh** | 0.1.36 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **harness-zh** | 0.1.37 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 
 ---
 
@@ -138,6 +138,7 @@ For full runtime architecture (5-stage state machine, sprint-status.yaml schema,
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.1.37 | 2026-06-10 | `read_harness_config.sh` 修 `_RHC_THIS` unset-after-source (closes #7)：source 末尾 unset 了函数**调用期**仍需的变量 → caller `set -u` + config yaml 在场时，任何 post-source `read_harness_config_field` 调用确定性 `unbound variable`，stage ⑥.5 `process_retro_residue.sh`（及同 pattern 的 `backfill_resolved_markers.sh`）对任意 epic exit 1。改为 `_RHC_SCRIPT_DIR` source 期绝对路径化且不 unset + 函数内 `${...:-}` 双保险；`process_retro_residue.sh` 6 个 `declare -a` 补 `=()`（次生崩溃区间实测为 bash ≥ 4.3 含现场 Debian 5.2，≤ 4.2/macOS 3.2 反而容忍）。函数入口硬化（无 key / `HARNESS_CONFIG_PATH` 被 unset 降级回 default 不杀 caller）；同族 sweep 顺带修 `eval_test_stage_triggers.sh` fail-open 契约破坏 + `lint_deferred_work.sh` `DWSL_*` 裸引（对齐 pre-commit 守护）。新增 `read_harness_config_issue7_test.sh`（deployed 式 fixture，变异校验 pre-fix 4/5 FAIL）。 |
 | 0.1.36 | 2026-06-03 | `harness-commit.py::_seed_retro_action_items` 顶层 `retro_action_items:` 父键缺失时自动 bootstrap (closes #6)。v0.1.35 放开 epic > 26 seeding 后，首个真正 seed retro_action_items 的 epic（epic 54）撞上「父键从未被 bootstrap」→ stage 6 `raise` halt + 建议 `/bmad-sprint-planning`（会重生成整个 236-story sprint，代价不成比例）。改为：父键缺失时在 EOF 自动补 `retro_action_items:` 行（脚本自管换行，规避「手工补键漏尾随换行 → 父键与 `  epic-N-retro:` 并行同物理行 → YAML 失效」的人工坑）再落子块，与既有子块自动创建对称；不再 halt、不再触发 sprint-planning。顺带修 `orchestration_observations_test.sh` T1.f9 陈旧断言（issue #5 后 epic 27→`AA` 不再 None，retarget 到非法 epic arg），新增 T1.f14 覆盖 #6 自动 bootstrap + 无尾随换行坑。 |
 | 0.1.35 | 2026-05-31 | `harness-commit.py` 三连修 (closes #5)，均为 epic 52/53 实跑暴露。**①** `_epic_letter()` 此前 epic > 26 返回 None → retro_action_items seeding + stage ⑥.5 residue pipeline 对 50s 编号 epic 静默失效；改双射 base-26（27→AA、52→AZ、53→BA），epic ≤ 26 完全向后兼容。**②** 凭证 BLACKLIST `**/*-credentials.json` 误伤 i18n 语言包（`web/src/i18n/locales/zh-CN/personal-credentials.json` 纯 UI 翻译文本）→ stage 2 halt；新增 i18n/locale 目录段 `.json` 豁免（真实凭证文件仍拦）。**③** `_bmad-output/` 下非 `implementation-artifacts/` 文件（如并行 `/bmad-brainstorming` 产出的 `brainstorming/*.md`）被当 project code 误 `git add` 进 story commit；新增 OUT_OF_SCOPE_BMAD gate 拦截 + 提示单独提交。新增 `harness_commit_issue5_test.sh`（5 fixture，源树直跑）。 |
 | 0.1.34 | 2026-05-29 | `sprint-status.py` 兼容 BMad 多行块 `sprint-status.yaml` (closes #4). `STORY_KEY_RE` 旧逻辑只匹配单行 `key: status`，把 BMad v6.7.1 多行块格式（`key:` 换行接 `status:`/`depends_on:`）里 nested 的 `status:` 行误当成名叫 "status" 的 story → `next` 吐 "status"、`status`/`epic-all-done` 全失效，`harness-zh:run` 在所有 BMad 多行块项目上跑不起来。修复双格式兼容（向后兼容单行）：`_iter_dev_status` 改 base_indent 状态机 + `BLOCK_KEY_RE`/`NESTED_STATUS_RE`，多行块 entry 读 nested status 子键、line_index 指向承载 status 值的行；`cmd_set` 改通用 field 匹配（单行=key 行；多行块=status 行），保留行尾 inline 注释，`depends_on` 等块内子键不受影响。单行/多行块/混合三格式回归全 PASS；真实 232-story 多行块 yaml 上 next/status/epic-all-done/set 均正确。 |

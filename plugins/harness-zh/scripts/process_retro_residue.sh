@@ -152,7 +152,12 @@ fi
 # - code 行：^[[:space:]]+[A-Z][0-9]+:[[:space:]]+<status>(\s+#.*)?$
 # - chore_spec 行：紧跟其后；缩进 ≥ 4 空格（typical 6）；以 'chore_spec:' 开始
 
-declare -a CODES STATUSES CHORE_SPECS
+# =() 显式初始化：`declare -a` 不赋值是 declared-but-unset，set -u 下
+# bash >= 4.3（含下游 Linux 5.x — issue #7 现场即 Debian bash 5.2）连
+# ${#arr[@]} 都报 unbound variable；bash <= 4.2 / macOS 3.2 反而容忍。
+# 另注意 =() 不能让空数组的 "${arr[@]}" 整体展开在 bash <= 4.3 下免崩 —
+# 本脚本所有整体展开均有长度守护在前，改动时务必保持。
+declare -a CODES=() STATUSES=() CHORE_SPECS=()
 parse_block() {
     local prev_code=""
     while IFS= read -r line; do
@@ -191,8 +196,8 @@ fi
 # ---------------------------------------------------------------------------
 # 3. 计算待 process 列表（status ∈ {pending, in-progress, partial} 且 chore_spec 缺失）
 # ---------------------------------------------------------------------------
-declare -a PENDING_CODES PENDING_STATUSES
-declare -a EXISTING_SPECS
+declare -a PENDING_CODES=() PENDING_STATUSES=()
+declare -a EXISTING_SPECS=()
 
 for i in "${!CODES[@]}"; do
     local_status="${STATUSES[$i]}"

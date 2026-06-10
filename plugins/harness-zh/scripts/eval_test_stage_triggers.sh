@@ -206,8 +206,18 @@ if [ -n "$KEY" ]; then
     fi
 fi
 if [ -n "$EPIC_FROM_KEY" ]; then
-    # shellcheck source=read_harness_config.sh
-    source "$SCRIPT_DIR/read_harness_config.sh"
+    # fail-open 守护（issue #7 同族）：lib 缺失（部分部署 skew）时 source 在
+    # set -u（无 -e）下非致命失败，下一行裸引 $HARNESS_ARTIFACTS_ROOT 会以
+    # unbound variable exit 1 — 违反本脚本「任何路径 exit 0」契约。
+    if [ -f "$SCRIPT_DIR/read_harness_config.sh" ]; then
+        # shellcheck source=read_harness_config.sh
+        source "$SCRIPT_DIR/read_harness_config.sh"
+    fi
+    if [ -z "${HARNESS_ARTIFACTS_ROOT:-}" ]; then
+        echo "WARN [eval_test_stage_triggers]: read_harness_config.sh unavailable — fail-open defaults" >&2
+        emit_defaults "fail_open_default"
+        exit 0
+    fi
     if [ ! -f "$HARNESS_ARTIFACTS_ROOT/test_artifacts/epic-${EPIC_FROM_KEY}-test-design.md" ]; then
         T1=1
     fi

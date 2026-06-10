@@ -11,6 +11,58 @@
 
 ---
 
+## v0.1.37 — 2026-06-10 — `read_harness_config.sh` `_RHC_THIS` unset-after-source 修复，stage ⑥.5 复活（closes #7）
+
+### 触发
+
+GitHub issue #7：`read_harness_config.sh` source 末尾 `unset _RHC_THIS`（line 113），但
+`read_harness_config_field` 函数体 line 63 在**调用期**才解引用它 → caller `set -u` +
+config yaml 在场（不走 file-not-found early-return）时，任何 post-source 调用确定性命中
+`unbound variable`。`process_retro_residue.sh`（`set -euo pipefail` line 28 + source line 32 +
+line 240 调用）四条件全中 → stage ⑥.5（retro-residue → chore-spec 转换）对**任意 epic**
+exit 1。同 pattern 的 `backfill_resolved_markers.sh`（line 141 调用）一并受害。
+次生：`declare -a EXISTING_SPECS` 不赋值是 declared-but-unset，**bash >= 4.3**（含现场
+Debian bash 5.2）set -u 下 `${#EXISTING_SPECS[@]}` 也报 unbound（≤ 4.2 / macOS 3.2 容忍 —
+docker bash 3.2/4.2/4.3/4.4/5.0/5.2 矩阵实测，注意区间与直觉相反）。
+
+既有测试为何没拦：从 plugin 源码树跑时 config yaml 不在场 → 函数 early-return，
+崩溃行永远不执行。回归测试必须搭 deployed 式 fixture（config yaml 在场）。
+
+### 改动范围
+
+- `scripts/read_harness_config.sh`：
+  - `_RHC_THIS` → `_RHC_SCRIPT_DIR`：source 期即绝对路径化，**不进末尾 unset 清单**
+    （函数调用期仍需；caller source 后 cd 走也仍能定位 harness_config.py）。函数内
+    `${_RHC_SCRIPT_DIR:-}` 双保险（空串 → `-f` 失败 → 安全退化 awk fallback）。
+  - 函数入口硬化（同族 sweep 发现）：`local key="${1:-}"` 无 key 早退 default + WARN；
+    `[ ! -f "${HARNESS_CONFIG_PATH:-}" ]` — 该公开 env var 被外部 unset 时不再以
+    unbound variable 杀死 set -u caller，降级回 default。
+- `scripts/process_retro_residue.sh`：6 个 `declare -a` 全部 `=()` 显式初始化。注释注明
+  真实崩溃区间（bash >= 4.3）+ `=()` 不豁免空数组 `"${arr[@]}"` 整体展开（≤ 4.3 仍崩，
+  靠既有长度守护在前，改动时务必保持）。
+- 同族 sweep 顺带修（多 agent 对抗验证，各带 mktemp repro 实证）：
+  - `scripts/eval_test_stage_triggers.sh`：line ~210 mid-script 无守护 source — lib 缺失
+    （部分部署 skew）时 `set -uo pipefail`（无 -e）limp 过失败 source，下一行裸引
+    `$HARNESS_ARTIFACTS_ROOT` exit 1，违反自身「任何路径 exit 0」fail-open 契约。改为
+    存在性检查 + `${HARNESS_ARTIFACTS_ROOT:-}` 空 → `emit_defaults fail_open_default` + exit 0。
+  - `scripts/lint_deferred_work.sh`：`[ -f lib ]` 在场 ≠ `DWSL_*` 常量齐全（截断 skew），
+    裸引崩 rc=1 被本脚本「rc=违规数」契约误读成「1 violation」。对齐 git-hooks/pre-commit
+    gate ② 的 `[ -n "${DWSL_*:-}" ]` 守护（显式 if，default 含 `{4}` 量词不能走 `${VAR:-}`）。
+- 新增 `scripts/read_harness_config_issue7_test.sh`（4 fixture / 5 断言，deployed 式
+  tmp fixture）：T1 issue 复现一行；T2 source 后 cd 走再调用（锁 `_RHC_SCRIPT_DIR`
+  source 期绝对化）；T3 harness_config.py 缺席走 awk fallback；T4 process_retro_residue.sh
+  端到端（config 在场）。变异校验：pre-fix 4/5 FAIL（git HEAD 版实测），post-fix 5/5 PASS。
+
+### 验证
+
+`run_all_tests.sh` 14 PASS / 0 FAIL（新测试入列）。变异校验 + docker 6 版本 bash 矩阵 +
+三处守护各自 mktemp fixture 现场验证（fail_open JSON rc=0 / stub lib 走 inline fallback /
+unset env + 无 key 调用 caller 存活）。已识别未修（低危 latent）：`bootstrap_test_harness.sh`
+line 46 同 limp-past-source pattern（但首行 stderr 已点明真因、rc 契约不变，一次性手动入口）；
+`run_all_tests.sh` `"${KNOWN_STALE[@]}"` 空数组在 macOS 3.2 崩（静态非空字面量，不可达）。
+
+---
+
 ## v0.1.36 — 2026-06-03 — `_seed_retro_action_items` 顶层 `retro_action_items:` 父键缺失自动 bootstrap（closes #6）
 
 ### 触发

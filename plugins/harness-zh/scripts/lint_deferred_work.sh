@@ -45,9 +45,16 @@ fi
 
 # Schema regexes — v0.1.27+: source shared lib (single SoT for both this
 # scanner and pre-commit gate ②). Falls back to inline if lib missing.
+# 守护对齐 git-hooks/pre-commit gate ②（issue #7 同族）：file 在场 ≠ 常量
+# 齐全（截断/旧版 skew），set -u 下裸引 DWSL_* 会 rc=1 崩 — 而本脚本契约
+# rc=违规数，崩溃会被误读成「1 violation」。显式 if 而非 ${VAR:-default}：
+# default 值含 {4} 量词，内层 } 会截断替换（详 pre-commit 同位置注释）。
 if [ -f "$SCRIPT_DIR/deferred_work_schema_lib.sh" ]; then
     # shellcheck disable=SC1090
     source "$SCRIPT_DIR/deferred_work_schema_lib.sh"
+fi
+if [ -n "${DWSL_HEAD_FULL_RE:-}" ] && [ -n "${DWSL_TARGET_VALID_RE:-}" ] \
+   && [ -n "${DWSL_STATUS_VALID_RE:-}" ] && [ -n "${DWSL_LEGACY_INLINE_RE:-}" ]; then
     HEAD_FULL_RE="$DWSL_HEAD_FULL_RE"
     TARGET_VALID_RE="$DWSL_TARGET_VALID_RE"
     STATUS_VALID_RE="$DWSL_STATUS_VALID_RE"

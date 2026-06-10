@@ -27,8 +27,12 @@
 set -o pipefail
 
 # Compute repo root from this file's location: 3 levels up from .claude/harness/scripts/
-_RHC_THIS="${BASH_SOURCE[0]}"
-HARNESS_REPO_ROOT="$(cd "$(dirname "$_RHC_THIS")/../../.." && pwd)"
+# _RHC_SCRIPT_DIR 在 source 期解析为绝对路径，且**不进末尾 unset 清单**：
+# read_harness_config_field 在调用期（可能远晚于 source、caller 已 cd 走）仍要靠它
+# 定位 harness_config.py。issue #7：前身 _RHC_THIS 在 source 末被 unset，caller
+# `set -u` 下任何 post-source 调用直接 'unbound variable' exit 1。
+_RHC_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HARNESS_REPO_ROOT="$(cd "$_RHC_SCRIPT_DIR/../../.." && pwd)"
 HARNESS_CONFIG_PATH="$HARNESS_REPO_ROOT/.claude/harness/harness-project-config.yaml"
 
 _DEFAULT_HARNESS_ARTIFACTS_ROOT="_bmad-output/implementation-artifacts"
@@ -52,16 +56,23 @@ _rhc_strip_yaml_value() {
 # awk 兜底（保证 read_harness_config.sh 自身仍 self-contained 可用，
 # 即便 harness_config.py 损坏）。
 read_harness_config_field() {
-    local key="$1"
+    # set -u caller 防御（issue #7 同族）：无 key 调用 / HARNESS_CONFIG_PATH
+    # 被外部 unset 时降级回 default，而非 unbound variable 杀死 caller shell。
+    local key="${1:-}"
     local default="${2:-}"
-    if [ ! -f "$HARNESS_CONFIG_PATH" ]; then
+    if [ -z "$key" ]; then
+        echo "WARN [read_harness_config]: read_harness_config_field called without key" >&2
+        echo "$default"
+        return 0
+    fi
+    if [ ! -f "${HARNESS_CONFIG_PATH:-}" ]; then
         echo "$default"
         return 0
     fi
     # Primary path: Python harness_config.py（SoT）
-    local _rhc_script_dir
-    _rhc_script_dir="$(cd "$(dirname "$_RHC_THIS")" && pwd)"
-    local _harness_config_py="$_rhc_script_dir/harness_config.py"
+    # ${_RHC_SCRIPT_DIR:-} 双保险：万一全局被外部 unset，空串令 -f 测试失败 →
+    # 安全退化到下方 awk fallback，而非 set -u 崩溃（issue #7 的 bug class）。
+    local _harness_config_py="${_RHC_SCRIPT_DIR:-}/harness_config.py"
     if command -v python3 >/dev/null 2>&1 && [ -f "$_harness_config_py" ]; then
         local val
         val="$(HARNESS_CONFIG_PATH="$HARNESS_CONFIG_PATH" \
@@ -109,5 +120,5 @@ HARNESS_ARTIFACTS_ROOT="$HARNESS_REPO_ROOT/$_rhc_artifacts_rel"
 HARNESS_SPRINT_STATUS_PATH="$HARNESS_ARTIFACTS_ROOT/sprint-status.yaml"
 HARNESS_DEFERRED_WORK_PATH="$HARNESS_ARTIFACTS_ROOT/deferred-work.md"
 
-# Cleanup local var (not exported)
-unset _rhc_artifacts_rel _RHC_THIS _DEFAULT_HARNESS_ARTIFACTS_ROOT
+# Cleanup source-time-only vars (NOT _RHC_SCRIPT_DIR — function needs it at call time)
+unset _rhc_artifacts_rel _DEFAULT_HARNESS_ARTIFACTS_ROOT
