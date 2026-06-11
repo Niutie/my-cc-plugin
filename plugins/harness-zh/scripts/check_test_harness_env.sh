@@ -12,8 +12,10 @@
 # CI 装 npm 但漏跑 install 时 all_available=true 路由到真 e2e → runtime 挂。
 # 升级为运行时检查：
 #   - framework_installed = npm 包目录存在
-#   - chromium_installed  = ~/Library/Caches/ms-playwright/chromium-* 存在
-#                           或 ${PLAYWRIGHT_BROWSERS_PATH}/chromium-* 存在
+#   - chromium_installed  = ${PLAYWRIGHT_BROWSERS_PATH}/chromium-* 存在；未显式
+#                           配置时按平台默认候选依次探测：macOS 是
+#                           ~/Library/Caches/ms-playwright，Linux 是
+#                           ~/.cache/ms-playwright（两候选都查，任一命中即 true）
 #   - version_check       = `pnpm exec playwright --version` exit 0 + 输出含版本号
 #                           （bounded 5s timeout，防 lockup hang 探针）
 #   - runtime_ready       = framework && chromium && version
@@ -26,7 +28,8 @@
 # Self-test mock 钩子（仅 check_test_harness_env_test.sh 用）：
 #   AEGIS_ENV_PROBE_REPO=<path>           override repo root（默认 git rev-parse）
 #   AEGIS_ENV_PROBE_PLAYWRIGHT_CACHE=<path>  override chromium cache 探测路径
-#                                            （默认 ~/Library/Caches/ms-playwright）
+#                                            （默认按平台：macOS ~/Library/Caches/
+#                                            ms-playwright；Linux ~/.cache/ms-playwright）
 #
 # frontend_dir 解析（v0.1.18 — 修 0.1.17 之前硬编码 console-web 的 bug）：
 # 从 ${REPO_ROOT}/.claude/harness/harness-project-config.yaml 读 `frontend_dir`
@@ -121,7 +124,25 @@ else
 fi
 
 # ---- Playwright chromium cache override（self-test 可 override） ----
-PW_CACHE_DIR="${AEGIS_ENV_PROBE_PLAYWRIGHT_CACHE:-${PLAYWRIGHT_BROWSERS_PATH:-$HOME/Library/Caches/ms-playwright}}"
+# 默认缓存路径按平台分流（修 review #3：此前硬编码 macOS 路径，Linux 上
+# chromium_installed 恒 false → e2e 被永久 sandbox-skip）：
+#   Darwin → ~/Library/Caches/ms-playwright（Playwright 官方 macOS 默认）
+#   其它   → ~/.cache/ms-playwright（Playwright 官方 Linux 默认）
+# 两个候选都进探测列表（首选按平台排序，任一存在 chromium-* 即判 true），
+# 显式 override（AEGIS_ENV_PROBE_PLAYWRIGHT_CACHE / PLAYWRIGHT_BROWSERS_PATH）
+# 仍是单一权威路径，不叠加默认候选。
+declare -a PW_CACHE_CANDIDATES
+PW_CACHE_CANDIDATES=()
+if [ -n "${AEGIS_ENV_PROBE_PLAYWRIGHT_CACHE:-}" ]; then
+    PW_CACHE_CANDIDATES=("$AEGIS_ENV_PROBE_PLAYWRIGHT_CACHE")
+elif [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
+    PW_CACHE_CANDIDATES=("$PLAYWRIGHT_BROWSERS_PATH")
+else
+    case "$(uname -s)" in
+        Darwin) PW_CACHE_CANDIDATES=("$HOME/Library/Caches/ms-playwright" "$HOME/.cache/ms-playwright") ;;
+        *)      PW_CACHE_CANDIDATES=("$HOME/.cache/ms-playwright" "$HOME/Library/Caches/ms-playwright") ;;
+    esac
+fi
 
 # ---- frontend_dir：从 harness-project-config.yaml 读；缺则 fallback 'console-web' ----
 # v0.1.27+：shell-out 调 harness_config.py（消除 4-way YAML 解析重复）。
@@ -155,6 +176,9 @@ if [ -f "$_HARNESS_CONFIG" ]; then
                 }
             ' "$_HARNESS_CONFIG" 2>/dev/null)"
         fi
+        # strip inline comment 先（review #20(c)：此前顶层 grep 路径漏剥注释，
+        # 与 extra: awk 分支 / e2e_framework 路径漂移）
+        _fd_val="$(printf '%s' "$_fd_val" | sed -E 's/[[:space:]]+#.*$//')"
         # 去外层引号（single OR double，不两轮都剥；v0.1.21 fix）
         case "$_fd_val" in
             \'*\') _fd_val="${_fd_val#\'}"; _fd_val="${_fd_val%\'}" ;;
@@ -291,14 +315,17 @@ else
         PLAYWRIGHT_RC=1
     fi
 
-    # chromium_installed: PW_CACHE_DIR/chromium-* 任一目录存在
+    # chromium_installed: 任一候选 cache dir 下存在 chromium-* 目录（候选列表
+    # 按平台排序构建，见文件头 PW_CACHE_CANDIDATES 注释）
     CHROMIUM_RC=1
-    if [ -d "$PW_CACHE_DIR" ]; then
-        # find -maxdepth 1 + -name 比 glob 更可靠（PW_CACHE_DIR 不存在时 glob 会展开为 literal）
-        if find "$PW_CACHE_DIR" -maxdepth 1 -mindepth 1 -type d -name 'chromium-*' 2>/dev/null | grep -q .; then
+    for _pw_cache_dir in "${PW_CACHE_CANDIDATES[@]}"; do
+        [ -d "$_pw_cache_dir" ] || continue
+        # find -maxdepth 1 + -name 比 glob 更可靠（目录不存在时 glob 会展开为 literal）
+        if find "$_pw_cache_dir" -maxdepth 1 -mindepth 1 -type d -name 'chromium-*' 2>/dev/null | grep -q .; then
             CHROMIUM_RC=0
+            break
         fi
-    fi
+    done
 
     # version_check: <PKG_MGR> exec/dlx/x playwright --version 在 5s 内退 0 + 输出含版本号
     # 各 manager 调 dependency CLI 的语法不同，用 case 分流。

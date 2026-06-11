@@ -20,11 +20,15 @@
 │  README.md                                                       │
 │  plugins/harness-zh/                                             │
 │    ├─ .claude-plugin/plugin.json                                 │
-│    ├─ commands/   ← init / update / run / run-test (.md)         │
-│    ├─ scripts/    ← harness 运行时脚本（~40 个）                 │
-│    ├─ conventions/ + prompt-suffixes/ + prompt-templates/        │
+│    ├─ commands/   ← 7 个 .md（init / update / run / run-test /   │
+│    │               upgrade-deferred-work / report-issue /        │
+│    │               codex-catchup）                               │
+│    ├─ scripts/    ← 运行时脚本 + *_test.sh 回归测试（61 个文件） │
+│    ├─ conventions/ + prompt-suffixes/                            │
 │    ├─ git-hooks/pre-commit                                       │
-│    ├─ templates/harness-project-config.yaml.template             │
+│    ├─ templates/  ← harness-project-config.yaml.template +       │
+│    │               deferred-work.md.template                     │
+│    ├─ test-stage-triggers.yaml                                   │
 │    └─ architecture.md / answer-policy.md / changelog.md          │
 └─────────────────────┬────────────────────────────────────────────┘
                       │ /plugin marketplace add Niutie/my-cc-plugin
@@ -45,7 +49,7 @@
 │    ├─ architecture.md / answer-policy.md / changelog.md          │
 │    └─ test-stage-triggers.yaml                                   │
 │  .claude/commands/                                               │
-│    └─ init.md / update.md / run.md / run-test.md                 │
+│    └─ 7 个命令 .md（init / update / run / run-test / ...）       │
 │  .git/hooks/pre-commit ← install_git_hooks.sh 装                 │
 │  _bmad-output/  (用户跑 BMad workflow 后产出，harness 读)        │
 └──────────────────────────────────────────────────────────────────┘
@@ -65,34 +69,83 @@
 
 代价：每个项目带一份资产副本（增加少量磁盘占用）；好处：所有现有路径引用（`.claude/harness/scripts/...` 等）零改动可用，git hook + markdown command bash 都跑得了。
 
-### 〇.3 六个命令的分工
+### 〇.3 七个命令的分工
 
 | 命令 | 职责 | 何时跑 |
 |---|---|---|
-| `/harness-zh:init` | 首次 bootstrap — mkdir 项目目录 → 探测 plugin path → cmp/backup/overwrite copy 资产 → 投放 yaml template（仅当不存在）→ 装 git hooks → 检测 BMad → 齐则进 §十一 14 字段提取 / 缺则报告引导。**v0.1.13+** 半路接入项目时还检测 `deferred-work.md` schema state（§A.3.c 三档分支）；**v0.1.26+** §A.3.d 改为纯 advisory（不再迁移 category:harness 残余 — upstream-feedback.md 通道已退役，由 `/harness-zh:report-issue` 替代）。 | 1 次/项目；后续 BMad 补齐后可重跑（merge 模式补填 yaml 空字段） |
+| `/harness-zh:init` | 首次 bootstrap — mkdir 项目目录 → 探测 plugin path → cmp/backup/overwrite copy 资产 → 投放 yaml template（仅当不存在）→ 装 git hooks → 检测 BMad → 齐则进 §十一 16 字段提取 / 缺则报告引导。**v0.1.13+** 半路接入项目时还检测 `deferred-work.md` schema state（§A.3.c 三档分支）；**v0.1.26+** §A.3.d 改为纯 advisory（不再迁移 category:harness 残余 — upstream-feedback.md 通道已退役，由 `/harness-zh:report-issue` 替代）。 | 1 次/项目；后续 BMad 补齐后可重跑（merge 模式补填 yaml 空字段） |
 | `/harness-zh:update` | 升级后刷资产 — 同 init 部署逻辑但**不**投 yaml、**不**跑 BMad 提取；只 sync `.claude/harness/*` + `.claude/commands/*` + 重装 git hooks | 每次 `/plugin marketplace update my-cc-plugin` 后 |
 | `/harness-zh:run` | runtime sprint loop — 详 §一-§五 | 日常开发主入口 |
 | `/harness-zh:run-test` | runtime test sub-loop — 详 §一 | 由 run 触发或手工 |
 | `/harness-zh:upgrade-deferred-work` | **v0.1.13+** 事后 deferred-work.md schema 复测 + mode 切换。跑 detector → 给三档（advisory / archive+greenfield / 手工 backfill 指南）→ 应用选择。供 init 时选 advisory 后想切回 strict、或手工 backfill 完想验证的场景。 | Ad-hoc，按需 |
 | `/harness-zh:report-issue` | **v0.1.26+** 一键给 plugin 作者提 GitHub issue。自动收集 plugin 版本 / 当前 sprint+story 状态 / halt 现场 / 近期 commits 等上下文，gh CLI 直提到 `Niutie/my-cc-plugin`。halt 场景提完会附临时绕过方案，让用户不必等 plugin 修复就能继续推进项目。 | halt / 阶段收尾 / ad-hoc 任意时机 |
-| `/harness-zh:codex-catchup` | **v0.1.27+** 补跑被 `/harness-zh:run` 因 codex-in-cc 不可用（未装 / 配额耗尽 / 未登录）跳过的 stage 3+4。扫 `_bmad-output/implementation-artifacts/*.codex-skipped.json` marker → 对每条 KEY 重跑 stage 3 codex review + stage 4 dev fix → 归档 marker 为 `*.codex-skipped.resolved.json`。本命令开头会再跑一次 `check_codex_availability.sh` 探测；codex 仍不可用直接 halt（不静默重跳过）。 | codex 恢复后 |
+| `/harness-zh:codex-catchup` | **v0.1.27+** 补跑被 `/harness-zh:run` 因 codex-in-cc 不可用（未装 / 配额耗尽 / 未登录）跳过的 stage 3+4。扫 `_bmad-output/implementation-artifacts/*.codex-skipped.json` marker → 对每条 KEY 重跑 stage 3 codex review + stage 4 dev fix → 归档 marker 为 `*.codex-skipped.resolved.json`。本命令开头会再跑一次 `check_codex_availability.sh` 探测；codex 仍不可用直接 halt（不静默重跳过）。**v0.1.38 闭环修正**：§4.6 归档先于 §4.7 stage 4 commit（归档结果随 commit 一并入库，不再留 dirty 残留）；§4.2 dirty 检查放宽为允许本命令已知的 marker / 归档残留；§4.3 stage 3 review 窗口锚定 `harness/<KEY>/done` tag（缺 tag 时 stage 5 commit subject 精确匹配兜底）+ detached 临时 worktree 把 diff 终点钉在该 SHA，避免 HEAD 已包含后续 story 提交造成的 review 窗口污染。 | codex 恢复后 |
 
 ### 〇.4 与 §十一「通用化与项目 config」的关系
 
 §十一 设计于 plugin 化之前，描述"clone harness 到新项目 + 改 5 必填字段 + 自填 extra map"的通用化方案。
 
 - **用户层流程**已被 plugin 模型替代：不再 clone 文件，而是装 plugin + 跑 `/harness-zh:init`
-- **底层数据契约**（14 字段 mapping、merge 模式 / `--dry-run` / `--force`、yaml schema）未变 —— `/harness-zh:init` §0-§6 直接复用 §十一 设计的提取逻辑
+- **底层数据契约**（16 字段 mapping、merge 模式 / `--dry-run` / `--force`、yaml schema）未变 —— `/harness-zh:init` §0-§6 直接复用 §十一 设计的提取逻辑
 
 §十一 保留作设计动机 + schema 文档；运行机制以本节 + [`commands/init.md`](commands/init.md) + [`commands/update.md`](commands/update.md) 为准。
 
 ### 〇.5 依赖
 
-`plugin.json` 声明的硬依赖（缺则装 harness-zh 时 Claude Code halt）：
-- **`codex`**（marketplace `openai-codex`）— 提供 `/codex:rescue` 用于 §一 stage 3 对抗 review
+`plugin.json` **自 v0.1.28 起不声明任何硬依赖**（`dependencies` 字段已删除——装 harness-zh 不再要求先装 codex）。
+
+**可选依赖：codex**（marketplace `openai-codex`）— 提供 `/codex:adversarial-review` 用于 §一 stage 3 对抗 review。不可用时的优雅降级链（v0.1.27 引入，v0.1.38 闭环）：
+
+1. **Pre-flight 探测**：run.md 阶段 ③.0 spawn codex subagent 之前先跑 `check_codex_availability.sh`，不可用（未装 / 配额耗尽 / 未登录）→ 走 §③.1 skip 路径
+2. **显式跳过 + marker**：写 `<KEY>.codex-skipped.json` marker（含 reason / skipped_at / stage2_base_sha），跳过 stage 3+4 继续 stage 5 → done——主循环不被 codex 阻断，但绝不静默（halt 模板风格通知用户）
+3. **Marker 生命周期闭环（v0.1.38）**：`<KEY>.codex-skipped.json` 进 harness-commit.py stage 2/4/5 的 expected-output 集（stage 5 commit 把 marker 随库入库）；`<KEY>.codex-skipped.resolved.json` 进 stage 3/4/5 expected——marker 不再被判 `unexpected_artifact` halt
+4. **事后补跑**：codex 恢复后跑 `/harness-zh:codex-catchup`（详 §〇.3 表）
 
 未声明 plugin dep 但**前置必需**（README 列）：
 - **BMad workflow toolset**（`/bmad-create-prd`、`/bmad-create-story`、`/bmad-dev-story`、`/bmad-retrospective` 等 ~30 命令）— 因为 BMad 在多数环境是项目 `.claude/skills/bmad-*` 形式而非 Claude Code plugin，无法用 `dependencies` 字段声明；缺则 `/harness-zh:init` §A.5 检测会报 "BMad artifacts 缺失" 早结束
+
+### 〇.6 0.1.28-0.1.38 机制演进要点（本节按 working tree 实况核对）
+
+> 详细动机 / commit 对照见 [`changelog.md`](changelog.md)；此处只收口"读本文档需要知道的行为变化"。
+
+**run.md 编排层**：
+- **§0.A.0 retro DEV 项兑现前置 gate**（v0.1.33，issue #3）：`/harness-zh:run` 启动时先跑 `grep_pending_dev_retro_items.sh`，`category: dev` 的 pending retro 项 N>0 → 先进兑现循环（有 `chore_spec` 的自动兑现、缺 spec 的列给用户二选一），清零后才进 stage ①——否则 stage ① commit 必被 pre-commit gate ① 拦
+- **retro-only 路径（§0.C）**：`--epic` 指定 epic 全 done 但 retro 未 done 时直接跳到阶段 ⑥；入口已预先用 `epic-all-done` + `epic-retro-status` 验证
+- **stage 3 quota 例外**：配额关键词命中一般 stage 即 halt，唯独阶段 ③ 改走 §③.1 skip+marker 路径（catchup-friendly）
+
+**harness-commit.py 安全门（review 2026-06-10 #1/#7 修复，v0.1.38）**：
+- worktree 扫描改 `git status --porcelain -uall -z`：`-uall` 展开 untracked 新目录内的每个文件（此前整目录折叠成一行，目录内 blacklist 文件不可见）；`-z` 拿 NUL 分隔的原始字节路径（含双引号 / 换行 / CJK 文件名不再被 C-quote 干扰）
+- `glob_match` 改 gitignore 语义：`**/` 匹配**零或多段**（`**/.env*` 现在也命中仓库根目录的 `.env`）
+- BLACKLIST 拆两档：**halt 档**（凭证类 `.env*` / `*.pem` / `credentials*` 等 + 受保护 harness/BMad 基建路径）命中 → STATUS=halt；**junk 档**（`.DS_Store` / `*.tmp` / `*.swp` / `__pycache__` / `*.pyc` 等系统/编辑器垃圾）命中且**路径不在 HEAD** → 自动从工作集剔除 + stderr 一行 `NOTE: skipped junk file`，**不 halt 不入库**。junk 档只对 untracked / newly-added 路径生效——tracked 文件的修改与 `git rm` 删除照常走流水线入 commit；`*.log` 不属于 junk（.log 是常见合法项目文件，构建日志由项目 .gitignore 管）
+- 退出码契约：`0` = 可 commit（stdout 给 SUGGEST_COMMIT_MSG / SUGGEST_TAG）；`1` = halt（stdout 诊断行 verbatim 进 halt 模板）；`2` = 无改动跳过（仅 *-fallback / *-done 类 stage 合法）
+
+**retro 链（issue #3/#6 + review #5/#29/#72，v0.1.33-0.1.38）**：
+- run.md 阶段 ①/⑥ 子 agent prompt 注入**显式 Read 强制契约**：阶段 ① "先 Read `bmad-create-story-suffix.md`"、阶段 ⑥ "先 Read `bmad-retrospective-suffix.md`（Form 1 + Category + pre-retro self-audit）"——suffix 格式契约从"无人送达的死契约"变成真实送达通道（详 §十）
+- retro markdown 的 `**Category**: dev|harness` 声明被真实消费：`_parse_retro_action_items` 返回 `(code, title, category)` 三元组，seeder 在 `retro_action_items.<id>` 下写 `category: dev|harness` 子键（非法/缺失声明 → 不写子键 + WARN，gate 按 NOCAT 保守不阻）
+- `_seed_retro_action_items` 顶层父键缺失时自动 bootstrap（v0.1.36，issue #6）；文件末行无换行时统一归一化后再追加（不再产出粘连 YAML）；follow-through 表格过滤在整文件兜底扫描前切除（上期 AI-N.M 不再误 seed 进当前 epic）
+- epic letter 映射 `_epic_letter` 支持 bijective base-26（v0.1.35，issue #5）：1→A … 26→Z → 27→AA，epic > 26 不再崩
+
+**状态机（issue #4 + review #76/#77，v0.1.34-0.1.38）**：
+- sprint-status.py 兼容 BMad 多行块格式（`key:` 换行 + 嵌套 `status:` / `depends_on:`）与单行格式双轨；`cmd_set` 就地改写"承载 status 值的那一行"
+- `cmd_status` 不再过滤 `epic-*` key（epic-N / epic-N-retrospective 可读，读写对称）；harness-commit.py `read_story_status` 容多词 status（`Ready for Review` 等）
+- `_sync_sprint_status_for_stage` 两阶段 read-then-set：先读全部目标 key 当前值，确认后再统一 set——幂等 + 半途 halt 不留半套状态
+
+**配置 SoT（review #9/#33/#49/#60/#80）**：
+- `harness_config.py` 新增 `get_frontend_dir()` / `get_e2e_test_subdir()`：harness-commit.py 的 e2e spec 白名单前缀与 run-test.md T3/T4 的占位符（`$FRONTEND_DIR` / `$E2E_SUBDIR`）同源读 config，`console-web/tests/e2e` 仅是默认值不再硬编码
+- `get_artifacts_root()` 对绝对路径 / 越界相对路径**降级不 raise**：仓库内绝对路径规范化为 repo-relative，仓库外回落默认值 + WARN（三个 import 期消费方不再裸 traceback）
+- init §A.3 / upgrade-deferred-work §3.3.B 的 deferred-work 路径统一 source `read_harness_config.sh` 派生（自定义 artifacts_root 时两处检查同一个文件）
+
+**bash 基建（review #2/#3/#18/#21/#50/#58/#87）**：
+- `install_git_hooks.sh` 退出码契约：`0` = 安装成功；`3` = 良性拒装（用户自定义 `core.hooksPath`，调用方按 WARN 处理）；`1` = 真实安装失败（源目录缺失 / cp/chmod 失败，update halt / init WARN 引导自查）——init/update 的契约表同步
+- `check_test_harness_env.sh` Playwright chromium 缓存路径按 `uname -s` 分流（Darwin → `~/Library/Caches/ms-playwright`，其它 → `~/.cache/ms-playwright`）
+- `deploy_assets.sh`：manifest 原子写 + 临时文件入 EXIT trap + `find` 排除隐藏文件（`.DS_Store` 不再投递）+ purge 失败文件回写 manifest 重试；`prompt-templates/` 自分发清单移除后由 manifest purge 对账自动清掉下游残留
+- 新增 `scripts/prompt_template_lib.sh`：`${project_display_name}` 占位符渲染共享库（awk 字面替换，`&` / `\` / CJK 安全），process_retro_residue.sh 与 backfill_resolved_markers.sh 共用；4 份 retro parser 的文法 / 枚举对齐收敛进 `deferred_work_schema_lib.sh`
+- pre-commit gate ② 修复纯删除 diff 触发 pipefail 无声阻断 commit 的问题
+
+**测试体系（review #10/#40/#41/#44/#45/#46）**：
+- `run_all_tests.sh` 的 KNOWN_STALE 名单从 9 项清到 **1 项**（仅 `simulate_clone_test.sh`——其测试对象就是宿主仓库的部署树，源码树跑不了，由 CI bootstrap-tests job 实跑）；stale-listed 测试 PASS 时打 "remove from KNOWN_STALE" 提示防名单腐化
+- ci.yml 三 job：`source-tests`（源码树全量 + release_check 版本门）/ `bootstrap-tests`（伪下游项目 fixture 内 glob sweep 跑部署副本测试）/ `macos-bash32-tests`（macOS bash 3.2 真覆盖）
+- 新增回归测试：`sprint_status_format_test.sh`（44 断言，单行/多行块双格式）、`harness_commit_blacklist_test.sh`（安全门双档）、`deploy_assets_purge_test.sh`（22 断言）、`retro_category_round_trip_test.sh` / `retro_fulfill_stage_test.sh` / `read_harness_config_issue7_test.sh` 等
 
 ---
 
@@ -152,6 +205,8 @@ solo-dev 跑: /harness-zh:run
 │   │  stage 2: dev (subagent)                                        │   │
 │   │    └─ dev 顺手 resolve deferred → inline `Resolved by`         │   │
 │   │  stage 3: codex adversarial review                              │   │
+│   │    └─ codex 不可用 → 写 <KEY>.codex-skipped.json 显式跳过       │   │
+│   │       stage 3+4（待 /harness-zh:codex-catchup 补跑——§〇.5）     │   │
 │   │  stage 4: dev fix                                               │   │
 │   │  stage 5: bmad code-review                                      │   │
 │   │                                                                 │   │
@@ -172,7 +227,8 @@ solo-dev 跑: /harness-zh:run
 │   │    → epic-N-retro-YYYY-MM-DD.md                                 │   │
 │   │    (内含 D1-Dn 共 m 项 action items)                            │   │
 │   │                                                                 │   │
-│   │  stage 6.5 (C10): just process-retro-residue EPIC=N             │   │
+│   │  stage 6.5 (C10): bash .claude/harness/scripts/                 │   │
+│   │                        process_retro_residue.sh --epic N        │   │
 │   │    ┌──────────────────────────────────────────────────┐        │   │
 │   │    │ fresh agent 读 retro markdown                     │       │   │
 │   │    │   + sprint-status retro_action_items.epic-N-retro │       │   │
@@ -302,6 +358,12 @@ solo-dev 跑: /harness-zh:run
 │   FU-Test-KEY-failing                │ run-sprint stage 5.5    │ 测试 fail         │
 │   FU-Test-KEY-sandbox                │ run-sprint stage 5.5    │ sandbox skip      │
 │                                      │                         │                    │
+│ <artifacts_root>/                    │                         │                    │
+│   <KEY>.codex-skipped.json           │ run-sprint §③.1 skip    │ codex 不可用       │
+│     （随 stage 5 commit 入库）        │                         │                    │
+│   <KEY>.codex-skipped.resolved.json  │ codex-catchup §4.6 归档 │ catchup 补跑完成   │
+│     （随 catchup stage 4 commit 入库）│                         │                    │
+│                                      │                         │                    │
 │ test_artifacts/                      │                         │                    │
 │   epic-N-test-design.md              │ /bmad-testarch-test-    │ T1                │
 │                                      │ design                  │                    │
@@ -309,7 +371,10 @@ solo-dev 跑: /harness-zh:run
 │   <key>-test-result.json             │ run-test-sprint T4      │ T4 完成           │
 │   skipped-<key>-<date>.md            │ stage 5.5 graceful skip │ sandbox 受限      │
 │                                      │                         │                    │
-│ console-web/tests/e2e/               │                         │                    │
+│ ${frontend_dir}/${e2e_test_subdir}/  │（两占位符同源读 config — │                    │
+│                                      │ harness_config.py        │                    │
+│                                      │ get_frontend_dir /       │                    │
+│                                      │ get_e2e_test_subdir）    │                    │
 │   <key>.spec.ts                      │ /bmad-testarch-atdd     │ T3                │
 │   playwright-report/ (gitignore)     │ run-test-sprint T4      │ T4 跑 e2e         │
 └──────────────────────────────────────┴─────────────────────────┴────────────────────┘
@@ -332,11 +397,12 @@ solo-dev 跑: /harness-zh:run
                 └────────────┘ └────────────┘ └────────────┘
                                                     │
                                                     ▼
-                                            ┌────────────┐
-                                            │codex:rescue│
-                                            │(adversarial│
-                                            │ review)    │
-                                            └────────────┘
+                                            ┌──────────────────┐
+                                            │codex:adversarial-│
+                                            │review (stage ③；  │
+                                            │不可用 → §③.1     │
+                                            │skip marker)      │
+                                            └──────────────────┘
                          │
                          ▼ stage 6
                    ┌────────────────────┐
@@ -455,9 +521,9 @@ Q1/Q2/Q3 决策点 → 改 C10 + C-bootstrap spec（如有修正）
    │
    ▼
 4. 跑 process-retro-residue 历史回填:
-   just process-retro-residue EPIC=1   → ~6 chore-retro-c1-*.md
-   just process-retro-residue EPIC=2   → ~8 chore-retro-c2-*.md
-   just process-retro-residue EPIC=3   → ~7 chore-retro-c3-*.md
+   bash .claude/harness/scripts/process_retro_residue.sh --epic 1   → ~6 chore-retro-c1-*.md
+   bash .claude/harness/scripts/process_retro_residue.sh --epic 2   → ~8 chore-retro-c2-*.md
+   bash .claude/harness/scripts/process_retro_residue.sh --epic 3   → ~7 chore-retro-c3-*.md
    = 共 ~21 个 chore spec 自动生成
    │
    ▼
@@ -500,47 +566,44 @@ Q1/Q2/Q3 决策点 → 改 C10 + C-bootstrap spec（如有修正）
 - C1 pre-commit hook spec: `_bmad-output/implementation-artifacts/spec-retro-c1-pre-commit-hook-retro-action-items.md`
 - run-sprint 主流程: `.claude/commands/run.md`
 - 代答政策: `.claude/harness/answer-policy.md`
-- sprint 状态机: `.claude/harness/scripts/sprint-status.py` + `.claude/harness/scripts/harness-state.py`
-- commit 协议: `.claude/harness/scripts/harness-commit.py`
+- sprint 状态机: `.claude/harness/scripts/sprint-status.py`（单行 + BMad 多行块双格式，v0.1.34+）+ `.claude/harness/scripts/harness-state.py`
+- commit 协议: `.claude/harness/scripts/harness-commit.py`（退出码 0=可 commit / 1=halt / 2=空 worktree 跳过；安全门双档见 §〇.6）
 - **conventions（项目层格式契约）**:
   - `.claude/harness/conventions/deferred-work-schema.md` — deferred-work.md schema v1（FU bullet 4-tag 头 / status / bucket / target / source / 历史 audit log；C11/C12 取代）
 
 ---
 
-## 十、Prompt 拼接约定（C11 / A3 / A7 / B2 / B3 / C2 / C3 / C7 / C9 沉淀）
+## 十、Prompt suffix 注入约定（C11 / A3 / A7 / B2 / B3 / C2 / C3 / C7 / C9 沉淀；v0.1.38 改 Read 强制契约）
 
-CLAUDE.md 严格禁止动 `.claude/skills/bmad-*/`，因此所有 SKILL 级 enforce
-都走 prompt 拼接路径：调 BMad skill 前主 agent 在 user prompt 内 inject
-引用项目层 customize / customizations / single-source-of-truth 文件。
+CLAUDE.md 严格禁止动 `.claude/skills/bmad-*/`，因此所有 SKILL 级 enforce 都走 prompt 注入路径。
 
-### 调 bmad-create-story 时 inject
+> **历史变更（v0.1.38）**：早期版本由主 agent 在 user prompt 首部 inject 一串文件引用（含
+> `prompt-templates/` 4 个段模板）。review 2026-06-10 #27/#30 证实该清单是**死契约**——
+> 没有任何编排路径真的执行注入，且 `prompt-templates/` 4 模板停留在 pre-schema-v1 语义、
+> 零运行时引用。v0.1.38 起 `prompt-templates/` 目录**停止分发**（下游残留由 update 的
+> manifest purge 对账清掉），注入机制改为下述三通道——全部在 run.md 子 agent prompt
+> 模板里**逐字落地**，不再依赖主 agent 自觉。
 
-主 agent 必须在 user prompt 首部 inject 以下引用：
+### 通道 1：显式 Read 强制契约（阶段 ① create-story / 阶段 ⑥ retrospective）
 
-- `_bmad-output/implementation-artifacts/dev-story-self-review-gate.md` — A3 5 问 single source（spec stage subtask 锚）
-- `_bmad-output/implementation-artifacts/mech-verify-dry-run-protocol.md` — A7 4 项验证 protocol
-- `_bmad/customize/bmad-create-story.toml` — workflow.activation_steps_prepend / tasks_append / finalize_steps_append
-- `.claude/harness/prompt-suffixes/bmad-create-story-suffix.md` — Finalize sub-steps + Epic 第一个 story 继承段约束（C7）
-- `.claude/harness/prompt-templates/self-review-5q-template.md` / `mech-verify-dry-run-template.md` / `data-visibility-review-template.md` / `deferred-import-status-template.md` — 段模板
+run.md 的子 agent prompt 模板**逐字包含**格式契约段：
 
-### 调 bmad-dev-story 时 inject
+- 阶段 ①：`**格式契约（强制，先做）**：先 Read .claude/harness/prompt-suffixes/bmad-create-story-suffix.md`——spec 结构 / Epic 第一个 story 继承段（C7）/ Finalize 自检（`check_spec_length.sh` 800 行上限 → `extract_d_decisions.sh` D-decisions ≥5 提议 extract → `check_inheritance_block.sh` 继承段约束，三脚本顺序写在 suffix 的 §Finalize sub-steps 内）全按 suffix 执行
+- 阶段 ⑥：`先 Read .claude/harness/prompt-suffixes/bmad-retrospective-suffix.md`——Form 1 action-items 格式 + 每项 `**Category**: dev|harness` 声明 + pre-retro self-audit（`run_retro_self_audit.sh <prev_epic_num>` 输出 paste 进 §2 cross-reference 草稿）。**Category 声明被真实消费**：harness-commit.py stage 6 commit 时 `_parse_retro_action_items` 解析出 `(code, title, category)` 三元组，seeder 写 `retro_action_items.<id>.category` 子键（stage 6-5 不做 seeding，仅给已处理条目补 `chore_spec` 子键），pre-commit gate ① 按 dev 阻 / harness WARN 分流（§六 Q4）。§0.C retro-only 路径同样必须带本契约段
 
-- `_bmad-output/implementation-artifacts/dev-story-self-review-gate.md` — 5 问 dev stage 答复
-- `.claude/harness/prompt-suffixes/bmad-dev-story-suffix.md` — Standard checklists（5q + mech-verify + Q6 全栈贯通 review）
+### 通道 2：`harness-prompt-suffix.py <stage>` stdout 拼接（阶段 ①-⑥ 全部）
 
-### 调 bmad-retrospective 时 inject
+每个子 agent prompt 末尾拼 `python3 .claude/harness/scripts/harness-prompt-suffix.py <stage>` 的 stdout，自动包含：
 
-- `.claude/harness/prompt-suffixes/bmad-retrospective-suffix.md` — Pre-retro hint：跑
-  `bash .claude/harness/scripts/run_retro_self_audit.sh <prev_epic_num>` + paste
-  到 §2 cross-reference 草稿基础
+- 代答政策附带段（通用原则引用 `answer-policy.md`；项目语境从 yaml `extra.project_context` 内联）
+- §1.x 断点续作约定（deterministic 续作三段，主 agent 不得手写"前情提要"）
+- stage 2 额外块：deferred-work schema v1 扫描约定（§L）+ Q6 全栈贯通 sub-bullet（从 yaml `extra.fullstack_review_steps` 渲染；答复体例 reference 指向 `bmad-dev-story-suffix.md` Q6 段）
 
-### Finalize sub-steps 顺序（spec creation）
+### 通道 3：C11 deferred 注入段（阶段 ① 头部）
 
-主 agent 在 spec commit 前必须按顺序跑：
+`grep_pending_deferred_for_story.sh <KEY>` 的命中结果作为机器注入段（带显式分隔符）拼在阶段 ① prompt 头部、`harness-prompt-suffix.py 1` 输出之前——"本 story 应消化 N 条 deferred FU"。
 
-1. `bash .claude/harness/scripts/check_spec_length.sh <spec-path>` — 800 行 hard 上限
-2. `bash .claude/harness/scripts/extract_d_decisions.sh <spec-path>` — D-decisions ≥ 5 提议 extract
-3. `bash .claude/harness/scripts/check_inheritance_block.sh <spec-path>` — X-1-* 且 X > 1 触发继承段约束
+`_bmad/customize/*.toml`（bmad-create-story / bmad-dev-story 的 activation_steps_prepend / dod_prepend_steps）由 BMad skill 自身加载，不走 prompt 注入。
 
 ---
 
@@ -628,11 +691,11 @@ C-path-externalization 落地后，三类项目特定值从脚本硬编码移出
 
 ### `/harness-zh:init` — clone-time / mid-project 一次性 yaml 同步（chore C-run-sprint-init 沉淀）
 
-`harness-project-config.yaml` 是 harness 跨脚本的项目配置 SoT，但其 14 字段（11 描述 + 3 派生）的事实源头是 BMad planning artifacts（`product-brief.md` / `prd.md` / `architecture/tech-stack.md` / `architecture/repo-structure.md`）。手填易漂移、新项目 clone 启动门槛高 — `/harness-zh:init` 一次性把 BMad → yaml 同步。
+`harness-project-config.yaml` 是 harness 跨脚本的项目配置 SoT。其 16 个 BMad-sourced 提取字段（14 描述 + 2 注入语境：`extra.project_context` / `extra.fullstack_review_steps`）的事实源头是 BMad planning artifacts（`product-brief.md` / `prd.md` / `architecture/tech-stack.md` / `architecture/repo-structure.md`）；另有 3 个派生字段不读 BMad（见下）。手填易漂移、新项目 clone 启动门槛高 — `/harness-zh:init` 一次性把 BMad → yaml 同步。
 
 **触发场景**：
-- ① clone harness 到全新项目（空 yaml + 完整 BMad 产物）→ 14 字段全填
-- ② mid-project 启用 harness（部分手填 yaml + 完整 BMad）→ merge：5 既有保留 + 9 缺失补全
+- ① clone harness 到全新项目（空 yaml + 完整 BMad 产物）→ 16 字段全填
+- ② mid-project 启用 harness（部分手填 yaml + 完整 BMad）→ merge：既有字段保留 + 缺失字段补全
 
 **调用形式（LLM-orchestrated；与 `/harness-zh:run` / `/harness-zh:run-test` 同款）**：
 
@@ -655,9 +718,9 @@ C-path-externalization 落地后，三类项目特定值从脚本硬编码移出
 >
 > ux-design / epics 等其他 BMad 产物（`ux-design-specification.md` 单文件 vs `ux-design-specification/` sharded、`epics.md` vs `epics/`）当前**未在 harness-zh 任何运行时路径引用**（不在 §A.5 检测、不在 §2 字段提取、不在 retro 审计）；信息从 sprint-status.yaml + prd.md + architecture.md 间接获取，未来若加 hard ref 需同步加 dual-form 检测。
 
-helper：[`scripts/run_sprint_init_check_prereq.sh`](scripts/run_sprint_init_check_prereq.sh) — exit 0 / 2 / 3；JSON stdout（含 `optional_missing` 字段）+ 引导 stderr。
+helper：[`scripts/run_sprint_init_check_prereq.sh`](scripts/run_sprint_init_check_prereq.sh) — exit `0`（全部 MUST-EXIST 在位）/ `2`（BMad planning artifact 缺失 → stderr 引导）/ `3`（sprint-status.yaml 缺失 → 引导 `/bmad-sprint-planning`）/ `1`（参数 / 内部错误）；JSON stdout（含 `optional_missing` 字段）+ 引导 stderr。
 
-**14 字段 mapping 概要**（详 [`.claude/commands/init.md`](../commands/init.md) §2 — 表格用 sharded 路径写 source 列，LLM 提取时按"sharded 探测 → 单文件章节 grep" fallback；两形式都是一等公民）：
+**16 字段 mapping 概要**（详 [`.claude/commands/init.md`](../commands/init.md) §2 — 表格用 sharded 路径写 source 列，LLM 提取时按"sharded 探测 → 单文件章节 grep" fallback；两形式都是一等公民）：
 
 | yaml field | BMad source（sharded 形式 / 单文件章节）| 提取语义 |
 |---|---|---|
@@ -675,8 +738,10 @@ helper：[`scripts/run_sprint_init_check_prereq.sh`](scripts/run_sprint_init_che
 | `extra.sandbox_constraint` | architecture/nfrs.md / architecture.md §nfrs（NICE） | 沙箱资源约束 |
 | `extra.resource_baseline` | architecture/nfrs.md / architecture.md §nfrs（NICE） | 资源 baseline |
 | `extra.backend_modules` | architecture/repo-structure.md / architecture.md §repo-structure | 后端模块列表 |
+| `extra.project_context` | product-brief*.md / prd.md | 产品定位 + 关键决策原则段（多行 `\|` 块，6-10 条）；subagent 按 answer-policy.md 自决时的项目语境，由 `harness-prompt-suffix.py` 内联注入 |
+| `extra.fullstack_review_steps` | architecture/data-model.md / component-architecture.md / repo-structure.md | 核心数据流 7 段追溯清单（list of {label, file_path}）；dev-story Q6 全栈贯通 review 由 `harness-prompt-suffix.py` stage 2 渲染；空 list → Q6 整段降级跳过 |
 
-派生字段（不读 BMad；基于上述 11 描述字段拼模板）：
+派生字段（3 个；不读 BMad，基于上述描述字段拼模板）：
 - `artifacts_root` — 默认 `_bmad-output/implementation-artifacts`（yaml 已设则保留）
 - `extra.path_classifiers` — 基于 `frontend_dir` + `backend_modules` + `backend_languages` 条件分支生成 list of regex；上游缺失 → fallback Aegis 默认 11 条 + WARN
 - `extra.verification_commands` — Q5 三组合（Go/TS / Python/TS / Rust/TS）模板拼接；其它栈 fallback `# TODO: ...` placeholder + WARN
@@ -689,7 +754,7 @@ helper：[`scripts/run_sprint_init_check_prereq.sh`](scripts/run_sprint_init_che
 - 写完跑 `harness_config.py` smoke + `simulate_clone_test.sh` 验证；fail → rollback yaml + halt
 - **不**自动 commit yaml — solo-dev review 后自决（与 §-1.d "禁止主 agent 自己 git 操作"同精神）
 
-**self-test**：[`scripts/run_sprint_init_test.sh`](scripts/run_sprint_init_test.sh) — 3 fixtures（全新 / mid-project / MUST-EXIST 缺失）；mechanically 测 §1 prereq gate 行为，§2-§4 LLM-driven 部分由人工 spot-check（`--dry-run` 真实跑 + 14 字段填值合理性）。
+**self-test**：[`scripts/run_sprint_init_test.sh`](scripts/run_sprint_init_test.sh) — 3 fixtures（全新 / mid-project / MUST-EXIST 缺失）；mechanically 测 §1 prereq gate 行为，§2-§4 LLM-driven 部分由人工 spot-check（`--dry-run` 真实跑 + 16 字段填值合理性）。
 
 ### 老 chore spec 的 frozen 边界
 
@@ -705,11 +770,11 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 
 ---
 
-## 十二、目录布局（按功能分组；文件总数 ~60 个，随版本浮动）
+## 十二、目录布局（按功能分组；v0.1.38 对照 `ls` 实况重生成 — scripts 61 + commands 7 + suffixes 3 + conventions 1 + templates 2 + git-hooks 1）
 
-> 维护契约：新增脚本 / convention / template / hook 时同步在本段加一行（位置 = 对应功能组末尾）。本段是 onboarding / 自查的功能视角索引，与 [`changelog.md`](changelog.md)（时间视角）+ [`scripts/simulate_clone_test.sh`](scripts/simulate_clone_test.sh)（clone 拷贝清单）三视角互补。
+> 维护契约：新增脚本 / convention / template / hook 时同步在本段加一行（位置 = 对应功能组末尾）。本段是 onboarding / 自查的功能视角索引，与 [`changelog.md`](changelog.md)（时间视角）+ [`scripts/deploy_assets.sh`](scripts/deploy_assets.sh)（分发清单 SoT：`REQUIRED_TOP_FILES` + `SUBDIRS`）三视角互补。
 >
-> **真实文件数请以 `ls plugins/harness-zh/scripts/ commands/ templates/` 为准** —— 本段树形图随 plugin 版本可能落后；如发现不一致以实际文件系统为准。最近 0.1.13-0.1.16 新增的若干 detector / extract / upgrade-deferred-work 资产可能未列在树形图里（见 `changelog.md`）。
+> **真实文件数请以 `ls plugins/harness-zh/scripts/ commands/ templates/` 为准** —— 本段树形图随 plugin 版本可能落后；如发现不一致以实际文件系统为准（上次全量核对：2026-06-10 / v0.1.38）。
 
 ### 12.1 全树（标 portable / project-specific / 归属）
 
@@ -723,54 +788,60 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 ├── CLAUDE.md                                ← (A) harness 入口（起步约定 / chore 实施流程 / 严格禁止；含 ${project_display_name} 占位符）
 │
 ├── .claude/                                 ← (A) 100% harness-owned
-│   ├── commands/                                5 个 slash command（user 入口）
-│   │   ├── run.md                               主流程编排（5-stage + 6 retro + 6.5 residue）
-│   │   ├── run-test.md                          测试流程编排（T1/T3/T4 + 5.5 嵌入）
-│   │   ├── init.md                              一次性 bootstrap（BMad → yaml 14 字段同步 + §A.3.c 旧 deferred-work 检测 + §A.3.d harness-residue 迁移）
-│   │   ├── update.md                            升级后资产同步（不动 yaml / 不跑 BMad 提取）
-│   │   └── upgrade-deferred-work.md             事后 deferred-work schema 复测 + mode 切换（advisory / archive+greenfield / 手工 backfill）
+│   ├── commands/                                7 个 slash command（user 入口）
+│   │   ├── run.md                               主流程编排（§0.A.0 retro 兑现前置 gate + 5-stage + ⑤.5 test + ⑥ retro + ⑥.5 residue）
+│   │   ├── run-test.md                          测试流程编排（T1/T3/T4 + 5.5 嵌入；路径占位符走 config）
+│   │   ├── init.md                              一次性 bootstrap（BMad → yaml 16 字段同步 + §A.3.c deferred-work schema 检测 + §A.3.d harness-residue 纯 advisory）
+│   │   ├── update.md                            升级后资产同步（不动 yaml / 不跑 BMad 提取；manifest purge 对账）
+│   │   ├── upgrade-deferred-work.md             事后 deferred-work schema 复测 + mode 切换（advisory / archive+greenfield / 手工 backfill）
+│   │   ├── report-issue.md                      一键给 plugin 作者提 GitHub issue（v0.1.26+；gh CLI 直提）
+│   │   └── codex-catchup.md                     codex 恢复后补跑被跳过的 stage 3+4（v0.1.27+；归档协议详 §〇.3/§〇.5）
 │   │
 │   └── harness/
 │       ├── architecture.md                      ← 设计单一权威来源（本文件；100% portable）
 │       ├── changelog.md                         ← 历史叙事（每条优化追加；100% portable）
 │       ├── answer-policy.md                     ← 代答政策 / subagent 通用决策原则（100% portable）
-│       ├── harness-project-config.yaml          ← ⚠️ 项目特定（clone 后第一件事改这里 — 16 字段；或 /harness-zh:init 自动同步）
+│       ├── harness-project-config.yaml          ← ⚠️ 项目特定（16 BMad 字段 + 3 派生；/harness-zh:init 自动同步）
 │       ├── test-stage-triggers.yaml             ← 9 testarch skill 测试触发条件（100% portable）
 │       │
 │       ├── conventions/                         ← 数据格式约定（1 个；100% portable）
-│       │   └── deferred-work-schema.md          deferred-work.md schema v1（4-tag header）
+│       │   └── deferred-work-schema.md          deferred-work.md schema v1（4-tag header；v0.1.38 起无项目专属内容）
 │       │
 │       ├── git-hooks/                           ← 仓库追踪的 hook 源（1 个；100% portable）
 │       │   └── pre-commit                       gate ① retro check（dev 阻 / harness WARN）+ gate ② deferred-work schema
 │       │
-│       ├── prompt-suffixes/                     ← BMad skill prompt 拼接（3 个；100% portable）
-│       │   ├── bmad-create-story-suffix.md      story 创建段尾约束
+│       ├── prompt-suffixes/                     ← BMad skill prompt 注入（3 个；100% portable；注入通道详 §十）
+│       │   ├── bmad-create-story-suffix.md      story 创建段尾约束（含 Finalize sub-steps 三脚本）
 │       │   ├── bmad-dev-story-suffix.md         dev 实施段尾约束（5q gate / mech-verify / Q6 全栈贯通格式）
-│       │   └── bmad-retrospective-suffix.md     retro pre-hint（self-audit）
+│       │   └── bmad-retrospective-suffix.md     retro 格式契约（Form 1 + Category 声明 + pre-retro self-audit）
 │       │
-│       ├── prompt-templates/                    ← spec/chore 内嵌引用模板（4 个；100% portable）
-│       │   ├── self-review-5q-template.md       dev-story 5 问自检
-│       │   ├── mech-verify-dry-run-template.md  机械化 verify dry-run（3 类 tag）
-│       │   ├── data-visibility-review-template.md  RBAC 4 问 review checklist
-│       │   └── deferred-import-status-template.md  deferred-work 自动 import 状态
+│       ├── templates/                           ← 投放模板（2 个；100% portable）
+│       │   ├── harness-project-config.yaml.template
+│       │   └── deferred-work.md.template
 │       │
-│       └── scripts/                             ← 全部脚本（~40 个；除标注 ⚠️ 外均 portable）
+│       │   （prompt-templates/ 已于 v0.1.38 停止分发——4 模板停留在 pre-schema-v1
+│       │     语义且零运行时引用；下游旧副本由 update 的 manifest purge 对账清掉）
+│       │
+│       └── scripts/                             ← 61 个文件（运行时脚本 + *_test.sh 回归测试 + 2 个 fresh-agent _prompt.md；除标注 ⚠️ 外均 portable）
 │           │
 │           ├── [Python 核心 5 个 — 编排 + 状态]
-│           │   ├── sprint-status.py             状态文件 CRUD（路径 A 5-stage 状态机）
+│           │   ├── sprint-status.py             状态文件 CRUD（路径 A 5-stage 状态机；单行 + BMad 多行块双格式；epic-* key 可读）
 │           │   ├── harness-state.py             单 story 状态检视 + halt-recovery-check
-│           │   ├── harness-commit.py            commit gate（黑名单 / 跨 story / schema 校验 / auto-fix binary blob）
+│           │   ├── harness-commit.py            commit gate（黑名单双档 / 跨 story / schema 校验 / retro seed / auto-fix binary blob；exit 0/1/2）
 │           │   ├── harness-prompt-suffix.py     subagent prompt suffix 注入器（代答政策 inline project_context + Q6 渲染）
-│           │   └── harness_config.py            yaml config reader + hardcoded fallback
+│           │   └── harness_config.py            yaml config reader + hardcoded fallback（never-raise；含 get_frontend_dir / get_e2e_test_subdir）
 │           │
-│           ├── [Bash config helper 1 个]
-│           │   └── read_harness_config.sh       bash 脚本 source 这个拿 config 字段
+│           ├── [共享 bash 库 3 个（source 用）]
+│           │   ├── read_harness_config.sh       bash 脚本 source 这个拿 config 字段
+│           │   ├── deferred_work_schema_lib.sh  retro/deferred parser 文法 + 枚举单一来源（v0.1.38 四份并行实现收敛于此）
+│           │   └── prompt_template_lib.sh       ${project_display_name} 占位符渲染共享库（v0.1.38；awk 字面替换）
 │           │
 │           ├── [Retro 流]
 │           │   ├── check_retro_action_items.sh + _test.sh         gate（v2 dev/harness category 分流）
 │           │   ├── grep_prev_retro_action_items.sh                上轮 retro action items 提取
+│           │   ├── grep_pending_dev_retro_items.sh + _test.sh     §0.A.0 前置 gate 的 pending dev 项扫描（v0.1.33+）
 │           │   ├── process_retro_residue.sh + _test.sh + _prompt.md  fresh agent 残留处理 → chore spec + MANIFEST
-│           │   └── ⚠️ run_retro_self_audit.sh + _test.sh          **项目特定**（hardcoded check_AN/BN/CN 函数体；clone 后必须重写或删除）
+│           │   └── ⚠️ run_retro_self_audit.sh + run_retro_self_audit_test.sh  **项目特定**（hardcoded check_XN 函数体；clone 后必须重写或删除）
 │           │
 │           ├── [Deferred-work 流]
 │           │   ├── grep_deferred_buckets.sh                       bucket 总账（含 §1 §1.1/§1.2/§1.3）
@@ -778,13 +849,16 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 │           │   ├── grep_pending_deferred_for_story.sh + _test.sh  按 story key 找 pending FU
 │           │   ├── backfill_resolved_markers.sh + _test.sh + _prompt.md  fresh agent backfill resolved（schema v1 后 deprecated；FORCE_LEGACY_BACKFILL=1 才跑）
 │           │   ├── detect_deferred_work_schema.sh                 v0.1.13 新增；扫 deferred-work.md 算 v1 conformance（pristine/v1_clean/mixed/legacy）
+│           │   ├── lint_deferred_work.sh + _test.sh               deferred-work.md schema lint
 │           │   ├── diff_guardrail.sh                              backfill 改动越界守门
 │           │   └── pre_commit_deferred_schema_test.sh             pre-commit gate ② 测试
+│           │
+│           ├── [codex 降级链（v0.1.27+）]
+│           │   └── check_codex_availability.sh                    codex-in-cc 可用性探测（run.md §③.0 / codex-catchup 共用）
 │           │
 │           ├── [Plugin issue 直通管道（v0.1.26 替代 v0.1.14 upstream-feedback.md 中转）]
 │           │   └── collect_issue_context.sh                       拼 issue body（plugin 版本 / sprint/story 状态 / halt 现场 / 近期 commits）；由 /harness-zh:report-issue 调用 → gh CLI 直提
 │           │
-
 │           ├── [Spec 质量 gate]
 │           │   ├── check_spec_length.sh                           spec 长度上限
 │           │   ├── check_inheritance_block.sh + _test.sh          epic 第一 story 继承段约束
@@ -792,18 +866,31 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 │           │   └── extract_d_decisions.sh                         spec D-decisions 提取到独立文件
 │           │
 │           ├── [Test harness 接通]
-│           │   ├── check_test_harness_env.sh + _test.sh           Playwright 环境探测（runtime ready）
+│           │   ├── check_test_harness_env.sh + _test.sh           Playwright 环境探测（缓存路径按 uname 分流）
 │           │   ├── bootstrap_test_harness.sh                      手工 bootstrap manifest（fixtures + scaffold）
 │           │   └── eval_test_stage_triggers.sh + _test.sh         9 testarch skill 条件评估（fail-open）
 │           │
-│           ├── [Bootstrap / install / clone]
-│           │   ├── install_git_hooks.sh                           hook 安装到 .git/hooks/（幂等 + backup）
-│           │   ├── run_sprint_init_check_prereq.sh + _test.sh     /harness-zh:init 前置检查
-│           │   └── simulate_clone_test.sh                         clone 通用化回归测试（占位符化 + 拷贝清单）
+│           ├── [Bootstrap / install / 分发 / 发布]
+│           │   ├── install_git_hooks.sh                           hook 安装（幂等 + backup；exit 0=成功 / 3=hooksPath 良性拒装 / 1=真实失败）
+│           │   ├── run_sprint_init_check_prereq.sh + run_sprint_init_test.sh  /harness-zh:init 前置检查（exit 0/2/3）
+│           │   ├── discover_plugin_root.sh                        init/update 探测 plugin 安装路径
+│           │   ├── deploy_assets.sh                               资产投递（cmp/backup/overwrite + manifest + DEPLOY_PURGE 对账）
+│           │   ├── release_check.sh                               发布前版本一致性门（CI source-tests 跑）
+│           │   └── simulate_clone_test.sh                         clone 通用化回归测试（CI bootstrap-tests 实跑；run_all_tests 唯一 KNOWN_STALE）
 │           │
-│           └── [其它一次性 chore 回归测试]
+│           └── [测试 runner + 横切回归测试]
+│               ├── run_all_tests.sh                               glob sweep 全部 *_test.sh（--strict 模式；CI 三 job 详 §〇.6）
 │               ├── harness_commit_isolation_test.sh               harness-commit.py F1/F2 fix 回归
-│               └── orchestration_observations_test.sh             chore-harness-epic-4-orchestration 回归
+│               ├── harness_commit_issue5_test.sh                  issue #5 三连修回归（base-26 / locale 白名单等）
+│               ├── harness_commit_blacklist_test.sh               安全门双档回归（v0.1.38）
+│               ├── sprint_status_format_test.sh                   单行/多行块双格式回归（44 断言，v0.1.38）
+│               ├── deploy_assets_purge_test.sh                    DEPLOY_PURGE manifest 删除路径回归（22 断言，v0.1.38）
+│               ├── read_harness_config_issue7_test.sh             issue #7 _RHC_THIS 回归
+│               ├── retro_category_round_trip_test.sh              Category 声明 → category 子键消费链回归（v0.1.38）
+│               ├── retro_fulfill_stage_test.sh                    §0.A.0 retro-fulfill stage 回归
+│               ├── harness_config_test.sh                         harness_config.py 回归
+│               ├── harness_prompt_suffix_test.sh                  harness-prompt-suffix.py 回归
+│               └── orchestration_observations_test.sh             chore-harness-epic-4-orchestration 回归（v0.1.38 大修后 26/26）
 │
 └── _bmad/
     ├── customize/                               ← (A) **harness-owned** BMad skill overrides（2 toml；C2/C3/C7 等 chore 落地）
@@ -821,7 +908,7 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 
 **(B) BMad-installer-managed** = `_bmad/custom/` + `_bmad/_config / bmb / bmm / cis / core / scripts / tea` — 新项目可选两种姿势：① 把 `_bmad/custom/` 也整体 cp（图省事，simulate_clone_test 走的是这条）；② 在新项目跑 BMad install 重生（更干净，但需要新跑一遍 BMad onboarding）。其它 BMad 上游目录（`_config / bmb / bmm` 等）**强烈建议方式 ②** — cp 过去 + BMad 后续升级会冲突
 
-**(C) project-specific** = `_bmad-output/`（项目产出区）+ 项目源码（`console-api/` / `console-web/` / `proxy/`）+ `Justfile`（混合 recipe）— 不进 harness clone
+**(C) project-specific** = `_bmad-output/`（项目产出区）+ 项目源码 + 项目自己的构建脚本 — 不进 harness clone（harness 自身不携带任何 just recipe / Justfile；所有入口都是 `bash .claude/harness/scripts/<name>.sh` 或 `python3 .claude/harness/scripts/<name>.py`）
 
 ### 12.2 Clone 拷贝清单（[`scripts/simulate_clone_test.sh`](scripts/simulate_clone_test.sh) 已实现）
 
@@ -831,14 +918,13 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 | ✅ | `.claude/`（整个目录 — commands + harness） |
 | ✅ | `_bmad/customize/` + `_bmad/custom/` |
 | ❌ | `_bmad-output/`（项目产出区 — story specs / chore / retro / sprint-status / deferred-work） |
-| ❌ | 项目源码（`console-api/` / `console-web/` / `proxy/` 等） |
-| ❌ | `Justfile`（混合：项目 recipe + harness recipe；clone 时由用户重写主 Justfile + import harness 部分） |
+| ❌ | 项目源码与项目自身构建脚本（Justfile / Makefile 等 — 与 harness 无关，harness 不再有任何 just recipe） |
 
 ### 12.3 Clone 后必改文件（🔧）
 
 | 文件 | 改什么 | 自动化 |
 |---|---|---|
-| `.claude/harness/harness-project-config.yaml` | 16 字段（11 BMad-sourced 描述 + 3 派生 + project_context + fullstack_review_steps） | ✅ `/harness-zh:init` 自动从 BMad planning artifacts 提取 |
+| `.claude/harness/harness-project-config.yaml` | 16 个 BMad-sourced 字段（14 描述 + 2 注入语境：project_context / fullstack_review_steps）+ 3 派生字段 | ✅ `/harness-zh:init` 自动从 BMad planning artifacts 提取 |
 | `.claude/harness/scripts/run_retro_self_audit.sh` | 重写所有 `check_AN/BN/CN()` 函数体（hardcoded 检查路径 + grep target，对应原项目 retro action items）；或整个删除 | ❌ 手工（脚本头已 ⚠️ 标注） |
 
 **不需要再改的文件**（已通过 yaml-driven 动态注入解耦项目特定）：

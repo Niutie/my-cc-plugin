@@ -19,16 +19,25 @@ Stage taxonomy:
                                             (epic test-design / atdd / e2e automate)
 
 Behavior:
-    1. List worktree changes (git status --porcelain).
-    2. Run global blacklist scan (§-1.d step 2). Any hit → halt.
+    1. List worktree changes (git status --porcelain -uall -z; -uall expands
+       untracked directories into individual files so blacklist scanning
+       sees every new file — review 2026-06-10 finding #1; -z yields raw
+       NUL-delimited paths so quotes/newlines/` -> ` in filenames can't be
+       mis-parsed — finding #79).
+    1b. Drop junk-tier files (.DS_Store / *.tmp / *.swp / __pycache__ /
+       *.pyc) that are NOT in HEAD from the working set: never staged, never
+       a halt — one `NOTE: skipped junk file: <path>` line on stderr each.
+       Tracked paths (in HEAD) are never junk-filtered (R1 regression fix).
+    2. Run global blacklist scan (§-1.d step 2) — credential/secret files +
+       protected harness/BMad infra paths. Any hit → halt.
     3. Run cross-story isolation scan on _bmad-output/implementation-artifacts/*
        (§-1.d step 3). Any miss → halt.
     4. Classify each changed path against the stage's expected-output spec
        (§0.5 table).
     5. git add -- <path> the union of (expected artifacts ∪ project code).
        Refuses to add paths that fail any rule.
-    6. Sanity check: git diff --cached --stat + git status --porcelain
-       (must show no unstaged remainders).
+    6. Sanity check: git diff --cached --stat + git status --porcelain -uall
+       (must show no unstaged remainders; junk-tier files NOT in HEAD exempt).
     7. Print key=value lines on stdout:
          STATUS=ok|halt|skip
          REASON=<short>
@@ -262,7 +271,9 @@ def auto_prune_subagent_extra(path):
     return True
 
 
-# §-1.d step 2 — global blacklist patterns. Custom glob with ** = any-segment.
+# §-1.d step 2 — global blacklist patterns. Custom glob with gitignore-style
+# `**` (any number of directory segments, INCLUDING zero — `**/.env*` matches
+# repo-root `.env` too; review 2026-06-10 finding #7).
 #
 # v0.1.32 (issue #2): `**/*credentials*` was too wide — any file whose path
 # contained the substring "credentials" matched, including legitimate
@@ -276,6 +287,19 @@ def auto_prune_subagent_extra(path):
 # middle (e.g. `credentials_service.go`, `*-credentials-table.md`) no longer
 # match. Defense-in-depth: `matches_blacklist()` also allow-lists BMad
 # artifacts/ subtree so future broad patterns can't hit spec/json/yaml there.
+#
+# Two tiers (review 2026-06-10 findings #1/#7 red line — halt is reserved for
+# REAL danger, i.e. credentials about to enter git history):
+#   - BLACKLIST_PATTERNS (halt tier): credential/secret files + protected
+#     harness/BMad infra paths. Hit → STATUS=halt.
+#   - JUNK_PATTERNS (auto-skip tier): OS/editor/bytecode droppings. Hit on a
+#     path NOT in HEAD → the path is dropped from the working set (never
+#     staged, never a halt) with one `NOTE: skipped junk file: <path>` line on
+#     stderr. Paths IN HEAD (tracked) are never junk-filtered — a tracked
+#     access.log edit or a `git rm`'d .DS_Store commits normally (R1).
+#     Previously `*.tmp` / `*.swp` / `.DS_Store` lived in the halt tier, which
+#     would have turned every stray Finder/vim dropping into a pipeline halt
+#     once the -uall + `**` fixes made root/new-dir files visible to the scan.
 BLACKLIST_PATTERNS = [
     "**/.env*",
     "**/*.pem",
@@ -301,19 +325,40 @@ BLACKLIST_PATTERNS = [
     ".claude/harness/scripts/**",
     ".claude/harness/answer-policy.md",
     "_bmad/**",
-    "_bmad-output/.harness-logs/**",
+    # NOTE: the `<bmad-output-parent>/.harness-logs/**` pattern is appended
+    # below, derived from the configured artifacts_root (finding #33) —
+    # see the block right after ARTIFACTS_DIR is computed.
+]
+
+# Junk tier — auto-skip + stderr NOTE, never halt, never committed.
+#
+# Scope (regression fix 2026-06-10 R1): patterns here must ONLY match
+# unambiguous OS/editor/bytecode droppings. `**/*.log` was removed — .log is a
+# common LEGITIMATE project file suffix (committed sample logs, test fixtures,
+# changelogs); real build logs are the project .gitignore's job. Additionally,
+# filter_junk_paths() only applies these patterns to paths NOT in HEAD —
+# tracked files always flow through the normal pipeline (see its docstring).
+JUNK_PATTERNS = [
     "**/*.tmp",
     "**/*.swp",
     "**/.DS_Store",
+    "**/__pycache__/**",
+    "**/*.pyc",
 ]
 
 # v0.1.32 (issue #2) — BMad artifacts allow-list (defense layer 2).
-# Files under `_bmad-output/implementation-artifacts/` with engineering-product
+# Files under the configured artifacts dir with engineering-product
 # suffixes (md/json/yaml/yml) are exempt from blacklist scanning entirely.
 # Premise: users don't drop real credential files (`.pem`, `aws-credentials.json`)
 # into the spec directory — that path is a curated BMad output tree. If a real
 # credential ever lands there, it's caught by review (not commit blacklist).
-_ARTIFACTS_ALLOW_PREFIX = "_bmad-output/implementation-artifacts/"
+#
+# Review 2026-06-10 finding #33: the prefix used to be the hardcoded literal
+# "_bmad-output/implementation-artifacts/" while ARTIFACTS_DIR is config-
+# driven (harness-project-config.yaml `artifacts_root`) — on projects with a
+# custom artifacts_root the exemption silently pointed at the wrong tree.
+# `_ARTIFACTS_ALLOW_PREFIX` is now assigned from ARTIFACTS_DIR right after
+# it is computed (see below).
 _ARTIFACTS_ALLOW_SUFFIXES = (".md", ".json", ".yaml", ".yml")
 
 # v0.1.35 (issue #5) — i18n locale allow-list (blacklist defense exemption).
@@ -331,6 +376,10 @@ _I18N_LOCALE_DIR_SEGMENTS = ("i18n", "locales", "locale")
 ARTIFACTS_DIR = _compute_artifacts_dir_str()
 ARTIFACT_RE = re.compile(r"^" + re.escape(ARTIFACTS_DIR) + r"([^/]+\.(?:md|json|yaml|yml))$")
 
+# Finding #33: blacklist-exemption prefix follows the configured artifacts_root
+# instead of the original project's hardcoded "_bmad-output/implementation-artifacts/".
+_ARTIFACTS_ALLOW_PREFIX = ARTIFACTS_DIR
+
 # v0.1.35 (issue #5) — out-of-scope _bmad-output/ guard prefixes.
 # `implementation-artifacts/` is the ONLY curated story-output subtree; sibling
 # subdirs (brainstorming/, planning-artifacts/, research/, ...) hold cross-
@@ -343,6 +392,16 @@ ARTIFACT_RE = re.compile(r"^" + re.escape(ARTIFACTS_DIR) + r"([^/]+\.(?:md|json|
 _BMAD_OUTPUT_INSCOPE_PREFIX = ARTIFACTS_DIR
 _bmad_output_parent = "/".join(ARTIFACTS_DIR.rstrip("/").split("/")[:-1])
 _BMAD_OUTPUT_PREFIX = (_bmad_output_parent + "/") if _bmad_output_parent else None
+
+# Finding #33: the harness-logs blacklist entry follows the configured
+# artifacts_root parent (default `_bmad-output/`) instead of a hardcoded
+# literal. Falls back to the original literal when ARTIFACTS_DIR has no
+# parent segment (guard disabled — same fail-open posture as the
+# out-of-scope guard above).
+BLACKLIST_PATTERNS.append(
+    (_BMAD_OUTPUT_PREFIX + ".harness-logs/**")
+    if _BMAD_OUTPUT_PREFIX else "_bmad-output/.harness-logs/**"
+)
 
 # --- Test artifact regex (chore: codex review F1 fix, 2026-05-04) ---
 #
@@ -409,14 +468,29 @@ def classify_test_artifact(filename, key, epic):
 #   - test_artifacts/<key>-* (already validated by F1 above)
 #   - test_artifacts/epic-<epic>-test-design.md (T1 only — schema-checked)
 #   - test_artifacts/skipped-<key>-<date>.md
-#   - console-web/tests/e2e/<key>* (the e2e spec dir, out of artifacts root)
+#   - ${E2E_SPEC_PREFIX}<key>* (the e2e spec dir, out of artifacts root)
 # Anything else → halt DIRTY_WORKTREE= with explicit guidance to commit/stash.
 TEST_HARNESS_STAGES = ("5-5", "T1", "T3", "T4")
-E2E_SPEC_PREFIX = "console-web/tests/e2e/"
+
+# Review 2026-06-10 finding #9: E2E_SPEC_PREFIX used to be the hardcoded
+# constant "console-web/tests/e2e/" while check_test_harness_env.sh /
+# eval_test_stage_triggers.sh already read `frontend_dir` / `e2e_test_subdir`
+# from harness-project-config.yaml (the v0.1.18+ portability contract). On
+# projects with frontend_dir != console-web that mismatch made the F2 check
+# halt (DIRTY_WORKTREE) on the project's REAL e2e spec dir. Derive the prefix
+# from the same config getters; fall back to the original default when the
+# deployed harness_config.py predates the getters (asset version skew) or
+# config reading fails for any reason — fail-open, aligned with the
+# harness_config fallback policy.
+try:
+    from harness_config import get_e2e_test_subdir, get_frontend_dir  # noqa: E402
+    E2E_SPEC_PREFIX = f"{get_frontend_dir()}/{get_e2e_test_subdir()}/"
+except Exception:  # ImportError on stale deployed harness_config.py, etc.
+    E2E_SPEC_PREFIX = "console-web/tests/e2e/"
 
 
 def is_e2e_spec_for_key(path, key):
-    """Return True if `path` is a console-web/tests/e2e/<key>* file."""
+    """Return True if `path` is a ${E2E_SPEC_PREFIX}<key>* file."""
     if not path.startswith(E2E_SPEC_PREFIX):
         return False
     suffix = path[len(E2E_SPEC_PREFIX):]
@@ -424,32 +498,69 @@ def is_e2e_spec_for_key(path, key):
     return suffix.startswith(key)
 
 # --- Story status reader (used by dev-result / review-findings consistency check) ---
+#
+# Review 2026-06-10 finding #76: the capture group used to be `(\w+)`, which
+# only accepted single-word statuses — `Status: in-progress`,
+# `Status: Ready for Review`, `Status: done ✅` and `**Status**: review`
+# (colon after the closing stars) all returned None and were mis-reported by
+# the stage 2/5 gates as "md missing Status line", sending solo-dev hunting
+# for a line that exists. Widened to a whole-segment capture + decoration
+# strip; callers can now also distinguish "line present but unparsable" from
+# "line absent" via _read_story_status_ex.
+_STATUS_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s+)?\*{0,2}Status\*{0,2}\s*[:：]\s*(.*?)\s*$",
+    re.IGNORECASE,
+)
 
-_status_re_lines = [
-    re.compile(r"^\s*\*?\*?Status:?\*?\*?\s*(\w+)\s*$", re.IGNORECASE),
-    re.compile(r"^\s*-\s*\*?\*?Status:?\*?\*?\s*(\w+)\s*$", re.IGNORECASE),
-]
+
+def _normalize_status_value(raw):
+    """Strip markdown decoration / trailing emoji from a Status value and
+    lowercase it: `*review*` → `review`, `done ✅` → `done`,
+    `Ready for Review` → `ready for review`. Returns "" when nothing
+    survives the strip."""
+    v = raw.strip().strip("`").strip()
+    v = v.strip("*_").strip()
+    v = re.sub(r"[^\w-]+$", "", v)  # trailing emoji / punctuation decoration
+    return v.lower()
+
+
+def _read_story_status_ex(key):
+    """Return (status, line_seen) for the story md Status field.
+
+    status: normalized lowercased value (first parseable Status line), or
+    None when no line yields a usable value. line_seen: True when at least
+    one Status-shaped line exists — lets the stage 2/5 gates distinguish
+    "Status line present but value unrecognized" from "no Status line at
+    all" (finding #76)."""
+    path = f"{ARTIFACTS_DIR}{key}.md"
+    line_seen = False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                m = _STATUS_LINE_RE.match(line)
+                if not m:
+                    continue
+                line_seen = True
+                v = _normalize_status_value(m.group(1))
+                if v:
+                    return v, True
+    except FileNotFoundError:
+        return None, False
+    return None, line_seen
 
 
 def read_story_status(key):
     """Read the Status field from story md; returns lowercased value or None.
 
-    Tolerates a few common renderings:
+    Tolerates common renderings:
         Status: review
         **Status:** review
-        - Status: review
+        **Status**: review
+        - Status: in-progress
+        Status: Ready for Review
+        Status: done ✅
     """
-    path = f"{ARTIFACTS_DIR}{key}.md"
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                for pat in _status_re_lines:
-                    m = pat.match(line)
-                    if m:
-                        return m.group(1).lower()
-    except FileNotFoundError:
-        return None
-    return None
+    return _read_story_status_ex(key)[0]
 
 
 # --- dev-result.json schema validation (stage 2 gate) ---
@@ -481,6 +592,11 @@ def validate_dev_result(key):
     except (json.JSONDecodeError, OSError) as e:
         return [("DEV_RESULT_FAIL_PARSE", f"{path} parse error: {e}")]
 
+    # Subagent-produced JSON is untrusted — guard top-level type before .get()
+    # (review 2026-06-10 finding #31 sweep).
+    if not isinstance(d, dict):
+        return [("DEV_RESULT_FAIL_PARSE", f"top-level JSON is not an object (got {type(d).__name__})")]
+
     errors = []
     checks = d.get("checks", {})
     if not isinstance(checks, dict):
@@ -498,6 +614,13 @@ def validate_dev_result(key):
                 errors.append(("DEV_RESULT_FAIL_CHECK", f"{k}={v!r} — not a valid tri-state value (expected pass / fail / skip)"))
     else:
         skipped_raw = d.get("checks_skipped", [])
+        if not isinstance(skipped_raw, (list, tuple)):
+            # Non-list (e.g. a bare string / int) used to crash the iteration
+            # below with a traceback — surface as a structured parse error
+            # instead (finding #31 sweep).
+            errors.append(("DEV_RESULT_FAIL_PARSE",
+                           f"checks_skipped is not a list (got {type(skipped_raw).__name__})"))
+            skipped_raw = []
         # Accept literal key OR `<key>:` prefix in checks_skipped (forgive the format the 1-3 dev agent first wrote).
         skipped_keys = set()
         for entry in skipped_raw:
@@ -512,12 +635,20 @@ def validate_dev_result(key):
             if v is False and k not in skipped_keys:
                 errors.append(("DEV_RESULT_FAIL_CHECK", f"{k}=false and not listed in checks_skipped (legacy schema)"))
 
-    md_status = read_story_status(key)
+    md_status, status_line_seen = _read_story_status_ex(key)
     json_status = d.get("final_story_status")
     if md_status is not None and json_status and md_status != str(json_status).lower():
         errors.append(("DEV_RESULT_STATUS_MISMATCH", f"json={json_status!r} md={md_status!r}"))
     elif md_status is None:
-        errors.append(("DEV_RESULT_STATUS_MISSING", f"could not read Status from {ARTIFACTS_DIR}{key}.md"))
+        # Finding #76: distinguish "line exists but value unrecognized" from
+        # "no Status line" — same error code (output contract unchanged),
+        # precise message so solo-dev fixes the right thing.
+        if status_line_seen:
+            errors.append(("DEV_RESULT_STATUS_MISSING",
+                           f"Status line exists in {ARTIFACTS_DIR}{key}.md but its value could not be parsed — fix the line format (e.g. `Status: review`)"))
+        else:
+            errors.append(("DEV_RESULT_STATUS_MISSING",
+                           f"could not read Status from {ARTIFACTS_DIR}{key}.md (no Status line found)"))
 
     return errors
 
@@ -542,25 +673,53 @@ def validate_review_findings(key):
     except (json.JSONDecodeError, OSError) as e:
         return [("REVIEW_FINDINGS_FAIL_PARSE", f"{path} parse error: {e}")]
 
+    # Subagent-produced JSON is untrusted — guard top-level type before .get()
+    # (review 2026-06-10 finding #31 sweep).
+    if not isinstance(d, dict):
+        return [("REVIEW_FINDINGS_FAIL_PARSE", f"top-level JSON is not an object (got {type(d).__name__})")]
+
     errors = []
     u = d.get("unresolved", {})
     if not isinstance(u, dict):
         errors.append(("REVIEW_FINDINGS_FAIL_PARSE", "unresolved field is not an object"))
         return errors
 
-    crit = int(u.get("critical", 0) or 0)
-    high = int(u.get("high", 0) or 0)
-    med  = int(u.get("medium", 0) or 0)
-    low  = int(u.get("low", 0) or 0)
+    # Review 2026-06-10 finding #31: `int(u.get("critical", 0) or 0)` crashed
+    # with an uncaught ValueError/TypeError when the subagent wrote a
+    # non-numeric value (e.g. `"critical": "none"`) — traceback on stderr,
+    # ZERO STATUS=/REASON= lines on stdout, breaking the "paste stdout into
+    # the §3 halt template verbatim" contract. Coerce defensively and turn
+    # bad values into a structured FAIL_PARSE error (same handling tier as
+    # JSONDecodeError).
+    counts = {}
+    for level in ("critical", "high", "medium", "low"):
+        raw = u.get(level, 0)
+        try:
+            counts[level] = int(raw or 0)
+        except (TypeError, ValueError):
+            errors.append(("REVIEW_FINDINGS_FAIL_PARSE",
+                           f"unresolved.{level} 不是整数: {raw!r}"))
+    if errors:
+        return errors
+    crit = counts["critical"]
+    high = counts["high"]
+    med  = counts["medium"]
+    low  = counts["low"]
     if crit + high + med > 0:
         errors.append(("REVIEW_FINDINGS_UNRESOLVED", f"critical={crit} high={high} medium={med} low={low}"))
 
-    md_status = read_story_status(key)
+    md_status, status_line_seen = _read_story_status_ex(key)
     json_status = d.get("final_story_status")
     if md_status is not None and json_status and md_status != str(json_status).lower():
         errors.append(("REVIEW_FINDINGS_STATUS_MISMATCH", f"json={json_status!r} md={md_status!r}"))
     elif md_status is None:
-        errors.append(("REVIEW_FINDINGS_STATUS_MISSING", f"could not read Status from {ARTIFACTS_DIR}{key}.md"))
+        # Finding #76: same distinction as validate_dev_result above.
+        if status_line_seen:
+            errors.append(("REVIEW_FINDINGS_STATUS_MISSING",
+                           f"Status line exists in {ARTIFACTS_DIR}{key}.md but its value could not be parsed — fix the line format (e.g. `Status: done`)"))
+        else:
+            errors.append(("REVIEW_FINDINGS_STATUS_MISSING",
+                           f"could not read Status from {ARTIFACTS_DIR}{key}.md (no Status line found)"))
 
     return errors
 
@@ -580,6 +739,18 @@ def validate_review_findings(key):
 #                      Implemented as a *suggestion* on stdout (`SUGGEST_TAG=`);
 #                      the script itself doesn't commit, so it can't tag-after-commit
 #                      atomically — see runtime block in main()
+#
+# Codex graceful-degradation markers (issue #4 / review 2026-06-10 finding #4):
+# when codex-in-cc is unavailable, run.md §1 ③ writes
+# `<KEY>.codex-skipped.json` into the artifacts dir and skips stages 3/4;
+# /harness-zh:codex-catchup §4.7 later archives it to
+# `<KEY>.codex-skipped.resolved.json`. Both must be in the expected-output
+# spec, otherwise §0.5 classifies them unexpected_artifact and the very
+# mechanism that exists to keep the pipeline running halts it:
+#   - `.codex-skipped.json` → stages 2/4/5 (stage 5 commits the marker as part
+#     of story close-out; 2/4 are defensive for resumed/continued runs)
+#   - `.codex-skipped.resolved.json` → stages 3/4/5 (catchup reruns stage 3+4
+#     commits after archiving; 5 is defensive for late archives)
 STAGES = {
     "1": {
         "story_md":         True,
@@ -596,7 +767,7 @@ STAGES = {
     },
     "2": {
         "story_md":         True,
-        "story_json":       [".dev-result.json"],
+        "story_json":       [".dev-result.json", ".codex-skipped.json"],
         "story_codex":      False,
         "global_files":     ["sprint-status.yaml", "deferred-work.md"],
         "epic_retro":       False,
@@ -609,7 +780,7 @@ STAGES = {
     },
     "3": {
         "story_md":         False,
-        "story_json":       [],
+        "story_json":       [".codex-skipped.resolved.json"],
         "story_codex":      True,
         "global_files":     [],
         "epic_retro":       False,
@@ -622,7 +793,7 @@ STAGES = {
     },
     "4": {
         "story_md":         True,
-        "story_json":       [],
+        "story_json":       [".codex-skipped.json", ".codex-skipped.resolved.json"],
         "story_codex":      False,
         "global_files":     ["deferred-work.md"],
         "epic_retro":       False,
@@ -635,7 +806,8 @@ STAGES = {
     },
     "5": {
         "story_md":         True,
-        "story_json":       [".review-findings.json", ".review-progress.json"],
+        "story_json":       [".review-findings.json", ".review-progress.json",
+                             ".codex-skipped.json", ".codex-skipped.resolved.json"],
         "story_codex":      False,
         "global_files":     ["sprint-status.yaml", "deferred-work.md"],
         "epic_retro":       False,
@@ -900,31 +1072,44 @@ def _sync_sprint_status_for_stage(stage, key, epic):
             transitions.append((f"epic-{epic}", "done"))
     # stage 6-5 / 6-done / 1 / 3 / 4 / 5-fallback / 5-5 / T1 / T3 / T4 → no-op
 
+    # Review 2026-06-10 finding #77 — two-pass read-then-set:
+    #
+    # Pass 1 reads the current value of EVERY key in `transitions` BEFORE any
+    # write. sprint-status.py `status` now resolves epic-* keys too
+    # (include_epic_keys — the read/write asymmetry that previously forced an
+    # epic-* "skip the read, set unconditionally" workaround here is fixed at
+    # the root). This restores idempotency for stage 6 reruns (no-op
+    # transitions no longer rewrite the file / bump last_updated / emit bogus
+    # SPRINT_STATUS_AUTO_SYNC lines) and makes the stage 6 double-key flip
+    # (epic-N-retrospective → epic-N) atomic w.r.t. the known failure mode:
+    # a missing key (yaml schema bug) is detected up front and raises BEFORE
+    # the first set lands, instead of halting between the two sets and
+    # leaving half-flipped state on disk.
     applied = []
+    to_set = []
     for k, new_status in transitions:
-        # Read current status; missing key is a hard error (yaml schema bug)
         r = subprocess.run([sys.executable, sync_script, "status", k],
                            capture_output=True, text=True, check=False)
         if r.returncode != 0:
-            # Key not found in development_status — for epic-* keys we need
-            # to retry: sprint-status.py status only iterates dev keys by
-            # default; epic-* keys also live in the same block so this should
-            # work via cmd_status which calls _iter_dev_status without
-            # include_epic_keys. The cmd_status caller doesn't pass
-            # include_epic_keys; epic-* keys are filtered out → not found.
-            # Workaround: fall through to set directly (set uses
-            # include_epic_keys=True), which will succeed if key exists.
-            if k.startswith("epic-"):
-                pass  # don't read current; rely on set being idempotent
-            else:
-                raise RuntimeError(
-                    f"sprint-status.py status {k} failed: {r.stderr.strip() or r.stdout.strip()} (rc={r.returncode})"
-                )
-        else:
-            current = r.stdout.strip()
-            if current == new_status:
-                continue  # idempotent — already at target
+            # Missing key is a hard error (yaml schema bug) — surface it
+            # before any write so no partial state is left behind. cmd_status
+            # rc=1 prints nothing (and stderr may only carry harness_config
+            # WARN noise), so add the likely cause explicitly.
+            stderr_sig = "\n".join(
+                ln for ln in r.stderr.strip().splitlines()
+                if ln.strip() and not ln.lstrip().startswith("WARN")
+            ).strip()
+            detail = stderr_sig or r.stdout.strip() or \
+                f"key {k!r} not found in development_status (yaml schema bug — check sprint-status.yaml)"
+            raise RuntimeError(
+                f"sprint-status.py status {k} failed: {detail} (rc={r.returncode})"
+            )
+        current = r.stdout.strip()
+        if current == new_status:
+            continue  # idempotent — already at target
+        to_set.append((k, new_status))
 
+    for k, new_status in to_set:
         r = subprocess.run([sys.executable, sync_script, "set", k, new_status],
                            capture_output=True, text=True, check=False)
         if r.returncode != 0:
@@ -977,6 +1162,43 @@ def _find_latest_retro_md(epic):
     return matches[-1]
 
 
+# Review 2026-06-10 finding #29 — per-item `**Category**: dev|harness`
+# declaration line inside a Form 1 H3 block (bmad-retrospective-suffix.md
+# §5/§6 contract). Tolerated renderings:
+#   **Category**: dev        (canonical)
+#   - **Category**: dev      (bullet)
+#   **Category:** harness    (colon inside bold — common LLM rendering)
+#   **Category**：dev        (CJK fullwidth colon)
+#   Category: dev            (bold dropped)
+_CATEGORY_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s+)?\*{0,2}Category\*{0,2}\s*[:：]\s*\*{0,2}\s*([A-Za-z][A-Za-z-]*)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _extract_item_category(block_text, code, retro_md_path):
+    """Extract the `**Category**` declaration from one Form 1 H3 block body.
+
+    Returns "dev" / "harness", or None when the declaration is absent or its
+    value is outside the two-value enum (NOCAT — the seeder then omits the
+    `category` subkey; check_retro_action_items.sh keeps treating the item as
+    non-blocking WARN. Missing/illegal declarations never halt — finding #29).
+    """
+    m = _CATEGORY_LINE_RE.search(block_text)
+    if not m:
+        return None
+    val = m.group(1).lower()
+    if val in ("dev", "harness"):
+        return val
+    print(
+        f"WARN: retro action item {code} declares **Category**: {m.group(1)!r} "
+        f"(expected dev|harness) in {retro_md_path}; writing no category subkey "
+        f"(NOCAT) — see prompt-suffixes/bmad-retrospective-suffix.md §6.",
+        file=sys.stderr,
+    )
+    return None
+
+
 def _parse_retro_action_items(retro_md_path, letter):
     """Parse retro markdown action items from §"Action items" section.
 
@@ -1009,8 +1231,16 @@ def _parse_retro_action_items(retro_md_path, letter):
     no Action Items section is found at all, returns [] peacefully (legit
     minimal retro).
 
-    Returns list of (code, title) tuples. Raises RuntimeError on file IO
-    failure or schema drift.
+    Category extraction (review 2026-06-10 finding #29): each Form 1 H3 block
+    is scanned for the `**Category**: dev|harness` declaration required by
+    bmad-retrospective-suffix.md §5/§6. Missing or illegal values yield
+    category=None (the seeder then omits the `category` subkey — gate side
+    keeps its NOCAT/WARN behavior; never a halt). Form 2/3 fallback items
+    have no per-item declaration channel and always yield category=None.
+
+    Returns list of (code, title, category) tuples where category is
+    "dev" / "harness" / None. Raises RuntimeError on file IO failure or
+    schema drift.
     """
     try:
         with open(retro_md_path, "r", encoding="utf-8") as f:
@@ -1053,6 +1283,37 @@ def _parse_retro_action_items(retro_md_path, letter):
         # any follow-through sections (already filtered above) sit earlier.
         section_text = candidate_sections[-1]
         section_found = True
+    else:
+        # Review 2026-06-10 finding #72: the whole-file fallback used to scan
+        # `text` verbatim, so when the new action-items heading drifted away
+        # from the "action item"/"行动项" keywords (e.g. 中文化『## 改进计划』)
+        # the prev-epic `| AI-N.M |` rows inside a follow-through section were
+        # normalized into CURRENT-epic codes and seeded — the exact pollution
+        # v0.1.31 (issue #1) closed on the canonical path. Excise every `## `
+        # section whose title matches follow_through_kw (same keyword set as
+        # the candidate filter) BEFORE the 3-form scan.
+        drop_spans = []
+        for i, (pos, title) in enumerate(section_starts):
+            if any(kw in title.lower() for kw in follow_through_kw):
+                end = section_starts[i + 1][0] if i + 1 < len(section_starts) else len(text)
+                drop_spans.append((pos, end))
+        if drop_spans:
+            parts = []
+            cursor = 0
+            for s, e in drop_spans:
+                parts.append(text[cursor:s])
+                cursor = e
+            parts.append(text[cursor:])
+            section_text = "".join(parts)
+            print(
+                f"WARN: _parse_retro_action_items found no canonical Action "
+                f"Items section in {retro_md_path}; falling back to whole-file "
+                f"scan with {len(drop_spans)} follow-through section(s) excised. "
+                f"Retro headings should contain 'action item' / '行动项' — see "
+                f"prompt-suffixes/bmad-retrospective-suffix.md "
+                f"§'Action items markdown 格式契约'.",
+                file=sys.stderr,
+            )
 
     items = []
 
@@ -1061,13 +1322,21 @@ def _parse_retro_action_items(retro_md_path, letter):
         rf"^###\s+({re.escape(letter)}[A-Za-z0-9-]*)\b\s*(?:[—–-]\s*(.+?))?\s*$",
         re.MULTILINE,
     )
+    heading_re = re.compile(r"^#{2,3}\s", re.MULTILINE)
     for m in h3_re.finditer(section_text):
         code = m.group(1)
         # Filter: must be `<letter><digits>` or `<letter>-<lowercase-kebab>` to
         # exclude false positives like `### A — Action items overview`.
         if re.fullmatch(rf"{re.escape(letter)}\d+", code) or \
            re.fullmatch(rf"{re.escape(letter)}-[a-z][a-zA-Z0-9-]+", code):
-            items.append((code, (m.group(2) or "").strip()))
+            # Finding #29: the H3 block body (up to the next ##/### heading)
+            # carries the per-item `**Category**: dev|harness` declaration.
+            nxt = heading_re.search(section_text, m.end())
+            block_end = nxt.start() if nxt else len(section_text)
+            category = _extract_item_category(
+                section_text[m.end():block_end], code, retro_md_path
+            )
+            items.append((code, (m.group(2) or "").strip(), category))
 
     if items:
         return items
@@ -1097,7 +1366,7 @@ def _parse_retro_action_items(retro_md_path, letter):
         if code in seen_codes:
             continue
         seen_codes.add(code)
-        items.append((code, title))
+        items.append((code, title, None))  # table rows carry no Category (#29)
         form2_hit = True
 
     # v0.1.31: Form 2 no longer short-circuits — BMad retros frequently mix
@@ -1129,7 +1398,7 @@ def _parse_retro_action_items(retro_md_path, letter):
             if code in seen_codes:
                 continue
             seen_codes.add(code)
-            items.append((code, title))
+            items.append((code, title, None))  # bold bullets carry no Category (#29)
             form3_hit = True
 
     if items:
@@ -1177,12 +1446,19 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
     absent, auto-bootstraps it at EOF (v0.1.36, issue #6) — symmetric with the
     subblock auto-create; no longer halts + suggests /bmad-sprint-planning.
 
-    Each new entry is `<code>: pending  # <title from md>` (no chore_spec —
-    that's stage 6-5's responsibility per spec Boundaries).
+    Each new entry is `<code>: pending  # <title from md>`, followed by a
+    `      category: dev|harness` subkey line when the retro md's Form 1 H3
+    block declares `**Category**: dev|harness` (review 2026-06-10 finding #29
+    — the declaration is now machine-consumed; the over-indented subkey shape
+    matches what check_retro_action_items.sh / grep_pending_dev_retro_items.sh
+    awk state machines read). Undeclared/illegal category → no subkey written
+    (gate-side NOCAT behavior unchanged). No chore_spec — that's stage 6-5's
+    responsibility per spec Boundaries.
 
-    Returns list of newly-seeded (code, title) tuples. Raises RuntimeError only
-    on IO failure (or schema drift surfaced earlier by _parse_retro_action_items
-    — a §Action items section present but yielding 0 parseable items).
+    Returns list of newly-seeded (code, title, category) tuples. Raises
+    RuntimeError only on IO failure (or schema drift surfaced earlier by
+    _parse_retro_action_items — a §Action items section present but yielding
+    0 parseable items).
     """
     letter = _epic_letter(epic)
     if letter is None:
@@ -1211,6 +1487,16 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
     with open(sprint_status_path, "r", encoding="utf-8") as f:
         text = f.read()
     lines = text.splitlines(keepends=True)
+    # Review 2026-06-10 finding #8: normalize a missing EOF newline ONCE,
+    # right after splitting — this covers every insert branch below (append
+    # at the end of an existing block / new subblock at section end / parent
+    # key bootstrap at EOF). The v0.1.36 fix only patched the bootstrap
+    # branch; the other EOF insert points still glued new lines onto the last
+    # physical line, producing corrupted single-line YAML that the pre-commit
+    # gate then silently passed. The missing-trailing-newline human-edit
+    # footgun is an acknowledged real scenario (issue #6).
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
 
     rai_marker = "retro_action_items:"
     block_marker_prefix = f"  epic-{epic}-retro:"
@@ -1260,7 +1546,7 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
             if m:
                 existing_codes.add(m.group(1))
 
-    new_items = [(c, t) for c, t in items if c not in existing_codes]
+    new_items = [it for it in items if it[0] not in existing_codes]
     if not new_items:
         return []  # idempotent
 
@@ -1268,12 +1554,17 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
     if block_idx is None:
         # Create new subblock at end of retro_action_items section
         insert_lines.append(f"  epic-{epic}-retro:\n")
-    for code, title in new_items:
+    for code, title, category in new_items:
         comment = f"      # {title}" if title else ""
         if comment:
             insert_lines.append(f"    {code}: pending{comment}\n")
         else:
             insert_lines.append(f"    {code}: pending\n")
+        if category:
+            # Finding #29: over-indented sub-field, same non-standard shape as
+            # the stage 6-5 `chore_spec:` fill (see check_retro_action_items.sh
+            # "Format note" header comment).
+            insert_lines.append(f"      category: {category}\n")
 
     if block_idx is not None:
         # Append at end of existing block
@@ -1289,13 +1580,11 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
         # absent. Auto-bootstrap it at EOF rather than halting + suggesting
         # /bmad-sprint-planning (which would regenerate the entire sprint —
         # disproportionate for bootstrapping one empty parent key). Symmetric
-        # with the subblock auto-create above. We own our own newlines here so
-        # the human-edit footgun — a missing trailing newline merging
-        # `retro_action_items:` and `  epic-N-retro:` onto one physical line
-        # (malformed YAML) — cannot occur.
+        # with the subblock auto-create above. EOF-newline normalization now
+        # happens once at read time (finding #8), so `lines[-1]` is guaranteed
+        # newline-terminated here — the v0.1.36 branch-local patch was removed
+        # as redundant.
         prefix = list(lines)
-        if prefix and not prefix[-1].endswith("\n"):
-            prefix[-1] = prefix[-1] + "\n"
         # Separate the new top-level block from preceding content with one blank
         # line (matches the file's block style) unless EOF is already blank.
         sep = [] if (not prefix or prefix[-1].strip() == "") else ["\n"]
@@ -1332,6 +1621,11 @@ def _fill_chore_spec_field(epic, sprint_status_path, artifacts_dir):
     with open(sprint_status_path, "r", encoding="utf-8") as f:
         text = f.read()
     lines = text.splitlines(keepends=True)
+    # Finding #8 (same as _seed_retro_action_items): normalize a missing EOF
+    # newline so the reverse-order inserts below can never glue a
+    # `      chore_spec: ...` line onto the last physical line.
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
 
     block_marker_prefix = f"  epic-{epic}-retro:"
     rai_marker = "retro_action_items:"
@@ -1442,8 +1736,11 @@ def _run_seed_simulation(epic):
        infrastructure verifies both paths).
     4. Print resulting block + which items were seeded.
 
-    For epic numbers out of 1..26 range, no items will seed (epic_letter
-    returns None) but the block-creation path still gets exercised.
+    Synthetic items always use letter "D"; when the supplied epic's letter is
+    not "D" (i.e. epic != 4 — _epic_letter is bijective base-26 since v0.1.35,
+    so epic 27 → "AA", never None for positive ints), the seed falls back to
+    `seed_epic=4` so the D items still seed and the block-creation path is
+    still exercised (review 2026-06-10 finding #75 docstring refresh).
     """
     sim_letter = "D"  # synthetic items always use D regardless of epic
     real_letter = _epic_letter(epic)
@@ -1466,6 +1763,13 @@ def _run_seed_simulation(epic):
             f.write(f"# Epic {epic} Retrospective (simulation)\n\n## 6. Action Items\n\n")
             for n in range(1, 6):
                 f.write(f"### {sim_letter}{n} — synthetic action item {n}\n")
+                # Items 1-2 declare dev, 3 declares harness, 4-5 omit the
+                # declaration — exercises the finding #29 category round trip
+                # (dev / harness / NOCAT) in one fixture.
+                if n <= 2:
+                    f.write("**Category**: dev\n")
+                elif n == 3:
+                    f.write("**Category**: harness\n")
                 f.write("Action: simulated\n\n")
 
         # For real seed exercising, override epic to one whose letter == sim_letter
@@ -1484,8 +1788,8 @@ def _run_seed_simulation(epic):
         emit(f"STATUS=ok")
         emit(f"REASON=stage 6 seed simulation (epic={epic} sim_letter={sim_letter} seed_epic={seed_epic})")
         emit(f"SEEDED_COUNT={len(seeded)}")
-        for code, title in seeded:
-            emit(f"SEEDED_ITEM={code} title={title!r}")
+        for code, title, category in seeded:
+            emit(f"SEEDED_ITEM={code} title={title!r} category={category or 'NOCAT'}")
         with open(fake_sprint, "r", encoding="utf-8") as f:
             yaml_text = f.read()
         # Print block-only excerpt
@@ -1533,21 +1837,56 @@ def run(cmd):
 
 
 def glob_match(path, pattern):
-    """fnmatch with `**` as multi-segment wildcard, `*` as single-segment, `?` as single-char."""
-    parts = pattern.split("**")
+    """fnmatch with gitignore-style `**`, `*` as single-segment, `?` as single-char.
+
+    `**` semantics (review 2026-06-10 finding #7):
+      - leading/interior `**/` = ZERO or more whole directory segments, so
+        `**/.env*` matches both repo-root `.env` and `config/.env`. The old
+        translation turned every `**` into `.*`, compiling `**/.env*` to
+        `.*/\\.env[^/]*` — the literal `/` forced at least one parent dir and
+        every repo-root credential file silently bypassed the blacklist.
+      - trailing `/**` = the directory itself plus anything beneath it
+        (`secrets/api.txt` now matches `**/secrets/**` at the repo root too).
+      - `**` embedded inside a segment (e.g. `a**b`) keeps the legacy
+        any-chars `.*` semantics for backward compat (no shipped pattern
+        uses this form).
+    """
+    segs = pattern.split("/")
+    n = len(segs)
     regex_parts = []
-    for i, part in enumerate(parts):
-        if i > 0:
-            regex_parts.append(".*")
-        sub = []
-        for ch in part:
-            if ch == "*":
-                sub.append("[^/]*")
-            elif ch == "?":
-                sub.append("[^/]")
+    for i, seg in enumerate(segs):
+        last = (i == n - 1)
+        if seg == "**":
+            if last:
+                # Trailing `**` — match the already-consumed prefix itself or
+                # anything beneath it. A bare `**` pattern matches everything.
+                regex_parts.append(".*" if i == 0 else "(?:/.*)?")
             else:
-                sub.append(re.escape(ch))
+                # `**/` — zero or more whole segments, each group iteration
+                # consumes its own trailing slash (so no "/" joiner below).
+                regex_parts.append("(?:[^/]+/)*")
+            continue
+        sub = []
+        j = 0
+        while j < len(seg):
+            if seg.startswith("**", j):
+                sub.append(".*")  # embedded `**` — legacy any-chars semantics
+                j += 2
+            elif seg[j] == "*":
+                sub.append("[^/]*")
+                j += 1
+            elif seg[j] == "?":
+                sub.append("[^/]")
+                j += 1
+            else:
+                sub.append(re.escape(seg[j]))
+                j += 1
         regex_parts.append("".join(sub))
+        if not last:
+            # Joiner slash — except before a trailing `**`, whose `(?:/.*)?`
+            # group supplies its own optional slash.
+            if not (segs[i + 1] == "**" and i + 1 == n - 1):
+                regex_parts.append("/")
     return re.fullmatch("".join(regex_parts), path) is not None
 
 
@@ -1592,6 +1931,84 @@ def matches_blacklist(path):
         if glob_match(path, pat):
             return pat
     return None
+
+
+def matches_junk(path):
+    """Return the JUNK_PATTERNS pattern `path` matches, or None.
+
+    Junk tier (review 2026-06-10 findings #1/#7 red line): OS/editor/bytecode
+    droppings are auto-skipped — never staged, never a halt. Pure pattern
+    match, no artifacts/i18n exemptions (those exist to prevent halts on
+    legitimate files; junk patterns can't match legitimate artifacts). The
+    tracked-vs-untracked scoping lives in the callers (filter_junk_paths /
+    step-6 exemption), which pair this with a HEAD-membership check."""
+    for pat in JUNK_PATTERNS:
+        if glob_match(path, pat):
+            return pat
+    return None
+
+
+def path_in_head(path):
+    """True if `path` exists in the HEAD tree (i.e. it is a tracked file).
+
+    On an unborn branch (no HEAD yet) every path reports False — nothing is
+    tracked, so junk filtering applies to the whole worktree, which is the
+    correct fresh-repo behavior."""
+    r = run(["git", "cat-file", "-e", f"HEAD:{path}"])
+    return r.returncode == 0
+
+
+_junk_noted = set()
+
+
+def _note_junk(path):
+    """Emit one `NOTE: skipped junk file:` stderr line per path per run."""
+    if path not in _junk_noted:
+        _junk_noted.add(path)
+        print(f"NOTE: skipped junk file: {path}", file=sys.stderr)
+
+
+def filter_junk_paths(paths, dry_run=False):
+    """Drop junk-tier paths that are NOT in HEAD from a porcelain_paths() list.
+
+    Scope (regression fix 2026-06-10 R1 — the old version unstaged/dropped
+    EVERY junk-pattern match, so a tracked access.log edit was silently
+    excluded from the commit and a `git rm`'d .DS_Store deletion was unstaged
+    and never committed):
+
+      - xy == '??' (untracked): dropped outright — classic OS/editor dropping.
+      - xy[0] == 'A' (newly added to the index, confirmed absent from HEAD via
+        `git cat-file -e`): `git restore --staged` to unstage, then dropped —
+        but ONLY if the restore succeeds. On a non-zero restore exit the path
+        STAYS in the list and flows through normal classification; it is never
+        silently lost. When dry_run, the restore is skipped and the path is
+        dropped as if it had succeeded (dry-run never mutates the index).
+      - Everything else (tracked modifications ' M'/'M ', deletions 'D',
+        renames, ...): KEPT — tracked files always flow through the regular
+        pipeline, mirroring the auto-prune invariant 'Modified existing files
+        never auto-delete'.
+
+    For each dropped path, emit one `NOTE: skipped junk file: <path>` line on
+    stderr (once per path per run — re-fetches don't repeat the note)."""
+    kept = []
+    for xy, p in paths:
+        if matches_junk(p):
+            if xy == "??":
+                _note_junk(p)
+                continue
+            if xy[0] == "A" and not path_in_head(p):
+                if dry_run:
+                    _note_junk(p)
+                    continue
+                r = run(["git", "restore", "--staged", "--", p])
+                if r.returncode == 0:
+                    _note_junk(p)
+                    continue
+                # restore failed — fall through to kept: the path goes
+                # through normal classification instead of being silently
+                # dropped while still staged.
+        kept.append((xy, p))
+    return kept
 
 
 def read_cross_story_allowlist(key):
@@ -1727,34 +2144,82 @@ def classify(path, key, epic, spec, cross_story_allowlist=None):
     on stages that allow project_code (2/4/5). Real safety lives in BLACKLIST_PATTERNS
     (creds / .claude / _bmad), cross-story isolation, and schema gates.
     See harness-changelog 2026-05-01 §J.
+
+    Review 2026-06-10 finding #32: any path under ARTIFACTS_DIR that is
+    neither a direct-child md/json/yaml/yml (ARTIFACT_RE) nor under
+    test_artifacts/ (validated separately by the F1 gate, step 3.5) is an
+    unexpected artifact — previously such paths (e.g. a nested
+    `implementation-artifacts/notes/<other-story>.md`) fell through to the
+    project-code bucket and were silently committed under the current story,
+    bypassing artifact classification AND cross-story isolation.
     """
     if ARTIFACT_RE.match(path):
         if is_expected_artifact(path, key, epic, spec, cross_story_allowlist):
             return "expected"
+        return "unexpected_artifact"
+    if path.startswith(ARTIFACTS_DIR) and not TEST_ARTIFACT_RE.match(path):
+        # In the artifacts tree but not a recognized artifact shape and not a
+        # test artifact (those passed F1 already) → never project code (#32).
         return "unexpected_artifact"
     if spec["project_code"]:
         return "project"
     return "forbidden"
 
 
-def porcelain_paths():
-    """Return list of (xy, path) from `git status --porcelain`. For renames, take the new path.
+def _parse_porcelain_z(out):
+    """Parse `git status --porcelain -z` output into a list of (xy, path).
 
-    `core.quotepath=false` is injected by the `run()` helper so CJK paths
-    arrive as raw UTF-8 (otherwise the artifact classifier regex misses them).
+    -z entries are NUL-terminated `XY <path>` records; rename/copy entries
+    carry the ORIGINAL path as one extra NUL-terminated field after the new
+    path (we keep the new path, skip the original). Review 2026-06-10
+    finding #79: the line-oriented parser consumed C-quoted paths literally
+    (`?? "weird\\"quote.txt"` — core.quotepath=false only unescapes
+    non-ASCII, not quotes/control chars), so os.stat / classifiers /
+    `git add` all operated on a nonexistent literal path; and the ` -> `
+    substring split mis-parsed untracked filenames containing a literal
+    ` -> `. With -z, paths are always raw bytes (never quoted) and renames
+    are unambiguous fields — both failure modes are gone.
     """
-    r = run(["git", "status", "--porcelain"])
+    fields = out.split("\0")
+    entries = []
+    i = 0
+    while i < len(fields):
+        f = fields[i]
+        if len(f) < 4 or f[2] != " ":
+            i += 1
+            continue
+        xy = f[:2]
+        path = f[3:]
+        entries.append((xy, path))
+        # Rename/copy: skip the following orig-path field.
+        if "R" in xy or "C" in xy:
+            i += 2
+        else:
+            i += 1
+    return entries
+
+
+def porcelain_paths():
+    """Return list of (xy, path) from `git status --porcelain -uall -z`. For renames, take the new path.
+
+    `-uall` (review 2026-06-10 finding #1): without it, a fully-untracked new
+    directory collapses into a single `?? dir/` line, so files inside (e.g.
+    `config/.env`) were invisible to the blacklist scan and the whole dir got
+    `git add`ed as one opaque path. `-uall` expands every untracked file into
+    its own line. The step-6 unstaged-remainder check uses the same flags so
+    both reads share one path universe.
+
+    `-z` (finding #79): NUL-delimited raw paths — no C-quoting for filenames
+    containing quotes/backslashes/newlines, no ` -> ` rename ambiguity. CJK
+    paths arrive as raw UTF-8 (with -z that holds even without the
+    core.quotepath=false the `run()` helper injects).
+    """
+    r = run(["git", "status", "--porcelain", "-uall", "-z"])
     if r.returncode != 0:
         return None, r.stderr.strip()
     out = []
     seen = set()
-    for line in r.stdout.splitlines():
-        if len(line) < 4:
-            continue
-        xy = line[:2]
-        rest = line[3:]
-        if " -> " in rest:
-            rest = rest.split(" -> ", 1)[1]
+    for xy, rest in _parse_porcelain_z(r.stdout):
         if rest not in seen:
             seen.add(rest)
             out.append((xy, rest))
@@ -1776,10 +2241,11 @@ def main():
         "--simulate-retro-md-with-d-items",
         action="store_true",
         help=(
-            "Test-only: synthesize an in-memory retro markdown with 5 D items "
-            "(D1..D5) for stage 6 seed verification. Skips actual file IO and "
-            "requires --dry-run. Used by orchestration_observations_test.sh "
-            "T6.5 fixture."
+            "Test-only: run a self-contained stage-6 seed simulation "
+            "(synthetic retro md with 5 D items, tempdir-isolated copy of "
+            "sprint-status.yaml). Requires stage 6 + --epic; exits before any "
+            "git interaction, so real worktree/state is never touched "
+            "(--dry-run not required — review 2026-06-10 finding #75)."
         ),
     )
     args = parser.parse_args()
@@ -1815,6 +2281,15 @@ def main():
         emit(f"REASON=git status failed: {err}")
         sys.exit(1)
 
+    # 1b — junk-tier auto-skip (review 2026-06-10 findings #1/#7 red line;
+    # scope narrowed by R1 regression fix): untracked/newly-added .DS_Store /
+    # *.tmp / *.swp / __pycache__ / *.pyc paths NOT in HEAD are dropped from
+    # the working set before ANY gate runs — never staged, never a halt. One
+    # stderr NOTE per file. Tracked junk-pattern paths flow through the
+    # normal pipeline. A worktree that contains ONLY (untracked) junk counts
+    # as empty (skip_if_empty stages exit 2 as usual).
+    paths = filter_junk_paths(paths, dry_run=args.dry_run)
+
     if not paths:
         if spec["skip_if_empty"]:
             emit("STATUS=skip")
@@ -1840,6 +2315,7 @@ def main():
                 emit("STATUS=halt")
                 emit(f"REASON=git status failed after auto-resolve: {err}")
                 sys.exit(1)
+            paths = filter_junk_paths(paths, dry_run=args.dry_run)
 
     # 1.6 — auto-prune subagent-spilled extra .md artifacts (Opt 2;
     # harness-changelog 2026-05-03 §A). Applies to all stages; the rule
@@ -1855,6 +2331,7 @@ def main():
                 emit("STATUS=halt")
                 emit(f"REASON=git status failed after extra-prune: {err}")
                 sys.exit(1)
+            paths = filter_junk_paths(paths, dry_run=args.dry_run)
 
     # 1.7 — sprint-status auto-sync (chore-harness-epic-4-orchestration-observations T1)
     #
@@ -1863,7 +2340,12 @@ def main():
     # so the modified sprint-status.yaml gets picked up in the regular
     # porcelain re-fetch + classified as a global_files allowed path.
     auto_sync_log = []
-    if not args.dry_run or args.simulate_retro_md_with_d_items:
+    if not args.dry_run:
+        # NOTE (review 2026-06-10 finding #75): --simulate-retro-md-with-d-items
+        # exits earlier in main() via _run_seed_simulation (tempdir-isolated);
+        # a second, unreachable simulation branch used to live here — it would
+        # have written `_simulated-epic-N-retro.md` into the REAL artifacts
+        # dir had anyone resurrected it. Removed as dead code.
         try:
             applied = _sync_sprint_status_for_stage(args.stage, key, epic)
             for k, v in applied:
@@ -1876,33 +2358,11 @@ def main():
         # Stage 6: also seed retro_action_items.epic-${epic}-retro from retro md
         if args.stage == "6" and epic:
             try:
-                if args.simulate_retro_md_with_d_items:
-                    # Test-only: write a synthetic retro md to a temp file
-                    # and seed from it. Does not touch real worktree.
-                    tmp_md = os.path.join(ARTIFACTS_DIR.rstrip("/"), f"_simulated-epic-{epic}-retro.md")
-                    synthetic = (
-                        f"# Epic {epic} Retrospective (synthetic test fixture)\n\n"
-                        f"## 6. Action Items\n\n"
-                    )
-                    letter = _epic_letter(epic) or "Z"
-                    for n in range(1, 6):
-                        synthetic += f"### {letter}{n} — synthetic action item {n}\nAction: do thing {n}\n\n"
-                    os.makedirs(os.path.dirname(tmp_md), exist_ok=True)
-                    with open(tmp_md, "w", encoding="utf-8") as f:
-                        f.write(synthetic)
-                    retro_md = tmp_md
-                else:
-                    retro_md = _find_latest_retro_md(epic)
+                retro_md = _find_latest_retro_md(epic)
                 if retro_md:
                     seeded = _seed_retro_action_items(epic, retro_md, str(get_sprint_status_path()))
-                    for code, _title in seeded:
+                    for code, _title, _category in seeded:
                         auto_sync_log.append(("seed", f"epic-{epic}-retro.{code}", "pending"))
-                if args.simulate_retro_md_with_d_items:
-                    # cleanup synthetic md
-                    try:
-                        os.remove(tmp_md)
-                    except OSError:
-                        pass
             except RuntimeError as e:
                 emit("STATUS=halt")
                 emit(f"REASON=retro_action_items seed failed (stage 6): {e}")
@@ -1930,6 +2390,7 @@ def main():
                 emit("STATUS=halt")
                 emit(f"REASON=git status failed after auto-sync: {err}")
                 sys.exit(1)
+            paths = filter_junk_paths(paths, dry_run=args.dry_run)
 
     # 2 — global blacklist
     blacklist_hits = []
@@ -2089,7 +2550,18 @@ def main():
         sys.exit(1)
 
     # 5 — git add (unless dry-run)
-    paths_to_add = expected + project
+    #
+    # R1 follow-up (2026-06-10): entries whose worktree column is clean
+    # (xy[1] == " ") are already fully staged — there is nothing left to add.
+    # For staged deletions ('D ', e.g. a `git rm`'d tracked .DS_Store) a
+    # `git add -- <path>` would even hard-fail ("pathspec did not match any
+    # files" — the path exists in neither index nor worktree), turning a
+    # perfectly staged deletion into a bogus halt. Skipping clean-worktree
+    # entries is a no-op for 'A '/'M '/'R ' (already staged, file on disk)
+    # and the only correct behavior for 'D '.
+    xy_by_path = {p: xy for xy, p in paths}
+    paths_to_add = [p for p in expected + project
+                    if xy_by_path.get(p, "??")[1] != " "]
     if paths_to_add and not args.dry_run:
         r = run(["git", "add", "--"] + paths_to_add)
         if r.returncode != 0:
@@ -2103,15 +2575,19 @@ def main():
     if not args.dry_run:
         r_stat = run(["git", "diff", "--cached", "--stat"])
         cached_stat = r_stat.stdout.strip()
-        r_status = run(["git", "status", "--porcelain"])
+        # -uall -z keeps this check's path universe identical to
+        # porcelain_paths() (finding #1 — otherwise add'ed files inside a new
+        # dir would re-fold; finding #79 — same raw-path parsing, no C-quoting).
+        r_status = run(["git", "status", "--porcelain", "-uall", "-z"])
         unstaged = []
-        for line in r_status.stdout.splitlines():
-            if len(line) < 4:
+        for xy, rest in _parse_porcelain_z(r_status.stdout):
+            # Junk-tier files NOT in HEAD were intentionally skipped (never
+            # staged) — they are not "unstaged remainders" and must never halt
+            # (findings #1/#7 red line). Tracked junk-pattern paths went
+            # through the normal pipeline (R1 regression fix), so they get NO
+            # exemption here — same judgment as filter_junk_paths.
+            if matches_junk(rest) and not path_in_head(rest):
                 continue
-            xy = line[:2]
-            rest = line[3:]
-            if " -> " in rest:
-                rest = rest.split(" -> ", 1)[1]
             # Worktree column is xy[1]; non-space means unstaged remainder
             if xy[1] != " ":
                 unstaged.append(rest)

@@ -10,11 +10,20 @@
 # 评估流程：
 #   1. 读 .claude/harness/test-stage-triggers.yaml + harness-project-config.yaml
 #   2. 对每个 skill 按 trigger 类型计算 condition
-#   3. 任一 yaml 损坏 / 字段缺失 → fall back 到 defaults.fallback_skills + WARN
+#   3. 任一 yaml 损坏 / 字段缺失 → fall back 到内置 defaults（emit_defaults，
+#      硬编码在本脚本）+ WARN
 #   4. exit 0（任何路径都不阻调用方 — 由调用方按 JSON 决断）
 #
+# SoT 划分（review 2026-06-10 #15 收口）：
+#   - yaml 只承载每个 skill 的 `trigger:` 类型 + `conditions.keywords`（仅这两类
+#     字段被本脚本消费）。
+#   - 兜底 skill 集 = emit_defaults()（本脚本硬编码）；各 trigger 的产物路径 /
+#     探测目标 / 阈值 = 本脚本各评估段硬编码（T1 test-design 产物路径、T2
+#     node_modules 探测、CI spec glob、test-review 阈值 50）。改这些行为请改
+#     本脚本，不要改 yaml（yaml 里没有生效副本）。
+#
 # Sandbox / fail-open override：
-#   FORCE_DEFAULT=1   → 跳过真评估，直接吐 defaults.fallback_skills
+#   FORCE_DEFAULT=1   → 跳过真评估，直接吐内置 defaults
 #
 # 用法：
 #   bash .claude/harness/scripts/eval_test_stage_triggers.sh chore-retro-c1-A8 \
@@ -39,6 +48,9 @@ emit_bool() {
 }
 
 # ---- emit defaults JSON（fail-open / forced） ----
+# 这里就是兜底 skill 集的唯一 SoT（开 T1/T3/T4，其余 skip — 开箱即用的安全
+# 保守集）。yaml 曾有一份 defaults.fallback_skills 镜像，从未被任何代码消费，
+# review 2026-06-10 #15 已删，防双份 SoT 漂移。
 emit_defaults() {
     local reason="$1"
     printf '{"t1": true, "t2": false, "t3": true, "t4": true, "t5": false, "t6": false, "ci": false, "test_review": false, "teach": false, "reason": "%s"}\n' "$reason"
@@ -195,6 +207,8 @@ spec_has_keyword() {
 }
 
 # T1 test-design — once_per_project（产物不存在则触发；EPIC 空 → false）
+# 产物路径 SoT 在下方代码（$HARNESS_ARTIFACTS_ROOT/test_artifacts/epic-N-test-design.md），
+# 不在 yaml — review 2026-06-10 #15。
 T1=0
 EPIC_FROM_KEY=""
 if [ -n "$KEY" ]; then
@@ -224,6 +238,7 @@ if [ -n "$EPIC_FROM_KEY" ]; then
 fi
 
 # T2 framework — once_per_project（@playwright/test 已装则 skip）
+# 探测目标 SoT 在下一行代码（${FRONTEND_DIR}/node_modules/@playwright/test），不在 yaml。
 T2=0
 T2_TRIGGER="$(read_skill_trigger framework)"
 if [ ! -d "${FRONTEND_DIR}/node_modules/@playwright/test" ]; then
@@ -273,6 +288,7 @@ fi
 # CI — any_match（仅当 EVAL_CI_HINT=epic_done 显式传入 + 仓库无 e2e CI workflow 时触发）
 # MVP 决策：CI stage 不在 per-story invoke 时触发，避免对每条 story 都报 CI=true 噪声；
 # 真用例是 epic 收尾或首次 e2e spec 进仓时单次触发，由调用方显式传 EVAL_CI_HINT 信号。
+# spec glob / workflow 探测 pattern 的 SoT 在下方代码，不在 yaml。
 CI=0
 CI_TRIGGER="$(read_skill_trigger ci)"
 if [ "$CI_TRIGGER" = "any_match" ] && [ "${EVAL_CI_HINT:-}" = "epic_done" ]; then
@@ -294,6 +310,7 @@ if [ "$CI_TRIGGER" = "any_match" ] && [ "${EVAL_CI_HINT:-}" = "epic_done" ]; the
 fi
 
 # test-review — threshold（e2e_spec_count ≥ 50）
+# 阈值 50 的 SoT 在下方代码，不在 yaml。
 TEST_REVIEW=0
 TR_TRIGGER="$(read_skill_trigger test-review)"
 if [ "$TR_TRIGGER" = "threshold" ]; then

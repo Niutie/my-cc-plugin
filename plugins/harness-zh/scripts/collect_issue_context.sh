@@ -126,6 +126,13 @@ if [ -f "${HARNESS_SPRINT_STATUS_PATH:-}" ] && [ -x "$SCRIPT_DIR/sprint-status.p
     SPRINT_NEXT="$(python3 "$SCRIPT_DIR/sprint-status.py" next 2>/dev/null || echo none)"
 fi
 
+# ── Epic context line (rendered unconditionally in "## Project state") ─────
+# review 2026-06-10 #69：--epic 此前只在 halt block 内渲染 — 非 halt 类型
+# （bug/feature/other）传 --epic 即被静默丢弃，与 report-issue.md §1 把它列为
+# 通用上下文 flag 的契约不符。提升到 Project state 段无条件渲染。
+EPIC_LINE=""
+[ -n "$EPIC" ] && EPIC_LINE=$'\n'"- Epic context: $EPIC"
+
 # ── Story state (only if --story passed) ────────────────────────────────────
 STORY_BLOCK=""
 if [ -n "$STORY" ] && [ -x "$SCRIPT_DIR/harness-state.py" ]; then
@@ -189,7 +196,7 @@ $DESC
 
 - Git branch: \`$GIT_BRANCH\` @ \`$GIT_HEAD\` ($GIT_DIRTY)
 - Sprint position: $SPRINT_COUNT
-- Next backlog story: \`$SPRINT_NEXT\`
+- Next backlog story: \`$SPRINT_NEXT\`$EPIC_LINE
 
 ### harness-project-config.yaml fingerprint
 

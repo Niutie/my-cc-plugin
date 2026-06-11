@@ -4,7 +4,8 @@
 # bmad-create-story finalize sub-step + pre-commit hook（针对 [5-6]-1-*.md）；
 # 扫 spec 文件名抽 epic / story id；若 X-1-* 且 X > 1 → grep
 # `^## 继承自前序 Epic patterns$` 锚 + 5 行 sub-bullet 行 + 含
-# `Epic {X-1} Story` 引用 + 至少一个 `sealed-patterns-epic-` 链接；缺失 → exit 1。
+# `Epic {X-1} Story` 引用 + 至少一个 `sealed-patterns-epic-` 链接
+# （或同行 retro §9.5 锚点引用，小写文件名 / 大写空格两种形式均可）；缺失 → exit 1。
 #
 # 用法：
 #   bash .claude/harness/scripts/check_inheritance_block.sh <spec-path>
@@ -92,9 +93,9 @@ fi
 # sharded 文件再收紧）。Epic 4 第一 story（4.1）在 D5 立之前已 done — 仅向后
 # enforce（epic >= 5）；不回退打 already-done spec。
 if [ "$epic" -ge 5 ]; then
-    if ! echo "$block" | grep -qE "sealed-patterns-epic-|epic-${prev_epic}-retro.*9\.5|epic-${prev_epic}-retro.*sealed"; then
-        echo "FAIL: $SPEC 继承段缺 sealed-patterns 引用（必须含至少一个 \`sealed-patterns-epic-${prev_epic}.md\` 链接 OR Epic ${prev_epic} retro §9.5 锚点引用）" >&2
-        echo "      参考 sealed-patterns-epic-4.md 模板（D5 简化版兑现）；Epic ${prev_epic} retro §9.5 / 同段 sealed patterns 列表是另一兼容路径。" >&2
+    if ! echo "$block" | grep -qE "sealed-patterns-epic-|epic-${prev_epic}-retro.*9\.5|epic-${prev_epic}-retro.*sealed|Epic[[:space:]]+${prev_epic}[[:space:]]+retro.*9\.5"; then
+        echo "FAIL: $SPEC 继承段缺 sealed-patterns 引用（必须含至少一个 \`sealed-patterns-epic-${prev_epic}.md\` 链接 OR retro §9.5 锚点引用——同一行内 \`epic-${prev_epic}-retro-YYYY-MM-DD.md §9.5\` 或 \`Epic ${prev_epic} retro §9.5\` 形式均可）" >&2
+        echo "      参考 sealed-patterns-epic-4.md 模板（D5 简化版兑现）；retro §9.5 锚点引用 / 同段 sealed patterns 列表是另一兼容路径。" >&2
         exit 1
     fi
     echo "PASS: $SPEC Epic $epic Story 1 继承段完整（H2 锚 + ${sub_bullet_count} sub-bullet + Epic ${prev_epic} Story 引用 + sealed-patterns 链接）"

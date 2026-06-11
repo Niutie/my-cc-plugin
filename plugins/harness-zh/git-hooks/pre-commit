@@ -107,8 +107,11 @@ fi
 #       (expects `Story X.Y` short form).
 if $GIT diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
     # extract added lines (drop "+++" header marker; keep "+" body lines)
+    # `|| true`：纯删除 diff（清理/归档 FU 条目）时 grep -v 滤掉 +++ 头后输出为空、
+    # 管道末命令 exit 1，set -e 下整个 hook 无声崩死阻断 commit——与 line 55
+    # ADDED_PATHS 写法对齐；空值路径由下方 [ -n "$ADDED" ] 守卫天然安全。
     ADDED="$($GIT diff --cached --unified=0 -- "$DEFERRED_WORK_PATH" \
-             | grep -E '^\+' | grep -vE '^\+\+\+')"
+             | grep -E '^\+' | grep -vE '^\+\+\+' || true)"
 
     BAD_HEAD=""
     BAD_LEGACY=""

@@ -13,6 +13,10 @@
 
     python3 .claude/harness/scripts/sprint-status.py status <story_key>
         → 输出该 story 当前 status，找不到时退出码 1。
+          也接受 epic-* key（如 epic-4-retrospective / epic-4）—— review
+          2026-06-10 finding #77 之前 epic-* 被过滤恒 rc=1，迫使
+          harness-commit.py 的 stage 6 双 key 翻转跳过读取、无条件 set
+          （丢幂等 + 半套状态风险）。读写两侧现在对称（set 一直含 epic key）。
 
     python3 .claude/harness/scripts/sprint-status.py epic-of <story_key>
         → 输出该 story 所属 epic 编号（key 第一段）。
@@ -145,7 +149,11 @@ def cmd_count() -> int:
 
 
 def cmd_status(key: str) -> int:
-    for _, k, s in _iter_dev_status():
+    # include_epic_keys=True（finding #77）：epic-N-retrospective / epic-N 与
+    # story key 同住 development_status 块，set 一直可写它们，status 却读不到
+    # —— 读写不对称迫使 harness-commit.py 对 epic-* 跳过幂等检查。story key
+    # 查询行为不变（epic-* 只是不再被过滤）。
+    for _, k, s in _iter_dev_status(include_epic_keys=True):
         if k == key:
             print(s)
             return 0

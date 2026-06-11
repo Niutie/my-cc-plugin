@@ -29,6 +29,32 @@ DWSL_LEGACY_INLINE_RE='— (\*\*)?(Resolved|Partial resolution) by Story [0-9.]+
 DWSL_FU_HEAD_PREFIX_RE='^- \*\*FU-'
 DWSL_FU_RETRO_PREFIX_RE='^- \*\*FU-RETRO-'
 
+# ----------------------------------------------------------------------------
+# retro_action_items grammar constants (sprint-status.yaml NON-STANDARD YAML
+# block — see check_retro_action_items.sh header "Format note" for the shape).
+#
+# Single source of truth for the bash-side parsers (review 2026-06-10 #16/#17 —
+# before this, 4 parallel hand-written parsers had drifted: grep_prev_* still
+# used the pre-2026-05-05 code grammar `[A-Z][0-9a-z-]*` and a 5-value status
+# enum missing `migrated-upstream`):
+#   - check_retro_action_items.sh       (pre-commit gate ①, awk — via `awk -v`)
+#   - grep_pending_dev_retro_items.sh   (enumerator, awk — via `awk -v`)
+#   - process_retro_residue.sh          (stage 6.5 residue processor, bash =~)
+#   - grep_prev_retro_action_items.sh   (create-story snapshot, bash =~)
+#
+# SYNC CONTRACT with the canonical Python implementation: harness-commit.py
+# `_parse_retro_action_items` (Form 1 H3 / Form 2 table / Form 3 bold — the
+# F1+F2 2026-05-05 unification is where `[A-Z][A-Za-z0-9-]*` comes from) and
+# `_fill_chore_spec_field` (`code_re = ^    ([A-Z][A-Za-z0-9-]*):\s`).
+# harness-commit.py is canonical and does NOT source this file — any change
+# to the code grammar or status enum there MUST be mirrored here (and vice
+# versa). Status enum semantics: pending/in-progress block (dev category);
+# partial/deferred/done are terminal; migrated-upstream is a legacy terminal
+# alias treated like done (不阻不 WARN — bmad-retrospective-suffix.md).
+# ----------------------------------------------------------------------------
+DWSL_RAI_CODE_RE='[A-Z][A-Za-z0-9-]*'
+DWSL_RAI_STATUS_ENUM_RE='(pending|in-progress|partial|deferred|done|migrated-upstream)'
+
 # _dwsl_is_fu_head_line <line>
 # Returns 0 if line starts with `- **FU-`, else 1.
 _dwsl_is_fu_head_line() {

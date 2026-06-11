@@ -4,7 +4,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 
 | Plugin | Version | Purpose |
 |---|---|---|
-| **harness-zh** | 0.1.37 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **harness-zh** | 0.1.38 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 
 ---
 
@@ -98,7 +98,7 @@ Then in any project where you want to use harness-zh:
 /harness-zh:init
 ```
 
-This one-time bootstrap deploys plugin assets into the project's `.claude/harness/` + `.claude/commands/` directories, installs the git pre-commit hook, and (if BMad planning artifacts already exist) auto-fills the 14 fields of `harness-project-config.yaml`.
+This one-time bootstrap deploys plugin assets into the project's `.claude/harness/` + `.claude/commands/` directories, installs the git pre-commit hook, and (if BMad planning artifacts already exist) auto-fills the 16 fields of `harness-project-config.yaml`.
 
 ---
 
@@ -114,7 +114,7 @@ This one-time bootstrap deploys plugin assets into the project's `.claude/harnes
 | `/harness-zh:report-issue` | One-shot bug/feedback channel — auto-collect plugin version + current sprint/story state + halt site + recent commits, then open a GitHub issue against `Niutie/my-cc-plugin` via `gh` CLI. Halt-mode submissions also include a temporary workaround so you don't have to wait for the plugin fix to keep moving. Replaces the v0.1.14-0.1.25 `upstream-feedback.md` channel. Requires `gh` CLI installed + `gh auth login` done. | Halt / sprint wrap-up / ad-hoc |
 | `/harness-zh:codex-catchup` | **v0.1.27+** Catch up on stages 3+4 (codex adversarial review + dev fix) that were auto-skipped during `/harness-zh:run` because codex-in-cc was unavailable (plugin not installed / quota exhausted / not logged in). Scans `*.codex-skipped.json` markers, re-runs review + fix per story, archives marker as `*.codex-skipped.resolved.json`. Refuses to run if codex still unavailable. | After codex availability is restored |
 
-Run `/harness-zh:run --help` (or read `commands/run.md`) for flag reference (`--story`, `--epic`, `--continue`, etc.).
+`/harness-zh:run` accepts `--story [<key>]` / `--epic [<num>]` / `--continue` / `--dry-run` (no `--help` flag exists — running it with no args starts the full sprint loop). For the full flag semantics see the §0.0 / §5 parameter tables in [`plugins/harness-zh/commands/run.md`](plugins/harness-zh/commands/run.md) (deployed copy: `.claude/commands/run.md`).
 
 ---
 
@@ -138,6 +138,7 @@ For full runtime architecture (5-stage state machine, sprint-status.yaml schema,
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.1.38 | 2026-06-10 | 全量对抗式 review 收口（96 findings，详 `REVIEW-2026-06-10.md` + changelog）。安全门双洞：`harness-commit.py` porcelain 改 `-uall -z`（untracked 新目录内文件此前对 blacklist 扫描完全不可见）+ `**/` 改 gitignore 语义（仓库根目录 `.env`/`*.pem` 此前全绕过）；BLACKLIST 拆凭证 halt / 垃圾自动跳过两档。codex 降级链闭环：`*.codex-skipped.json` / `.resolved.json` 纳入各 stage expected（marker 不再触发 unexpected_artifact halt），catchup 归档随 stage 4 commit 入库、stage 3 review 窗口锚定 `harness/<KEY>/done` tag。retro 契约真实接线（suffix Read 强制注入 + `category: dev\|harness` 子键被 parser 消费）；状态机两阶段 read-then-set + `epic-*` key；E2E / artifacts 路径全走 harness_config SoT。测试体系重建：8 个 KNOWN_STALE 全修绿、新增 3 个回归测试、CI 3 job（含 macOS bash 3.2 真覆盖）。`prompt-templates/` 死资产删除；`release_check.sh` 版本门扩 4 处一致 + 2 道防漂移机检门。 |
 | 0.1.37 | 2026-06-10 | `read_harness_config.sh` 修 `_RHC_THIS` unset-after-source (closes #7)：source 末尾 unset 了函数**调用期**仍需的变量 → caller `set -u` + config yaml 在场时，任何 post-source `read_harness_config_field` 调用确定性 `unbound variable`，stage ⑥.5 `process_retro_residue.sh`（及同 pattern 的 `backfill_resolved_markers.sh`）对任意 epic exit 1。改为 `_RHC_SCRIPT_DIR` source 期绝对路径化且不 unset + 函数内 `${...:-}` 双保险；`process_retro_residue.sh` 6 个 `declare -a` 补 `=()`（次生崩溃区间实测为 bash ≥ 4.3 含现场 Debian 5.2，≤ 4.2/macOS 3.2 反而容忍）。函数入口硬化（无 key / `HARNESS_CONFIG_PATH` 被 unset 降级回 default 不杀 caller）；同族 sweep 顺带修 `eval_test_stage_triggers.sh` fail-open 契约破坏 + `lint_deferred_work.sh` `DWSL_*` 裸引（对齐 pre-commit 守护）。新增 `read_harness_config_issue7_test.sh`（deployed 式 fixture，变异校验 pre-fix 4/5 FAIL）。 |
 | 0.1.36 | 2026-06-03 | `harness-commit.py::_seed_retro_action_items` 顶层 `retro_action_items:` 父键缺失时自动 bootstrap (closes #6)。v0.1.35 放开 epic > 26 seeding 后，首个真正 seed retro_action_items 的 epic（epic 54）撞上「父键从未被 bootstrap」→ stage 6 `raise` halt + 建议 `/bmad-sprint-planning`（会重生成整个 236-story sprint，代价不成比例）。改为：父键缺失时在 EOF 自动补 `retro_action_items:` 行（脚本自管换行，规避「手工补键漏尾随换行 → 父键与 `  epic-N-retro:` 并行同物理行 → YAML 失效」的人工坑）再落子块，与既有子块自动创建对称；不再 halt、不再触发 sprint-planning。顺带修 `orchestration_observations_test.sh` T1.f9 陈旧断言（issue #5 后 epic 27→`AA` 不再 None，retarget 到非法 epic arg），新增 T1.f14 覆盖 #6 自动 bootstrap + 无尾随换行坑。 |
 | 0.1.35 | 2026-05-31 | `harness-commit.py` 三连修 (closes #5)，均为 epic 52/53 实跑暴露。**①** `_epic_letter()` 此前 epic > 26 返回 None → retro_action_items seeding + stage ⑥.5 residue pipeline 对 50s 编号 epic 静默失效；改双射 base-26（27→AA、52→AZ、53→BA），epic ≤ 26 完全向后兼容。**②** 凭证 BLACKLIST `**/*-credentials.json` 误伤 i18n 语言包（`web/src/i18n/locales/zh-CN/personal-credentials.json` 纯 UI 翻译文本）→ stage 2 halt；新增 i18n/locale 目录段 `.json` 豁免（真实凭证文件仍拦）。**③** `_bmad-output/` 下非 `implementation-artifacts/` 文件（如并行 `/bmad-brainstorming` 产出的 `brainstorming/*.md`）被当 project code 误 `git add` 进 story commit；新增 OUT_OF_SCOPE_BMAD gate 拦截 + 提示单独提交。新增 `harness_commit_issue5_test.sh`（5 fixture，源树直跑）。 |

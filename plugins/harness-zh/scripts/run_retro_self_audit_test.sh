@@ -1,11 +1,63 @@
 #!/usr/bin/env bash
 # run_retro_self_audit self-test
-# 实测脚本输出格式 + 表格行数 + 几个状态判定
+#
+# review 2026-06-10 #10/#95：此前 `cd ../../..` 后直接跑宿主树的
+# .claude/harness/scripts/run_retro_self_audit.sh — 源树没有部署副本，永远
+# 跑不了；且旧 check_A4 的 aegis 硬编码路径会刷 stderr 噪音。现改为自举
+# mktemp 沙箱 fixture：从同源树拷 scripts/ + prompt-suffixes/（源树布局
+# plugins/harness-zh/{scripts,prompt-suffixes} 与部署布局
+# .claude/harness/{scripts,prompt-suffixes} 相对结构一致，两边通跑），种子
+# sprint-status.yaml + deferred-work.md 后在 fixture 内实测：
+#   - 表头 / 行数 / A1 status enum / C9 自报 done（既有断言保留）
+#   - Phase A #95 新行为：check_A4 输出 unknown 行（aegis 死引用已删）
+#   - prev_epic=3 全程 stderr 干净（无 'No such file or directory' 噪音）
+#   - prev_epic=1 仅 A 系列 8 行
 set -euo pipefail
 
-cd "$(dirname "$0")/../../.."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUFFIX_DIR="$SCRIPT_DIR/../prompt-suffixes"
 
-OUT="$(bash .claude/harness/scripts/run_retro_self_audit.sh 3)"
+if [ ! -f "$SCRIPT_DIR/run_retro_self_audit.sh" ]; then
+    echo "ERROR: run_retro_self_audit.sh not found next to test" >&2
+    exit 1
+fi
+if [ ! -f "$SUFFIX_DIR/bmad-dev-story-suffix.md" ]; then
+    echo "ERROR: prompt-suffixes/bmad-dev-story-suffix.md not found at $SUFFIX_DIR" >&2
+    exit 1
+fi
+
+# ---- self-bootstrapped sandbox fixture (EXIT trap cleanup) ----
+WORKDIR="$(mktemp -d -t run_retro_self_audit_test.XXXXXX)"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+FIXTURE="$WORKDIR/proj"
+mkdir -p "$FIXTURE/.claude/harness/scripts" \
+         "$FIXTURE/.claude/harness/prompt-suffixes" \
+         "$FIXTURE/_bmad-output/implementation-artifacts"
+cp "$SCRIPT_DIR"/*.sh "$FIXTURE/.claude/harness/scripts/"
+cp "$SCRIPT_DIR"/*.py "$FIXTURE/.claude/harness/scripts/" 2>/dev/null || true
+chmod +x "$FIXTURE/.claude/harness/scripts/"*.sh
+cp "$SUFFIX_DIR"/*.md "$FIXTURE/.claude/harness/prompt-suffixes/"
+
+cat > "$FIXTURE/_bmad-output/implementation-artifacts/sprint-status.yaml" <<'YAML'
+development_status:
+  epic-1: done
+  epic-2: done
+  epic-3: done
+retro_action_items: {}
+YAML
+cat > "$FIXTURE/_bmad-output/implementation-artifacts/deferred-work.md" <<'YAML'
+# Deferred Work
+
+## 1. 总账
+
+（fixture — A6 §1 物化检查用）
+YAML
+
+cd "$FIXTURE"
+
+STDERR_E3="$WORKDIR/stderr-e3.log"
+OUT="$(bash .claude/harness/scripts/run_retro_self_audit.sh 3 2>"$STDERR_E3")"
 
 # 检查表头
 if ! echo "$OUT" | head -1 | grep -qE '^\| id \| 描述 \| status \| evidence \|$'; then
@@ -33,6 +85,30 @@ if ! echo "$a1_row" | grep -qE '\| (done|pending|partial|unknown) \|'; then
     exit 1
 fi
 
+# Phase A review #95：check_A4 不再 grep aegis 专属路径 — 输出 unknown 行
+# 并指引 clone 后按 PROJECT-SPECIFIC 声明重写
+a4_row="$(echo "$OUT" | grep '^| A4 ' || true)"
+if [ -z "$a4_row" ]; then
+    echo "FAIL: A4 行缺失" >&2
+    exit 1
+fi
+if ! echo "$a4_row" | grep -q '| unknown |'; then
+    echo "FAIL: A4 应输出 unknown（aegis 死引用已删，project-specific 待重写）；实际：$a4_row" >&2
+    exit 1
+fi
+if ! echo "$a4_row" | grep -q 'PROJECT-SPECIFIC'; then
+    echo "FAIL: A4 evidence 应指引 PROJECT-SPECIFIC 重写；实际：$a4_row" >&2
+    exit 1
+fi
+
+# Phase A review #95 连带：prev_epic=3 全程 stderr 必须干净（旧 check_A4 的
+# `wc -l < <aegis path>` not-found 报错刷屏已根除）
+if [ -s "$STDERR_E3" ]; then
+    echo "FAIL: prev_epic=3 stderr 应为空；实际：" >&2
+    head -5 "$STDERR_E3" >&2
+    exit 1
+fi
+
 # 检查 C9 行（脚本自身落地后应自报 done）
 c9_row="$(echo "$OUT" | grep '^| C9 ' || true)"
 if [ -z "$c9_row" ]; then
@@ -52,5 +128,5 @@ if [ "$e1_rows" -ne 8 ]; then
     exit 1
 fi
 
-echo "PASS: run_retro_self_audit_test.sh ($total_rows total rows for prev_epic=3, $e1_rows for prev_epic=1)"
+echo "PASS: run_retro_self_audit_test.sh ($total_rows total rows for prev_epic=3, $e1_rows for prev_epic=1; A4=unknown; stderr clean)"
 exit 0

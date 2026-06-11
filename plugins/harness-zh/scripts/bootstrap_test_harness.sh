@@ -26,6 +26,8 @@
 # 退出码：
 #   0   引导文本已写到 stdout + sprint-status seed 已就位
 #   1   sprint-status.yaml 路径异常 / yaml seed 失败 — 主 agent 走 §3 halt 模板
+#       （未知参数同为 1）
+#   2   参数错误 — --epic / --story 给了 flag 但缺值
 
 set -uo pipefail
 
@@ -33,10 +35,17 @@ EPIC="${EPIC:-4}"
 STORY="${STORY:-chore-retro-c1-A8-architecture-d-decisions-index}"
 
 # ---- 参数解析（接受 long 形式 --epic <n> / --story <k>） ----
+# review #53：flag 缺值时裸 `shift 2` 在 $#=1 下不移位且仅返回非 0（无 -e 不
+# 致命），while 条件永真 → 死循环挂死。改为 shift 前校验参数个数，缺值报错
+# exit 2。
 while [ $# -gt 0 ]; do
     case "$1" in
-        --epic)  EPIC="${2:-}"; shift 2;;
-        --story) STORY="${2:-}"; shift 2;;
+        --epic)
+            [ $# -ge 2 ] || { echo "ERROR: --epic requires a value" >&2; exit 2; }
+            EPIC="$2"; shift 2;;
+        --story)
+            [ $# -ge 2 ] || { echo "ERROR: --story requires a value" >&2; exit 2; }
+            STORY="$2"; shift 2;;
         *) echo "ERROR: unknown arg: $1" >&2; exit 1;;
     esac
 done

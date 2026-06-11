@@ -77,24 +77,17 @@ fi
 echo "| id | 描述 | status | evidence |"
 echo "|----|------|--------|----------|"
 
-# helper: file_exists path → echo PASS/FAIL
-file_exists() {
-    if [ -f "$1" ]; then echo "exists: $1"; return 0; fi
-    return 1
-}
-
-grep_count() {
-    local pat="$1"; local path="$2"
-    grep -cE "$pat" "$path" 2>/dev/null || echo 0
-}
-
 # ---- A1..A8 (Epic 1) ----
 check_A1() {
     # 端到端 smoke + sizing 实测；evidence: docs/sizing 报告中无 TBD
     local report="${ROOT}/docs/sizing/story-1-12-sizing-report.md"
     if [ ! -f "$report" ]; then echo "| A1 | 端到端 smoke + sizing 实测 | unknown | sizing-report.md missing |"; return; fi
     local tbd
-    tbd="$(grep -cE 'TBD|<待实测>' "$report" || echo 0)"
+    # review 2026-06-10 #14：grep -c 0 命中时自身已输出 "0" 且 rc=1，旧写法
+    # `|| echo 0` 再补一个 0 → tbd="0\n0"，-eq 比较 rc=2 走 else 分支 — A1 的
+    # done 分支永不可达。改与 check_A5/check_C4 同款 `|| true` + `${var:-0}`。
+    tbd="$(grep -cE 'TBD|<待实测>' "$report" 2>/dev/null || true)"
+    tbd="${tbd:-0}"
     if [ "$tbd" -eq 0 ]; then
         echo "| A1 | 端到端 smoke + sizing 实测 | done | $report 无 TBD/<待实测> |"
     else
@@ -114,13 +107,14 @@ check_A3() {
     fi
 }
 check_A4() {
-    local lines
-    lines="$(wc -l < "${ROOT}/console-api/cmd/aegis-cli/cmd_admin_init_test.go" 2>/dev/null | tr -d ' ' || echo 0)"
-    if [ "$lines" -ge 200 ]; then
-        echo "| A4 | admin_init 4 缺失分支测试 + bufio fix | done | cmd_admin_init_test.go = $lines lines |"
-    else
-        echo "| A4 | admin_init 4 缺失分支测试 + bufio fix | pending | cmd_admin_init_test.go = $lines lines（未达 ≥ 200 阈值） |"
-    fi
+    # review 2026-06-10 #95：原实现硬编码原项目（aegis）专属路径
+    # console-api/cmd/aegis-cli/cmd_admin_init_test.go — 通用 plugin 不携带
+    # 下游死引用（且 `wc -l < file 2>/dev/null` 的输入重定向失败发生在
+    # stderr 重定向生效之前，not-found 报错照样刷屏）。clone 后按本项目的
+    # A4 action item 重写本函数体；需要数行数时用
+    #   `wc -l "$f" 2>/dev/null | awk '{print $1}'`（或先 [ -f ] 判断）
+    # 才能真正抑制 not-found stderr。
+    echo "| A4 | admin_init 4 缺失分支测试 + bufio fix | unknown | project-specific check — 按头部 PROJECT-SPECIFIC 声明重写 check_A4() |"
 }
 check_A5() {
     local nfr

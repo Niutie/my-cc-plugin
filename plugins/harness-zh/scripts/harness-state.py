@@ -104,16 +104,35 @@ def tag_sha(tag):
     return None
 
 
-def find_commit_subject(subject):
-    """Return SHA of the most recent commit whose subject equals `subject`, or None."""
+def _load_commit_subjects():
+    """Run `git log --format=%H %s` once; return {subject: sha_of_most_recent}
+    or None on git error.
+
+    Review 2026-06-10 finding #78: compute_state used to call
+    find_commit_subject up to 6 times (5 STAGE_SUBJECTS + the stage2-base
+    fallback), each running a full-history `git log` — a 6× full traversal
+    per state query on large repos. One pass into a dict is
+    behavior-identical: git log lists newest-first and find_commit_subject
+    returned the first match, so keeping the first occurrence per subject
+    preserves "most recent SHA wins".
+    """
     r = run(["git", "log", "--format=%H %s"])
     if r.returncode != 0:
         return None
+    subjects = {}
     for line in r.stdout.splitlines():
         sha, _, subj = line.partition(" ")
-        if subj == subject:
-            return sha
-    return None
+        if subj and subj not in subjects:
+            subjects[subj] = sha
+    return subjects
+
+
+def find_commit_subject(subject):
+    """Return SHA of the most recent commit whose subject equals `subject`, or None."""
+    subjects = _load_commit_subjects()
+    if subjects is None:
+        return None
+    return subjects.get(subject)
 
 
 def read_sprint_status(key):
@@ -124,7 +143,14 @@ def read_sprint_status(key):
     return None
 
 
-def compute_state(key):
+def compute_state(key, porcelain_result=None):
+    """Compute pipeline state for `key`.
+
+    porcelain_result: optional pre-fetched `run(["git", "status",
+    "--porcelain"])` result — emit_resume_prompt passes its own copy so the
+    porcelain scan runs once per invocation (finding #78). Default None keeps
+    the standalone JSON/plain query path self-contained.
+    """
     state = {
         "key": key,
         "story_status": read_sprint_status(key),
@@ -133,20 +159,28 @@ def compute_state(key):
         "done_tag_exists": tag_exists(f"harness/{key}/done"),
     }
 
+    # One full git log fetch shared by the 6 subject lookups below (finding #78).
+    commit_subjects = _load_commit_subjects()
+
+    def _subject_sha(subject):
+        if commit_subjects is None:
+            return None
+        return commit_subjects.get(subject)
+
     # stage2_base_sha source priority: tag → stage 1 commit (legacy fallback)
     stage2_base = None
     if state["stage2_base_tag_exists"]:
         stage2_base = tag_sha(f"harness/{key}/stage2-base")
     if not stage2_base:
-        stage2_base = find_commit_subject(STAGE_SUBJECTS["stage1_committed"].format(key=key))
+        stage2_base = _subject_sha(STAGE_SUBJECTS["stage1_committed"].format(key=key))
     state["stage2_base_sha"] = stage2_base
 
     # Stage commit detection
     for k, subj_tpl in STAGE_SUBJECTS.items():
-        state[k] = find_commit_subject(subj_tpl.format(key=key)) is not None
+        state[k] = _subject_sha(subj_tpl.format(key=key)) is not None
 
     # Worktree clean check
-    r = run(["git", "status", "--porcelain"])
+    r = porcelain_result if porcelain_result is not None else run(["git", "status", "--porcelain"])
     state["worktree_clean"] = (r.returncode == 0) and (r.stdout.strip() == "")
 
     # Decide next action (highest-stage-completed wins)
@@ -250,9 +284,33 @@ import re
 PATH_GROUPS = get_path_classifiers()
 
 
+def _artifacts_exclude_prefix():
+    """Repo-relative prefix excluded from code grouping (with trailing slash).
+
+    Review 2026-06-10 finding #33: this used to be a hardcoded '_bmad-output/'
+    while count_artifact_changes() already followed the configured
+    artifacts_root — a custom artifacts_root mixed artifacts into the
+    project-code group counts. Widen to the parent dir ONLY when that parent
+    segment is named '_bmad-output' (the BMad output root also holds planning
+    artifacts that should stay out of code grouping — preserves the historical
+    '_bmad-output/' behavior for the default layout). Any other layout (e.g.
+    artifacts_root under docs/) keeps the exclusion at ARTIFACTS_DIR itself,
+    so real sibling files (docs/README.md next to docs/stories/) still show
+    up in the resume-prompt code grouping instead of silently vanishing.
+    """
+    parent = Path(ARTIFACTS_DIR.rstrip("/")).parent
+    if parent.name == "_bmad-output":
+        return str(parent) + "/"
+    return ARTIFACTS_DIR
+
+
+_ARTIFACTS_EXCLUDE_PREFIX = _artifacts_exclude_prefix()
+
+
 def group_worktree_changes(porcelain_output):
     """Parse `git status --porcelain` output. Returns dict of {group_name: count}.
-    Excludes _bmad-output/ paths (those are artifacts, tracked separately).
+    Excludes artifacts-root paths (those are artifacts, tracked separately —
+    see _artifacts_exclude_prefix).
     """
     counts = {}
     for line in porcelain_output.splitlines():
@@ -261,7 +319,7 @@ def group_worktree_changes(porcelain_output):
         rest = line[3:]
         if " -> " in rest:
             rest = rest.split(" -> ", 1)[1]
-        if rest.startswith("_bmad-output/"):
+        if rest.startswith(_ARTIFACTS_EXCLUDE_PREFIX):
             continue  # artifacts handled separately by stage spec
         matched = None
         for name, pat in PATH_GROUPS:
@@ -432,11 +490,15 @@ def has_section(key, section_title_substring):
 # all pass" cross-comparison instead of mistakenly assuming nothing's done.
 
 
-def _format_worktree_landing_summary():
+def _format_worktree_landing_summary(porcelain_result=None):
     """Group git status --porcelain by first-level directory; expand
     second-level when count > 5 (Q4 RESOLVED). Top 10 desc by count.
+
+    porcelain_result: optional pre-fetched porcelain run() result
+    (emit_resume_prompt passes its copy — finding #78); default None keeps
+    the helper standalone-callable (orchestration_observations_test.sh T3.f1).
     """
-    r = run(["git", "status", "--porcelain"])
+    r = porcelain_result if porcelain_result is not None else run(["git", "status", "--porcelain"])
     if r.returncode != 0:
         return "**worktree 落地清单**：（无法读 git status — fallback 到 no-op）"
     paths = []
@@ -552,8 +614,11 @@ def _format_dev_result_summary(key):
 
 def emit_resume_prompt(key, stage):
     """Print a ready-to-paste fresh-spawn prompt fragment for the given stage."""
-    state = compute_state(key)
-    porcelain = run(["git", "status", "--porcelain"]).stdout
+    # One porcelain fetch shared by compute_state / grouping / landing summary
+    # (finding #78 — these used to each run their own `git status --porcelain`).
+    porcelain_r = run(["git", "status", "--porcelain"])
+    state = compute_state(key, porcelain_result=porcelain_r)
+    porcelain = porcelain_r.stdout
     worktree_total = sum(1 for line in porcelain.splitlines() if line.strip())
     path_groups = group_worktree_changes(porcelain)
     artifact_counts = count_artifact_changes(porcelain)
@@ -587,7 +652,7 @@ def emit_resume_prompt(key, stage):
         # T3.1 + T3.2 + T3.3 (chore-harness-epic-4-orchestration-observations)
         # — checkbox 与 worktree 落地异步，三段交叉对比让 fresh subagent 不被
         # "0/104" 误导。互补不替代：checkbox 仍然显示。
-        out.append(_format_worktree_landing_summary())
+        out.append(_format_worktree_landing_summary(porcelain_r))
         out.append("")
         out.append(_format_git_diff_stat_summary())
         out.append("")
@@ -816,6 +881,30 @@ def emit_halt_recovery_check(key, stage):
     sys.exit(0)
 
 
+# KEEP IN SYNC with harness-commit.py `_STATUS_LINE_RE` + `_normalize_status_value`
+# (hand-copied to avoid the import dance on a hyphenated module name).
+# Review 2026-06-10 finding #76: the two copies had drifted — this one lacked
+# the `- Status:` list variant and its `(\w+)` capture only accepted
+# single-word values, so `Status: in-progress` / `Status: Ready for Review` /
+# `Status: done ✅` all read as None and the resume-prompt / halt-recovery
+# diagnostics mis-reported "Status 行缺失" for lines that exist.
+_STATUS_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s+)?\*{0,2}Status\*{0,2}\s*[:：]\s*(.*?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_status_value(raw):
+    """Strip markdown decoration / trailing emoji from a Status value and
+    lowercase it: `*review*` → `review`, `done ✅` → `done`,
+    `Ready for Review` → `ready for review`. Returns "" when nothing
+    survives the strip. (Mirror of harness-commit.py — keep in sync.)"""
+    v = raw.strip().strip("`").strip()
+    v = v.strip("*_").strip()
+    v = re.sub(r"[^\w-]+$", "", v)  # trailing emoji / punctuation decoration
+    return v.lower()
+
+
 def read_story_status_for_resume(key):
     """Lightweight Status reader (mirrors harness-commit.read_story_status without the import dance)."""
     path = f"{ARTIFACTS_DIR}{key}.md"
@@ -824,9 +913,12 @@ def read_story_status_for_resume(key):
     try:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
-                m = re.match(r"^\s*\*?\*?Status:?\*?\*?\s*(\w+)\s*$", line, re.IGNORECASE)
-                if m:
-                    return m.group(1).lower()
+                m = _STATUS_LINE_RE.match(line)
+                if not m:
+                    continue
+                v = _normalize_status_value(m.group(1))
+                if v:
+                    return v
     except OSError:
         pass
     return None

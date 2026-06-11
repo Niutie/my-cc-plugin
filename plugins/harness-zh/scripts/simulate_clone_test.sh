@@ -6,7 +6,9 @@
 #   2. cp 完整 harness：CLAUDE.md + .claude/ 全（含 commands/skills/harness/） +
 #      _bmad/{customize,custom}/（BMad-loaded customization 加载点）
 #   3. 在临时目录写最小 harness-project-config.yaml
-#   4. assert 新布局 4 个 harness/ 子目录全存在
+#   4. assert 新布局 harness/ 子目录全存在（scripts/conventions/prompt-suffixes/
+#      git-hooks/templates）+ prompt-templates/ 不得出现（review #30 停止分发）
+#      + scripts/prompt_template_lib.sh 被投递
 #   5. assert 0 残留旧路径（_bmad/scripts/ / _bmad/customizations/ / _bmad/templates/ /
 #      _bmad/git-hooks/ / .claude/scripts/ / .claude/harness-architecture.md / .claude/answer-policy.md）
 #   6. 跑 eval_test_stage_triggers.sh + assert JSON 合理
@@ -49,10 +51,12 @@ extra:
   container_count: 3
 YAML
 
-# ---- step 3: assert 4 个 harness 子目录全存在 ----
+# ---- step 3: assert harness 子目录全存在（review #30：prompt-templates 已
+# 停止分发，从必备清单移除；deploy_assets.sh SUBDIRS 现为
+# scripts/conventions/prompt-suffixes/git-hooks/templates） ----
 echo ""
-echo "==> assert 新布局 4 个 harness 子目录"
-for d in scripts prompt-suffixes prompt-templates git-hooks; do
+echo "==> assert 新布局 harness 子目录"
+for d in scripts conventions prompt-suffixes git-hooks templates; do
     if [ -d "$TMPDIR/.claude/harness/$d" ]; then
         echo "    ✓ .claude/harness/$d/ 存在"
     else
@@ -60,6 +64,29 @@ for d in scripts prompt-suffixes prompt-templates git-hooks; do
         exit 1
     fi
 done
+
+# ---- step 3b: review #30 反向断言 — prompt-templates/ 不得再出现在部署树
+# （4 个模板是 pre-schema-v1 死资产 + 含下游项目专属引用，已从 deploy
+# 清单移除；老项目残留由 manifest purge 对账清掉） ----
+echo ""
+echo "==> assert prompt-templates/ 不在部署树（已停止分发）"
+if [ -d "$TMPDIR/.claude/harness/prompt-templates" ]; then
+    echo "FAIL: .claude/harness/prompt-templates/ 仍存在 — review #30 要求停止分发该目录" >&2
+    ls "$TMPDIR/.claude/harness/prompt-templates" | head -5 >&2
+    exit 13
+fi
+echo "    ✓ .claude/harness/prompt-templates/ 不存在"
+
+# ---- step 3c: review #30 配套 — scripts/prompt_template_lib.sh 必须被投递
+# （prompt 模板占位符渲染收敛进共享 lib，replace 原 prompt-templates 机制） ----
+echo ""
+echo "==> assert scripts/prompt_template_lib.sh 被投递"
+if [ -f "$TMPDIR/.claude/harness/scripts/prompt_template_lib.sh" ]; then
+    echo "    ✓ .claude/harness/scripts/prompt_template_lib.sh 存在"
+else
+    echo "FAIL: .claude/harness/scripts/prompt_template_lib.sh 缺失 — deploy 清单未投递共享渲染 lib" >&2
+    exit 14
+fi
 
 # ---- step 4: assert 0 残留旧路径 ----
 echo ""
@@ -73,7 +100,6 @@ LEFTOVER_HITS="$(grep -rnE '_bmad/(scripts|customizations|templates|git-hooks)|\
     "$TMPDIR/.claude/harness/answer-policy.md" \
     "$TMPDIR/.claude/harness/scripts" \
     "$TMPDIR/.claude/harness/prompt-suffixes" \
-    "$TMPDIR/.claude/harness/prompt-templates" \
     "$TMPDIR/.claude/harness/git-hooks" \
     "$TMPDIR/_bmad/customize" \
     2>/dev/null \

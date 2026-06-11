@@ -9,6 +9,8 @@
 #                     → framework_installed=true / chromium_installed=false /
 #                       runtime_ready=false / all_available=false
 #   F4-3 全无         — node_modules 缺 → framework_installed=false / runtime_ready=false
+#   F4-3b pnpm 缺失   — 受控 PATH 无 pnpm → pnpm=false / version_check 缺
+#                       （review 2026-06-10 #96 补盲区）
 #
 # 通过 mock pnpm 一脚本（PATH 前置 mock 路径）+ 假 console-web/node_modules/@playwright/test
 # 目录 + 假 chromium cache 目录（用 AEGIS_ENV_PROBE_PLAYWRIGHT_CACHE 钩子 override）
@@ -77,10 +79,13 @@ trap 'rm -rf "$WORKDIR"' EXIT
 MOCK_BIN="$WORKDIR/mock-bin"
 mkdir -p "$MOCK_BIN"
 make_mock_pnpm "$MOCK_BIN"
-# Front-load mock dir on PATH so the env probe finds our fake pnpm
-# (only when this fixture wants pnpm to "succeed"). For "all missing"
-# fixture we run with original PATH minus mock so framework dir absence
-# is the determining factor.
+# Front-load mock dir on PATH so the env probe finds our fake pnpm. The mock
+# stays on PATH for ALL fixtures below — F4-3 ("全无") is driven purely by the
+# frontend dir being absent (framework_installed=false), NOT by pnpm absence.
+# The pnpm-absent probe branch is covered separately by F4-3b, which runs the
+# probe under a restricted PATH (symlink farm without any pnpm).
+# (review 2026-06-10 #96：此前这段注释声称 "run with original PATH minus
+# mock"，但实现从未恢复 PATH — 注释已对齐实现，pnpm 缺失分支由 F4-3b 真覆盖。)
 export PATH="$MOCK_BIN:$PATH"
 
 # ============================================================================
@@ -134,6 +139,49 @@ assert_field "F4-3" "$OUT" "framework_installed" "false"
 assert_field "F4-3" "$OUT" "chromium_installed"  "false"
 assert_field "F4-3" "$OUT" "runtime_ready"       "false"
 assert_field "F4-3" "$OUT" "all_available"       "false"
+# F4-3 全程带 mock pnpm 跑（见 PATH 注释）→ pnpm 字段应为 true，证明
+# framework_installed=false 完全由 console-web 目录缺失驱动
+assert_field "F4-3" "$OUT" "pnpm" "true"
+
+# ============================================================================
+# F4-3b: pnpm 命令缺失分支（review 2026-06-10 #96 — 此前无任何 fixture 覆盖
+#        probe 的 PNPM_RC=1 / PKG_MGR_RC=1 路径）
+#        受控 PATH：symlink farm 仅含 probe 必需工具、不含任何 pnpm —— 即使
+#        开发机装了真 pnpm 也探测不到。framework + chromium 都齐，唯独 pnpm
+#        缺 → version_check 跳过 → runtime_ready=false 且 reason 点名
+#        version_check，"pnpm": false。
+# ============================================================================
+echo "F4-3b: pnpm 缺失（受控 PATH 无 pnpm）→ pnpm=false + version_check 缺"
+CLEAN_BIN="$WORKDIR/clean-bin"
+mkdir -p "$CLEAN_BIN"
+# python3 经 sys.executable 解析真实解释器（绕开 pyenv/venv shim 对 PATH 的依赖）
+_real_py="$(python3 -c 'import sys; print(sys.executable)')"
+ln -s "$_real_py" "$CLEAN_BIN/python3"
+for _tool in bash sh find grep sed awk tr uname head dirname basename env; do
+    _p="$(command -v "$_tool" 2>/dev/null || true)"
+    [ -n "$_p" ] && [ ! -e "$CLEAN_BIN/$_tool" ] && ln -s "$_p" "$CLEAN_BIN/$_tool"
+done
+F3B_REPO="$WORKDIR/repo-no-pnpm"
+mkdir -p "$F3B_REPO/console-web/node_modules/@playwright/test"
+F3B_PW_CACHE="$WORKDIR/pw-cache-no-pnpm"
+mkdir -p "$F3B_PW_CACHE/chromium-1129"
+
+OUT="$(PATH="$CLEAN_BIN" AEGIS_ENV_PROBE_REPO="$F3B_REPO" \
+       AEGIS_ENV_PROBE_PLAYWRIGHT_CACHE="$F3B_PW_CACHE" \
+       bash "$ENV_SH")"
+assert_field "F4-3b" "$OUT" "pnpm"                "false"
+assert_field "F4-3b" "$OUT" "framework_installed" "true"
+assert_field "F4-3b" "$OUT" "chromium_installed"  "true"
+assert_field "F4-3b" "$OUT" "runtime_ready"       "false"
+assert_field "F4-3b" "$OUT" "all_available"       "false"
+# reason 应点名 version_check（pnpm 不可执行 → version 探测被跳过）
+if echo "$OUT" | grep -q "version_check"; then
+    echo "  ✓ F4-3b.reason 含 'version_check'"
+    PASS=$((PASS+1))
+else
+    echo "  ✗ F4-3b.reason 不含 'version_check' — out: $OUT" >&2
+    FAIL=$((FAIL+1))
+fi
 
 # ============================================================================
 # F4-4: harness-project-config.yaml 含 extra.frontend_dir='web' →

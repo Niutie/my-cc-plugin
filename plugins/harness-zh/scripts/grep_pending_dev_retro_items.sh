@@ -39,6 +39,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/read_harness_config.sh"
 SPRINT_STATUS="${1:-$HARNESS_SPRINT_STATUS_PATH}"
 
+# 共享 retro_action_items code 文法常量（review 2026-06-10 #16 — SoT 在
+# deferred_work_schema_lib.sh；lib 缺失时内联兜底，值必须与 lib 保持一致）。
+# 本脚本只过滤 pending/in-progress，status 枚举常量不需要。
+if [ -f "$SCRIPT_DIR/deferred_work_schema_lib.sh" ]; then
+    # shellcheck source=deferred_work_schema_lib.sh
+    source "$SCRIPT_DIR/deferred_work_schema_lib.sh"
+fi
+RAI_CODE_RE="${DWSL_RAI_CODE_RE:-[A-Z][A-Za-z0-9-]*}"
+
 if [ ! -f "$SPRINT_STATUS" ]; then
     echo "ERROR: sprint-status.yaml not found at $SPRINT_STATUS" >&2
     exit 2
@@ -61,7 +70,7 @@ fi
 # 每遇新 action item header / epic header / 块结束时 flush 上一项；仅 dev +
 # pending/in-progress 的项发 ITEM 行（其它 category / 终态静默跳过 —— 本脚本只
 # 关心 gate ① 阻塞类）。E1 CRLF strip 沿用。
-awk '
+awk -v rai_code_re="$RAI_CODE_RE" '
   function flush_item() {
     if (current_code != "") {
       if ((current_status == "pending" || current_status == "in-progress") \
@@ -85,7 +94,7 @@ awk '
     next
   }
 
-  in_block && /^[[:space:]]+[A-Z][A-Za-z0-9-]*:[[:space:]]/ {
+  in_block && $0 ~ ("^[[:space:]]+" rai_code_re ":[[:space:]]") {
     flush_item()
     code = $1
     sub(":$", "", code)

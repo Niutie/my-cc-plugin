@@ -10,13 +10,18 @@
 #   边界 F1-3 epic prefix 合法      — EPIC=4，commit test_artifacts/epic-4-test-design.md
 #   边界 F2-3 e2e spec 通过         — KEY=A，console-web/tests/e2e/A.spec.ts 改动
 #
+# review 2026-06-10 #10：HARNESS_PY 此前指向部署副本
+# $REPO_ROOT/.claude/harness/scripts/ — 源树跑不了、CI bootstrap 之外零覆盖。
+# 改为 $SCRIPT_DIR 同目录文件：源树布局（plugins/harness-zh/scripts/）和部署
+# 布局（.claude/harness/scripts/）里 harness-commit.py 都与本测试同目录，两边
+# 通跑。fixture 全是 mktemp git repo + --dry-run，无任何部署依赖。
+#
 # 整脚本退出码 = 失败 fixture 数（0 = 全过）。
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-HARNESS_PY="${REPO_ROOT}/.claude/harness/scripts/harness-commit.py"
+HARNESS_PY="$SCRIPT_DIR/harness-commit.py"
 
 if [ ! -f "$HARNESS_PY" ]; then
     echo "ERROR: harness-commit.py not found at $HARNESS_PY" >&2
@@ -26,6 +31,11 @@ fi
 PASS=0
 FAIL=0
 
+# All fixture repos live under one mktemp sandbox, cleaned by EXIT trap
+# (NOT RETURN trap — never fires at top level; review #94 bug class).
+WORKDIR="$(mktemp -d -t harness_isolation_test.XXXXXX)"
+trap 'rm -rf "$WORKDIR"' EXIT
+
 # ---- helpers ----
 init_fixture_repo() {
     # Creates a temp git repo, returns its path on stdout. Caller cd's into it.
@@ -34,9 +44,10 @@ init_fixture_repo() {
     # placeholders so subsequent untracked files inside them appear as
     # individual `?? path/file` lines in `git status --porcelain` instead
     # of collapsing to `?? dir/` (the default `--untracked-files=normal`
-    # behavior on un-tracked dirs). harness-commit.py uses bare porcelain.
+    # behavior on un-tracked dirs). harness-commit.py now passes -uall, but
+    # the pre-tracked layout also keeps fixture diffs minimal.
     local dir
-    dir="$(mktemp -d -t harness_isolation.XXXXXX)"
+    dir="$(mktemp -d "$WORKDIR/harness_isolation.XXXXXX")"
     (
         cd "$dir"
         git init -q

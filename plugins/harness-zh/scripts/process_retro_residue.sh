@@ -30,6 +30,42 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=read_harness_config.sh
 source "$SCRIPT_DIR/read_harness_config.sh"
+# shellcheck source=prompt_template_lib.sh
+if [ -f "$SCRIPT_DIR/prompt_template_lib.sh" ]; then
+    source "$SCRIPT_DIR/prompt_template_lib.sh"
+fi
+if ! declare -F render_prompt_template >/dev/null 2>&1; then
+    # 内联兜底：prompt_template_lib.sh 缺失（部分部署 skew — issue #7 同族；
+    # 与 lint_deferred_work.sh 的 DWSL_* 内联兜底同款约定）。逻辑必须与
+    # prompt_template_lib.sh::render_prompt_template 保持一致：awk index()
+    # 字面替换 + ENVIRON 传值（display name 含 & / \ 不损坏 — review
+    # 2026-06-10 #50；bash patsub 与 sed 在 3.2/5.2 间语义不一致，勿改回）。
+    render_prompt_template() {
+        HZH_PTL_DISPLAY_NAME="${2:-}" awk '
+            BEGIN {
+                repl = ENVIRON["HZH_PTL_DISPLAY_NAME"]
+                ph = "${project_display_name}"
+                plen = length(ph)
+            }
+            {
+                line = $0
+                out = ""
+                while ((i = index(line, ph)) > 0) {
+                    out = out substr(line, 1, i - 1) repl
+                    line = substr(line, i + plen)
+                }
+                print out line
+            }
+        ' "$1"
+    }
+fi
+# 共享 retro_action_items 文法常量（review 2026-06-10 #16/#17 — SoT 在
+# deferred_work_schema_lib.sh；lib 缺失时内联兜底，值必须与 lib 保持一致）。
+if [ -f "$SCRIPT_DIR/deferred_work_schema_lib.sh" ]; then
+    # shellcheck source=deferred_work_schema_lib.sh
+    source "$SCRIPT_DIR/deferred_work_schema_lib.sh"
+fi
+RAI_CODE_RE="${DWSL_RAI_CODE_RE:-[A-Z][A-Za-z0-9-]*}"
 ROOT="$HARNESS_REPO_ROOT"
 DEFAULT_SPRINT_STATUS="$HARNESS_SPRINT_STATUS_PATH"
 DEFAULT_ARTIFACT_DIR="$HARNESS_ARTIFACTS_ROOT"
@@ -119,7 +155,8 @@ fi
 # 简化 parser 假设：
 # - retro_action_items 顶层 key 唯一
 # - epic-N-retro 二级 key 唯一
-# - <code> 形如 [A-Z][0-9]+，行起始 ≥ 4 空格 + 紧跟冒号 + status
+# - <code> 文法 = $RAI_CODE_RE（共享常量，deferred_work_schema_lib.sh），行起始
+#   ≥ 4 空格 + 紧跟冒号 + status
 # - chore_spec 字段（如果存在）紧跟该 code 行下一行，缩进更深（≥ 6 空格）
 
 # 先用 awk 圈定整个 retro_action_items 块（顶层 key 起到下一个顶层 key），再在块内
@@ -149,7 +186,7 @@ if [[ -z "$RETRO_BLOCK" ]]; then
 fi
 
 # 从 RETRO_BLOCK 中提取 (code, status, chore_spec)
-# - code 行：^[[:space:]]+[A-Z][0-9]+:[[:space:]]+<status>(\s+#.*)?$
+# - code 行：^[[:space:]]+(${RAI_CODE_RE}):[[:space:]]+<status>(\s+#.*)?$
 # - chore_spec 行：紧跟其后；缩进 ≥ 4 空格（typical 6）；以 'chore_spec:' 开始
 
 # =() 显式初始化：`declare -a` 不赋值是 declared-but-unset，set -u 下
@@ -162,11 +199,12 @@ parse_block() {
     local prev_code=""
     while IFS= read -r line; do
         # 匹配 code: status 行
-        # Code 文法 [A-Z][A-Za-z0-9-]* 与 check_retro_action_items.sh / harness-commit.py
-        # 统一（2026-05-05 codex review F1+F2 修复 — 此前用 [A-Z][0-9]+ 漏 C-bootstrap /
-        # C-cond-triggers / C-codex-fixes / C-layout-consolidation / C-path-externalization /
-        # C-run-sprint-init 等 alphanumeric-dash code）
-        if [[ "$line" =~ ^[[:space:]]+([A-Z][A-Za-z0-9-]*):[[:space:]]+([a-zA-Z-]+)([[:space:]]+#.*)?$ ]]; then
+        # Code 文法与 check_retro_action_items.sh / harness-commit.py 统一
+        # （2026-05-05 codex review F1+F2 修复 — 此前用 [A-Z][0-9]+ 漏 C-bootstrap
+        # 等 alphanumeric-dash code）；review 2026-06-10 #16 起经共享常量
+        # $RAI_CODE_RE（deferred_work_schema_lib.sh）注入。
+        local rai_item_re="^[[:space:]]+(${RAI_CODE_RE}):[[:space:]]+([a-zA-Z-]+)([[:space:]]+#.*)?\$"
+        if [[ "$line" =~ $rai_item_re ]]; then
             CODES+=("${BASH_REMATCH[1]}")
             STATUSES+=("${BASH_REMATCH[2]}")
             CHORE_SPECS+=("")
@@ -211,8 +249,10 @@ for i in "${!CODES[@]}"; do
             PENDING_CODES+=("${CODES[$i]}")
             PENDING_STATUSES+=("$local_status")
             ;;
-        done|deferred)
-            # 跳过（终态或未触发）
+        done|deferred|migrated-upstream)
+            # 跳过（终态或未触发）。migrated-upstream 是 legacy 终态别名 — 视同
+            # done，不阻不 WARN（review 2026-06-10 #17：此前走 * 分支误报
+            # unknown status WARN，与 gate 的 6 值枚举漂移）。
             ;;
         *)
             echo "WARN: unknown status '${local_status}' for ${CODES[$i]} — skipping" >&2
@@ -242,8 +282,10 @@ echo "## ROLE & TASK INSTRUCTIONS（按下面 prompt 模板执行）"
 echo ""
 # 占位符替换 — \${project_display_name} 由 harness-project-config.yaml 提供值。
 # 设计原则：harness 通用化 — clone 到新项目时仅改 yaml，prompt 模板不动。
+# review 2026-06-10 #50：替换逻辑收敛进 prompt_template_lib.sh（字面替换，
+# display name 含 & / \ / 引号不再损坏输出或崩溃）。
 PROJECT_DISPLAY_NAME="$(read_harness_config_field project_display_name 'this project')"
-sed "s/\${project_display_name}/${PROJECT_DISPLAY_NAME//\//\\/}/g" "$PROMPT_TEMPLATE"
+render_prompt_template "$PROMPT_TEMPLATE" "$PROJECT_DISPLAY_NAME"
 echo ""
 echo "================================================================="
 echo "## 当前 batch 元信息"

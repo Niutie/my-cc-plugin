@@ -46,8 +46,31 @@ from harness_config import (  # noqa: E402
 
 # Resolve once at module load (relative-to-repo paths used in prompt strings)
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_ARTIFACTS_REL = str(get_artifacts_root().relative_to(_REPO_ROOT))
-_DEFERRED_WORK_REL = str(get_deferred_work_path().relative_to(_REPO_ROOT))
+
+
+def _rel_to_repo(p):
+    """Repo-relative str for prompt text; degrades to the absolute path + WARN.
+
+    Belt for review 2026-06-10 findings #73/#80: harness_config.get_artifacts_root()
+    already normalizes absolute / repo-escaping artifacts_root values, but this
+    script runs before every subagent spawn (run.md §−1.b) — a module-load
+    ValueError here would stall the whole pipeline with a bare traceback. If a
+    future regression lets an out-of-repo path through, the absolute string is
+    still perfectly usable inside prompt text, so never raise.
+    """
+    try:
+        return str(p.relative_to(_REPO_ROOT))
+    except ValueError:
+        print(
+            f"WARN [harness-prompt-suffix]: path '{p}' is not under repo root "
+            f"'{_REPO_ROOT}'; using the absolute path in prompt text",
+            file=sys.stderr,
+        )
+        return str(p)
+
+
+_ARTIFACTS_REL = _rel_to_repo(get_artifacts_root())
+_DEFERRED_WORK_REL = _rel_to_repo(get_deferred_work_path())
 _PROJECT_CONTEXT = get_project_context()
 _FULLSTACK_REVIEW_STEPS = get_fullstack_review_steps()
 
@@ -128,7 +151,7 @@ def _q6_block() -> str:
 
 纯重构 / 无新字段 story 整体答 `(a)-({letter(len(_FULLSTACK_REVIEW_STEPS)-1)}) 全部不适用 — 本 story 无新字段`（仍显式 {len(_FULLSTACK_REVIEW_STEPS)} 行）。
 
-参考已落地 dev story Dev Agent Record 的 Q6 答复模式（如本项目 Epic 3 Story 3.6 / 3.8 — 详 `.claude/harness/prompt-suffixes/bmad-dev-story-suffix.md` Q6 reference examples 段）建立答复体例。"""
+参考本项目已落地 dev story Dev Agent Record 的 Q6 答复模式建立答复体例（答复结构契约详 `.claude/harness/prompt-suffixes/bmad-dev-story-suffix.md` Q6 段；尚无已落地 story 时按上面 sub-bullet 格式直接作答）。"""
 
 
 Q6_FULLSTACK_REVIEW_BLOCK = _q6_block()

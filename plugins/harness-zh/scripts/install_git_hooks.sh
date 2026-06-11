@@ -34,12 +34,18 @@ ERROR: git config core.hooksPath = '$custom_hooks_path'
   ② 手动安装：cp '$SOURCE_DIR'/* '$custom_hooks_path/'  + chmod +x
   ③ 让本 installer 装到 core.hooksPath 路径：还没实现，按需提 issue
 EOF
-    exit 1
+    # exit 3 = 设计上的良性拒装（用户自定义 hooksPath），调用方按 WARN 处理；
+    # exit 1 留给真实安装失败（source 目录缺失 / cp/chmod 失败），调用方 halt/引导自查。
+    # 契约消费方：init.md §A.4.a / update.md §5+§7.3（review #58）。
+    exit 3
 fi
 
 # F14: 用 git-path 而非 .git/hooks/，worktree 兼容
-HOOKS_DIR="$(git rev-parse --git-path hooks)"
-# git-path 返回相对路径时，cd 到 REPO_ROOT 让相对解析对齐
+# review #18：`git rev-parse --git-path` 的相对输出是相对**CWD**而非 repo root；
+# 此前从子目录运行会拼出仓库外路径（静默装错位置 / mkdir 失败）。用 `git -C
+# "$REPO_ROOT"` 把解析基准锚定到 repo root，与下方拼接基准一致。
+HOOKS_DIR="$(git -C "$REPO_ROOT" rev-parse --git-path hooks)"
+# git-path 返回相对路径时（相对 REPO_ROOT，因上面 -C），拼绝对路径
 case "$HOOKS_DIR" in
     /*) ;;  # 已是绝对路径
     *) HOOKS_DIR="$REPO_ROOT/$HOOKS_DIR" ;;

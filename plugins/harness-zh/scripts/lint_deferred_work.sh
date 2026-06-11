@@ -77,17 +77,28 @@ TOTAL=0
 # Output buffer (collected, dumped to stdout at end for stable ordering)
 VIOLATIONS=""
 
-# Read line-by-line with line numbers
+# Tag-value extraction regexes (used with bash [[ =~ ]] / BASH_REMATCH).
+STATUS_EXTRACT_RE='`\[status:([^]`]*)\]`'
+TARGET_EXTRACT_RE='`\[target:([^]`]*)\]`'
+
+# review 2026-06-10 #51 主循环重写：
+#   - 全部判定改 bash 内建 `[[ =~ ]]`（同为 POSIX ERE，语义与原 grep -E 一致）—
+#     原实现每行 fork 最多 7 个 printf|grep/sed 子进程，千行文件数千次 fork，
+#     bash 3.2 macOS 上一次 lint 十几秒；现在整文件 0 fork。
+#   - excerpt 截断改 `${line:0:100}`（按字符）— 原 `head -c 100` 按字节切，
+#     CJK excerpt 会被切成非法 UTF-8，破坏 stdout 的 grep-friendly 机器契约。
+#   - 循环条件补 `|| [ -n "$line" ]` — 原实现在文件末行缺换行符时 read 返回
+#     非 0，最后一行不进循环，末行违规被静默漏检。
 LINE_NUM=0
-while IFS= read -r line; do
+while IFS= read -r line || [ -n "$line" ]; do
     LINE_NUM=$((LINE_NUM + 1))
 
     # Only check FU bullet head lines (lines starting with `- **FU-`)
     case "$line" in
         "- **FU-"*)
             # (c) FU-RETRO-* check (highest priority — namespace violation)
-            if printf '%s' "$line" | grep -qE '^- \*\*FU-RETRO-'; then
-                excerpt="$(printf '%s' "$line" | head -c 100)"
+            if [[ "$line" == "- **FU-RETRO-"* ]]; then
+                excerpt="${line:0:100}"
                 VIOLATIONS="${VIOLATIONS}${LINE_NUM}:c-fu-retro-namespace:${excerpt}"$'\n'
                 COUNT_C=$((COUNT_C + 1))
                 TOTAL=$((TOTAL + 1))
@@ -95,27 +106,29 @@ while IFS= read -r line; do
             fi
 
             # (a) Missing 4-tag head
-            if ! printf '%s' "$line" | grep -qE "$HEAD_FULL_RE"; then
-                excerpt="$(printf '%s' "$line" | head -c 100)"
+            if ! [[ "$line" =~ $HEAD_FULL_RE ]]; then
+                excerpt="${line:0:100}"
                 VIOLATIONS="${VIOLATIONS}${LINE_NUM}:a-missing-4tag-head:${excerpt}"$'\n'
                 COUNT_A=$((COUNT_A + 1))
                 TOTAL=$((TOTAL + 1))
                 continue
             fi
 
-            # Header is well-formed — extract status + target
-            status_val="$(printf '%s' "$line" | sed -E 's/.*`\[status:([^]`]*)\]`.*/\1/')"
-            target_val="$(printf '%s' "$line" | sed -E 's/.*`\[target:([^]`]*)\]`.*/\1/')"
+            # Header is well-formed — extract status + target via BASH_REMATCH
+            status_val=""
+            [[ "$line" =~ $STATUS_EXTRACT_RE ]] && status_val="${BASH_REMATCH[1]}"
+            target_val=""
+            [[ "$line" =~ $TARGET_EXTRACT_RE ]] && target_val="${BASH_REMATCH[1]}"
 
             # (e) Bad status value
-            if ! printf '%s' "$status_val" | grep -qE "$STATUS_VALID_RE"; then
+            if ! [[ "$status_val" =~ $STATUS_VALID_RE ]]; then
                 VIOLATIONS="${VIOLATIONS}${LINE_NUM}:e-bad-status:[status:${status_val}]"$'\n'
                 COUNT_E=$((COUNT_E + 1))
                 TOTAL=$((TOTAL + 1))
             fi
 
             # (b) Bad target value
-            if ! printf '%s' "$target_val" | grep -qE "$TARGET_VALID_RE"; then
+            if ! [[ "$target_val" =~ $TARGET_VALID_RE ]]; then
                 VIOLATIONS="${VIOLATIONS}${LINE_NUM}:b-bad-target:[target:${target_val}]"$'\n'
                 COUNT_B=$((COUNT_B + 1))
                 TOTAL=$((TOTAL + 1))
@@ -124,8 +137,8 @@ while IFS= read -r line; do
     esac
 
     # (d) Legacy inline suffix — anywhere in file (not just FU heads)
-    if printf '%s' "$line" | grep -qE "$LEGACY_INLINE_RE"; then
-        excerpt="$(printf '%s' "$line" | head -c 100)"
+    if [[ "$line" =~ $LEGACY_INLINE_RE ]]; then
+        excerpt="${line:0:100}"
         VIOLATIONS="${VIOLATIONS}${LINE_NUM}:d-legacy-inline-suffix:${excerpt}"$'\n'
         COUNT_D=$((COUNT_D + 1))
         TOTAL=$((TOTAL + 1))

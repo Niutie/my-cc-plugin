@@ -46,6 +46,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/read_harness_config.sh"
 SPRINT_STATUS="${1:-$HARNESS_SPRINT_STATUS_PATH}"
 
+# 共享 retro_action_items 文法常量（review 2026-06-10 #16 — code 正则与 status
+# 枚举的 SoT 在 deferred_work_schema_lib.sh，4 份 bash parser 收敛一份；lib 缺失
+# （部分部署 skew）时内联兜底，值必须与 lib 保持一致）。
+if [ -f "$SCRIPT_DIR/deferred_work_schema_lib.sh" ]; then
+    # shellcheck source=deferred_work_schema_lib.sh
+    source "$SCRIPT_DIR/deferred_work_schema_lib.sh"
+fi
+RAI_CODE_RE="${DWSL_RAI_CODE_RE:-[A-Z][A-Za-z0-9-]*}"
+RAI_STATUS_ENUM_RE="${DWSL_RAI_STATUS_ENUM_RE:-(pending|in-progress|partial|deferred|done|migrated-upstream)}"
+
 if [ ! -f "$SPRINT_STATUS" ]; then
     echo "ERROR: sprint-status.yaml not found at $SPRINT_STATUS" >&2
     exit 2
@@ -74,16 +84,13 @@ fi
 # E1: 显式 strip \r 容 Windows CRLF 入库。
 # E3: 未知 status（不在 5 值 enum 内）走 UNKNOWN 通道 + warn。
 # v2: 未知或缺失 category（不在 {dev, harness}）走 NOCAT 通道 + warn，但**不阻**。
-result="$(awk '
+# code 文法 / status 枚举经 awk -v 注入（值 = 共享常量，无反斜杠 — -v escape
+# 处理安全）；status 合法性用 anchored 动态正则替代逐值 != 链。
+result="$(awk -v rai_code_re="$RAI_CODE_RE" -v rai_status_re="$RAI_STATUS_ENUM_RE" '
   function flush_item() {
     if (current_code != "") {
       total++
-      if (current_status != "pending" \
-          && current_status != "in-progress" \
-          && current_status != "partial" \
-          && current_status != "deferred" \
-          && current_status != "done" \
-          && current_status != "migrated-upstream") {
+      if (current_status !~ ("^" rai_status_re "$")) {
         printf "UNKNOWN_STATUS  %s / %s / %s\n", current_epic, current_code, current_status
         unknown_status++
       } else if (current_status == "pending" || current_status == "in-progress") {
@@ -112,7 +119,7 @@ result="$(awk '
     next
   }
 
-  in_block && /^[[:space:]]+[A-Z][A-Za-z0-9-]*:[[:space:]]/ {
+  in_block && $0 ~ ("^[[:space:]]+" rai_code_re ":[[:space:]]") {
     flush_item()
     code = $1
     sub(":$", "", code)

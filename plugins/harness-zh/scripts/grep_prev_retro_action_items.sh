@@ -14,14 +14,35 @@
 #   → 扫 epic-1-retro + epic-2-retro + epic-3-retro 全部 action items
 #
 # 退出码：
-#   0  正常输出（含 all-clear / no-prev / block-missing 边界）
-#   2  sprint-status.yaml 路径不存在 / 参数非法
+#   0  正常输出（含 all-clear / no-prev / sprint-status-missing / block-missing
+#      边界 — warn-only，文件缺失走 stderr WARN + exit 0，不阻 spec 创建）
+#   2  参数非法
 #
-# 设计：纯 bash + grep + sed（POSIX 兼容；macOS BSD awk 不需 gawk match() 扩展）。
+# 设计：纯 bash + grep + awk（POSIX 兼容；macOS BSD awk 不需 gawk match() 扩展）。
 
 set -euo pipefail
 
-SPRINT_STATUS="${SPRINT_STATUS:-_bmad-output/implementation-artifacts/sprint-status.yaml}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# review 2026-06-10 #49：默认路径经 read_harness_config.sh 派生（artifacts_root
+# 可配置 + 绝对路径，与兄弟脚本对齐），不再硬编码 CWD 相对路径。SPRINT_STATUS
+# env override 保留（测试 fixture 用）。warn-only 脚本 — config 基础设施缺失
+# （部分部署 skew）时退回旧默认值继续，不 abort。
+if [ -f "$SCRIPT_DIR/read_harness_config.sh" ]; then
+    # shellcheck source=read_harness_config.sh
+    source "$SCRIPT_DIR/read_harness_config.sh"
+fi
+SPRINT_STATUS="${SPRINT_STATUS:-${HARNESS_SPRINT_STATUS_PATH:-_bmad-output/implementation-artifacts/sprint-status.yaml}}"
+
+# 共享 retro_action_items 文法常量（review 2026-06-10 #16/#17 — code 正则与
+# status 枚举的 SoT 在 deferred_work_schema_lib.sh；缺失时内联兜底，值必须
+# 与 lib 保持一致）。
+if [ -f "$SCRIPT_DIR/deferred_work_schema_lib.sh" ]; then
+    # shellcheck source=deferred_work_schema_lib.sh
+    source "$SCRIPT_DIR/deferred_work_schema_lib.sh"
+fi
+RAI_CODE_RE="${DWSL_RAI_CODE_RE:-[A-Z][A-Za-z0-9-]*}"
+RAI_STATUS_ENUM_RE="${DWSL_RAI_STATUS_ENUM_RE:-(pending|in-progress|partial|deferred|done|migrated-upstream)}"
 
 if [ "$#" -lt 1 ]; then
     echo "Usage: $0 <current_epic_num>" >&2
@@ -57,8 +78,12 @@ if ! grep -qE "^retro_action_items:" "$SPRINT_STATUS"; then
     exit 0
 fi
 
-# 抽 retro_action_items 块（首行 `^retro_action_items:` 到下一顶层 key）
-block="$(sed -n '/^retro_action_items:/,/^[a-zA-Z]/p' "$SPRINT_STATUS" | sed '$d')"
+# 抽 retro_action_items 块（首行 `^retro_action_items:` 之后到下一顶层 key 之前）。
+# review 2026-06-10 #13：旧实现 `sed -n '/start/,/end/p' | sed '$d'` 假设范围末行
+# 必是下一顶层 key — 当块位于文件末尾（issue #6 bootstrap / C1 seed 的常态布局）
+# 时范围延伸到 EOF，`$d` 误删最后一条真实 action item。改用 awk 状态机（与
+# grep_pending_dev_retro_items.sh 同款），不依赖该假设。
+block="$(awk '/^retro_action_items:/ { f = 1; next } f && /^[^[:space:]#]/ { exit } f { print }' "$SPRINT_STATUS")"
 
 echo "| Epic | Code | Status | chore_spec | 简述 |"
 echo "|------|------|--------|------------|------|"
@@ -97,7 +122,11 @@ while IFS= read -r line; do
     [ -z "$current_epic_label" ] && continue
 
     # action item: `    A1: pending` or `    A1: done    # comment`
-    if [[ "$line" =~ ^[[:space:]]+([A-Z][0-9a-z-]*):[[:space:]]+(pending|in-progress|partial|deferred|done)([[:space:]]*#[[:space:]]*(.*))?[[:space:]]*$ ]]; then
+    # review 2026-06-10 #17：code 文法 / status 枚举改用共享常量 —— 旧正则
+    # `[A-Z][0-9a-z-]*` 漏 mixed-case code（AA1 / A-1-Y2，F1+F2 统一文法），
+    # 5 值枚举漏 migrated-upstream，两者都导致整行从继承表静默消失。
+    rai_item_re="^[[:space:]]+(${RAI_CODE_RE}):[[:space:]]+${RAI_STATUS_ENUM_RE}([[:space:]]*#[[:space:]]*(.*))?[[:space:]]*\$"
+    if [[ "$line" =~ $rai_item_re ]]; then
         flush_row "(no spec)"
         pending_code="${BASH_REMATCH[1]}"
         pending_status="${BASH_REMATCH[2]}"

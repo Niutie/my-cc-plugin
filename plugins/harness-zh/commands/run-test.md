@@ -10,7 +10,7 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 
 **与 `/harness-zh:run` 共享的行为契约**：
 
-- **代答政策**：每个用 `Agent` / `SendMessage` 调度的 testarch 子 agent，prompt 末尾必须含"按 `.claude/harness/answer-policy.md` 自决，不要发问"。代答政策项目语境见 [`/answer-policy.md`](../answer-policy.md)。
+- **代答政策**：每个用 `Agent` / `SendMessage` 调度的 testarch 子 agent，prompt 末尾必须含"按 `.claude/harness/answer-policy.md` 自决，不要发问"。该文件只含跨项目**通用决策原则**（见 [`answer-policy.md`](../harness/answer-policy.md)）；项目特定语境按其自述由 `harness-prompt-suffix.py` 注入——run-test 的 testarch 子 agent（T 系 stage 无 suffix 入口）仅依赖通用原则自决。
 - **进度可视化**：用 TaskCreate 给本次 test sprint 建一个任务（标题形如 `Test Sprint: <key>`），stage 进入时 `in_progress`，完成时 `completed`。
 - **Commit 协议**：每次 commit 调 `python3 .claude/harness/scripts/harness-commit.py <stage> <key>`（stage 取值：`T1` / `T3` / `T4`）；不允许 `git add -A`。
 - **结构化校验信任链**：不做"广义错误词"文本扫描；产物缺失 / schema 不合规 / harness-commit 退出码 1 — 这三类硬错误才 halt。
@@ -31,7 +31,7 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 | Stage | 预期产出路径 | Commit msg 模板 |
 |---|---|---|
 | `T1` | `_bmad-output/implementation-artifacts/test_artifacts/epic-${EPIC}-test-design.md` + `sprint-status.yaml` | `test(epic-${epic}): test-design` |
-| `T3` | `_bmad-output/implementation-artifacts/test_artifacts/<key>.atdd-checklist.md` + `console-web/tests/e2e/<key>.spec.ts` + `sprint-status.yaml` | `test(<key>): atdd red-phase scaffold` |
+| `T3` | `_bmad-output/implementation-artifacts/test_artifacts/<key>.atdd-checklist.md` + `${FRONTEND_DIR}/${E2E_SUBDIR}/<key>.spec.ts`（占位符 = §0.1 解析值；默认 `console-web/tests/e2e`——harness-commit.py 的 e2e spec 白名单前缀与之同源读 config） + `sprint-status.yaml` | `test(<key>): atdd red-phase scaffold` |
 | `T4` | `_bmad-output/implementation-artifacts/test_artifacts/<key>-test-result.json` + `sprint-status.yaml` + `deferred-work.md`（fail/sandbox 时） | `test(<key>): atdd + e2e (run-sprint stage 5.5)` |
 
 每次 commit 退出码处理：
@@ -83,7 +83,19 @@ stage 跑或 skip 由后续每条 stage 的"触发判断"门决定（见 §1 各
 ENV_JSON=$(bash .claude/harness/scripts/check_test_harness_env.sh)
 ALL_AVAILABLE=$(echo "$ENV_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["all_available"])')
 REASON=$(echo "$ENV_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["reason"])')
+# 前端目录：probe JSON 已带 frontend_dir 字段（probe 自己从 harness-project-config.yaml 读，
+# 缺省 console-web）——不要在本文件硬编码目录名
+FRONTEND_DIR=$(echo "$ENV_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["frontend_dir"])')
+# e2e spec 子目录（相对 $FRONTEND_DIR）：probe JSON 不含该字段，从 config 读
+# （与 eval_test_stage_triggers.sh / harness-commit.py 的 e2e spec 白名单同源口径）
+source .claude/harness/scripts/read_harness_config.sh
+E2E_SUBDIR=$(read_harness_config_field e2e_test_subdir 'tests/e2e')
+echo "ALL_AVAILABLE=$ALL_AVAILABLE REASON=$REASON"
+echo "FRONTEND_DIR=$FRONTEND_DIR E2E_SUBDIR=$E2E_SUBDIR"
 ```
+
+把 `FRONTEND_DIR` / `E2E_SUBDIR` 绑定到对话上下文——§−1 产出表、§1 T3 prompt、§1 T4 执行块的
+e2e spec 路径全部以这两个值为准（默认 `console-web` + `tests/e2e`）。
 
 **三条分支**（v0.1.19 A 档加入 no-e2e clean skip 分流）：
 
@@ -145,13 +157,15 @@ prompt 核心：
 >
 > 产出文件：
 >   `_bmad-output/implementation-artifacts/test_artifacts/$KEY.atdd-checklist.md`
->   `console-web/tests/e2e/$KEY.spec.ts`
+>   `$FRONTEND_DIR/$E2E_SUBDIR/$KEY.spec.ts`
 >
 > spec.ts 是**红相 scaffold**（实施前先写测试），断言期望故事 spec ## Acceptance Criteria 段每条对应一个 e2e assertion；Playwright API 用 `@playwright/test` 标准 import；不依赖任何 fixtures（首次接通保持简单）。
 >
 > 必须以 non-interactive 模式运行，按 `.claude/harness/answer-policy.md` 自决。完成后停止，不要做任何 git 操作。
 
-**验收**：两个文件齐备 + spec.ts 含 `import { test, expect } from '@playwright/test'`。
+调度前主 agent 把 prompt 里的 `$FRONTEND_DIR` / `$E2E_SUBDIR` 替换为 §0.1 解析出的真实值——子 agent 拿到的必须是字面路径，不要把占位符原样发出去。
+
+**验收**：两个文件齐备（spec.ts 在 `$FRONTEND_DIR/$E2E_SUBDIR/` 下）+ spec.ts 含 `import { test, expect } from '@playwright/test'`。
 
 **Commit T3**：`python3 .claude/harness/scripts/harness-commit.py T3 $KEY` → STATUS=ok 用 SUGGEST_COMMIT_MSG 提交。
 
@@ -165,11 +179,14 @@ prompt 核心：
 **执行**：
 
 ```bash
-cd console-web
-pnpm e2e --grep "$KEY" 2>&1 | tee /tmp/harness-test-sprint-$KEY.log
-E2E_RC=$?
+cd "$FRONTEND_DIR"
+pnpm e2e --grep "$KEY" 2>&1 | tee "/tmp/harness-test-sprint-$KEY.log"
+E2E_RC=${PIPESTATUS[0]}   # pnpm 自身的退出码——直接取 $? 拿到的是 pipeline 末端 tee 的退出码（恒 0）
 cd ..
+echo "E2E_RC=$E2E_RC"
 ```
+
+> **RC 口径**：`E2E_RC` 必须经 `${PIPESTATUS[0]}`（bash 3.2 可用）取 `pnpm e2e` 进程本身的退出码；若本块在 zsh 下执行，等价写法是 `${pipestatus[1]}`。下表的 red / error 行依赖真实 RC——取 tee 的 `$?` 会让两行永远不可达、失败被误判。
 
 **结果分类**（按 `pnpm e2e` 退出码 + 解析 log）：
 
@@ -235,11 +252,11 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
    - 时间戳（ISO-8601）
    - 完整 env JSON（哪个维度 false → 解锁条件提示）
    - 调用上下文（独立 `/harness-zh:run-test --story` 还是 run-sprint stage 5.5）
-   - 解锁后补跑命令：`just test-sprint STORY=${KEY}`
+   - 解锁后补跑命令：`/harness-zh:run-test --story ${KEY}`
 
 2. 在 `_bmad-output/implementation-artifacts/deferred-work.md` 顶部 sandbox-bound section 追加一行：
    ```
-   - [ ] FU-Test-${KEY}-sandbox — atdd/e2e 在 sandbox 受限环境跳过（缺 X/Y），solo-dev 解锁后跑 `just test-sprint STORY=${KEY}`（生成 ${KEY}-test-result.json + 移除本 FU 项）
+   - [ ] FU-Test-${KEY}-sandbox — atdd/e2e 在 sandbox 受限环境跳过（缺 X/Y），solo-dev 解锁后跑 `/harness-zh:run-test --story ${KEY}`（生成 ${KEY}-test-result.json + 移除本 FU 项）
    ```
 
 3. 更新 `sprint-status.yaml` 的 `test_status:` 段：
@@ -251,11 +268,11 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
        sandbox_bound: true
    ```
 
-4. **commit 5-fallback 风格**：跑 `python3 .claude/harness/scripts/harness-commit.py T4 $KEY`（脚本路径白名单含 skipped-* + sprint-status + deferred-work；commit msg 模板有 sandbox 分支）。STATUS=ok → 用 SUGGEST_COMMIT_MSG 提交。
+4. **commit 5-fallback 风格**：跑 `python3 .claude/harness/scripts/harness-commit.py T4 $KEY`（脚本 T4 路径白名单含 skipped-* + sprint-status + deferred-work；commit msg 是统一模板 `test(<key>): atdd + e2e (run-sprint stage 5.5)`——**无** sandbox 专用分支，sandbox 路径也用同一后缀）。STATUS=ok → 用 SUGGEST_COMMIT_MSG 提交。
 
 5. **退出码 0**：不阻调用方（独立调用退出 0；run-sprint stage 5.5 调用时 main agent 继续走 stage 6）。
 
-**幂等性**：solo-dev 解锁后跑 `just test-sprint STORY=$KEY` → check_env all_available=true → 走 §1 流水线 → T4 commit 时 deferred-work.md 的 `FU-Test-${KEY}-sandbox` 行被本次 patch 移除（test_status entry 也覆写为 atdd=red/green）。
+**幂等性**：solo-dev 解锁后跑 `/harness-zh:run-test --story $KEY` → check_env all_available=true → 走 §1 流水线 → T4 commit 时 deferred-work.md 的 `FU-Test-${KEY}-sandbox` 行被本次 patch 移除（test_status entry 也覆写为 atdd=red/green）。
 
 ---
 
@@ -271,7 +288,7 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 | 写 `skipped-${KEY}-*.md` 标记 | ✅ 写 | ❌ 不写 |
 | 写 deferred-work `FU-Test-${KEY}-sandbox` | ✅ 写（待 solo-dev 解锁后清） | ❌ 不写 |
 | 改 sprint-status `test_status` 段 | ✅ 写 `sandbox_bound: true` | ❌ 不动 |
-| commit T4 | ✅ 走 sandbox 风格 commit msg | ❌ 不 commit（worktree 保持干净） |
+| commit T4 | ✅ 跑 T4 commit（统一 commit msg 模板，无 sandbox 专用分支） | ❌ 不 commit（worktree 保持干净） |
 | 调用方影响 | run-sprint 5.5 sanity gate 看 worktree 已被清干净 → STATUS=skip | run-sprint 5.5 sanity gate 看 worktree 一开始就干净 → STATUS=skip |
 | 幂等性 | solo-dev 装好 env 后重跑 → 翻 sandbox=true→false | 项目从 'none' 改成 'Playwright' 后重跑 → 自动走 §1/§4 |
 
@@ -310,8 +327,8 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 ## 引用
 
 - run-sprint 主流程：[`run.md`](run.md) — stage 5.5 嵌入由 chore C-bootstrap Phase C 落地
-- 代答政策：[`/answer-policy.md`](../answer-policy.md)
-- harness-commit T1/T3/T4 stage 路径白名单：[`/scripts/harness-commit.py`](../scripts/harness-commit.py)
+- 代答政策（通用决策原则；项目语境由 harness-prompt-suffix.py 注入）：[`answer-policy.md`](../harness/answer-policy.md)
+- harness-commit T1/T3/T4 stage 路径白名单：[`harness-commit.py`](../harness/scripts/harness-commit.py)
 - env probe：[`.claude/harness/scripts/check_test_harness_env.sh`](../../.claude/harness/scripts/check_test_harness_env.sh)
 - bootstrap orchestrator：[`.claude/harness/scripts/bootstrap_test_harness.sh`](../../.claude/harness/scripts/bootstrap_test_harness.sh)
 - 4 份 chore 元设计：[`architecture.md`](../harness/architecture.md) §二 / §五

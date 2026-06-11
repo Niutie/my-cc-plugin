@@ -24,7 +24,7 @@ allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 
 **共享行为契约**（与 init 一致）：
 - 代答政策：不调度子 agent；决策按 `.claude/harness/answer-policy.md` 自决
-- TaskCreate 任务 `Harness Update: <project>`（§1 启动 in_progress；§5 报告 completed）
+- TaskCreate 任务 `Harness Update: <project>`（§1 启动 in_progress；§6 报告 completed）
 - 资产部署幂等：cmp 比较 + backup + overwrite
 
 ---
@@ -83,7 +83,7 @@ inline bootstrap；完整 fallback chain（marketplaces/ 路径自动收）由
 ## 2. 项目侧目录预检 + 创建（防御 mid-update 删目录场景）
 
 ```bash
-mkdir -p .claude/harness/{scripts,conventions,prompt-suffixes,prompt-templates,git-hooks}
+mkdir -p .claude/harness/{scripts,conventions,prompt-suffixes,git-hooks}
 mkdir -p .claude/commands
 ```
 
@@ -101,10 +101,12 @@ mkdir -p .claude/commands
 | `$PLUGIN_ROOT/scripts/*` | `.claude/harness/scripts/` |
 | `$PLUGIN_ROOT/conventions/*` | `.claude/harness/conventions/` |
 | `$PLUGIN_ROOT/prompt-suffixes/*` | `.claude/harness/prompt-suffixes/` |
-| `$PLUGIN_ROOT/prompt-templates/*` | `.claude/harness/prompt-templates/` |
 | `$PLUGIN_ROOT/git-hooks/*` | `.claude/harness/git-hooks/` |
 | `$PLUGIN_ROOT/templates/*` | `.claude/harness/templates/` |
 | `$PLUGIN_ROOT/commands/*.md` | `.claude/commands/` |
+
+（`prompt-templates/` 已停止分发 — 4 个模板停留在 pre-schema-v1 语义且无任何运行时引用；
+老项目残留副本会被本节 manifest purge 自动清理 + 列入 §6 purged 清单。）
 
 **update 调 deploy_assets.sh 的三大不同点**（vs init）：
 
@@ -124,16 +126,20 @@ mkdir -p .claude/commands
    - init 首跑也写 manifest（不开 PURGE），让以后 update 能正常对账。
 2. **更详细的 stdout**（不设 DEPLOY_QUIET）：让 solo-dev 看到逐条 installed/updated/purged
    日志，便于即时审视。
-3. **purged > 0 时主动告警**：在 §5 报告里单独列已删孤儿清单，请 solo-dev 二次确认
+3. **purged > 0 时主动告警**：在 §6 报告里单独列已删孤儿清单，请 solo-dev 二次确认
    "是否还有项目侧脚本依赖被删的文件"。
 
 ```bash
 SUMMARY="$(DEPLOY_PURGE=1 bash "$PLUGIN_ROOT/scripts/deploy_assets.sh" "$PLUGIN_ROOT" "$PWD")"
+DEPLOY_EXIT=$?
+echo "DEPLOY_EXIT=$DEPLOY_EXIT"
 echo "$SUMMARY"
 # 例：deploy: installed=2 unchanged=64 updated=3 purged=2
 ```
 
-**purged > 0 处理流程**：解析 stdout 的 `purged=N` 数字。N > 0 时，§5 报告必须列出
+`DEPLOY_EXIT ≠ 0` 或 summary 含 `FAILED=` → **halt**（§7.2）：报告已部署计数 + stderr verbatim。
+
+**purged > 0 处理流程**：解析 stdout 的 `purged=N` 数字。N > 0 时，§6 报告必须列出
 被删文件清单（`stderr` 的 `purged: ...` 行 grep 出来），并明确告诉 solo-dev：
 
 > 这些文件在 v0.1.X 已从 plugin 中移除（参见 changelog）。如果项目自定义代码
@@ -142,11 +148,11 @@ echo "$SUMMARY"
 
 > **设计动机**：v0.1.26 删除 `extract_harness_feedback.sh` / `detect_harness_residue.sh`
 > 时暴露了原版 update 只 forward-copy 不清理的缺陷 —— 老项目升级后这两个 stale 脚本
-> 一直留着。0.1.27+ 用 manifest-based purge 解决（§5）。
+> 一直留着。0.1.27+ 用 manifest-based purge 解决（本节 purge + §6 报告二次确认）。
 
 ## 4. yaml 不动（硬约束）
 
-**绝对不**操作 `.claude/harness/harness-project-config.yaml`。该文件含 solo-dev 已填的项目配置（14 字段从 BMad 提取或手填），仅由 `/harness-zh:init` 在缺失时从 template 投放，由 solo-dev 编辑维护。
+**绝对不**操作 `.claude/harness/harness-project-config.yaml`。该文件含 solo-dev 已填的项目配置（16 字段从 BMad 提取或手填），仅由 `/harness-zh:init` 在缺失时从 template 投放，由 solo-dev 编辑维护。
 
 如 plugin 升级后 template 新增字段（schema 演进），diff 提示 solo-dev 手工补：
 
@@ -162,11 +168,13 @@ diff .claude/harness/harness-project-config.yaml \
 ```bash
 bash .claude/harness/scripts/install_git_hooks.sh
 HOOKS_EXIT=$?
+echo "HOOKS_EXIT=$HOOKS_EXIT"
 ```
 
-退出码处理同 init §A.4：
-- 0 → 报告
-- 1（`core.hooksPath` 已自定义）→ stderr WARN 给用户，不 halt
+退出码处理（installer 退出码语义：`0` 成功；`3` = hooksPath 良性拒装；其他非 0 = 真实安装失败）：
+- 0 → 进 §6 报告
+- 3（`core.hooksPath` 已自定义，installer 拒装避免 silent no-op — 良性）→ stderr WARN 给用户，不 halt
+- 其他非 0（含 1 — hook 源目录缺失 / cp、chmod 权限失败等真实安装失败）→ **halt**（§7.3）+ 贴 stderr verbatim — update 的触发场景 2 正是"项目侧资产被删/改坏"，hook 重装失败必须响亮失败而非伪装成 hooksPath WARN
 
 ## 6. 报告
 
@@ -174,9 +182,16 @@ HOOKS_EXIT=$?
 ✅ /harness-zh:update — 资产同步完成
 
 【部署统计】
-  - $INSTALLED installed / $UNCHANGED unchanged / $UPDATED updated
+  - $INSTALLED installed / $UNCHANGED unchanged / $UPDATED updated / $PURGED purged
   - yaml: 未触动（按设计；如需 schema 升级见下方 diff 提示）
-  - git hooks: <installed / unchanged | WARN: core.hooksPath ...>
+  - git hooks: <installed / unchanged | WARN: core.hooksPath ...（exit 3 良性拒装）>
+
+【purged 清单】（仅 $PURGED > 0 时输出本块；数据来自 §3 deploy stderr 的 `purged:` 行）
+  - <被删文件路径 1>（备份：<路径 1>.bak.<TS>）
+  - <被删文件路径 2>（备份：...）
+  ⚠️ 请二次确认：项目侧脚本 / `.claude/commands/` 自定义命令 / `_bmad/customize/` 是否
+     还引用上述文件；如有，改引用替代品（参见 changelog 对应版本条目）；确认无误后
+     可删 `.bak.<TS>` 备份。
 
 【下一步建议】
   ① 查看被覆盖前的备份：ls .claude/harness/**/*.bak.<ts>（可放心删，确认无误后）
@@ -195,8 +210,8 @@ HOOKS_EXIT=$?
 下列任一命中立即 halt + 用户介入：
 
 1. §1 plugin 路径探测两路 fallback 全 miss → halt + 报错（同 §1 ERROR 块）
-2. §3 单文件 cp 失败（permission / 磁盘满 / 源文件缺失）→ halt + 报告失败 src/dst + 已部署计数（partial state；solo-dev 自决继续/回滚）
-3. install_git_hooks.sh exit ≠ 0 且 ≠ 1（参数错误 / 内部 bug）→ halt + 贴 stderr verbatim
+2. §3 deploy_assets.sh `DEPLOY_EXIT ≠ 0` 或 summary 含 `FAILED=`（单文件 cp 失败：permission / 磁盘满 / 源文件缺失）→ halt + 报告失败 src/dst + 已部署计数（partial state；solo-dev 自决继续/回滚）
+3. install_git_hooks.sh exit ≠ 0 且 ≠ 3（真实安装失败：hook 源目录缺失 / cp、chmod 权限失败 / 参数错误 / 内部 bug；exit 3 = hooksPath 良性拒装仅 WARN）→ halt + 贴 stderr verbatim
 4. runtime quota 信号 → 与 init / run 同款配额模板
 
 **Halt 模板**：

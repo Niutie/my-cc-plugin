@@ -93,18 +93,81 @@ jobs:
           # Pin the fixture path for downstream test steps
           echo "FIXTURE_DIR=$FIXTURE_DIR" >> "$GITHUB_ENV"
 
-      - name: Run pre_commit_deferred_schema_test.sh (gate ② regression)
+      # Sweep EVERY deployed test instead of a hand-picked subset. Review
+      # #10/#40: the previous 4 hand-listed steps left 5 KNOWN_STALE tests
+      # ungated anywhere (source job downgraded their failures to SKIP, this
+      # job never ran them) while run_all_tests.sh claimed "bootstrap CI runs
+      # it". A glob sweep cannot rot when tests are added or renamed.
+      #
+      # NOTE: run_all_tests.sh KNOWN_STALE references this step by its name
+      # ("Run deployed *_test.sh suite inside fixture") — keep them in sync.
+      - name: Run deployed *_test.sh suite inside fixture
         working-directory: ${{ env.FIXTURE_DIR }}
-        run: bash .claude/harness/scripts/pre_commit_deferred_schema_test.sh
+        run: |
+          set -uo pipefail
+          # Exclusions (each must state why + where the test IS gated):
+          #   orchestration_observations_test.sh — T2.f3 greps the plugin
+          #     SOURCE tree (${SCRIPT_DIR}/../commands/run-test.md by design);
+          #     the deployed layout has commands at .claude/commands/, not
+          #     .claude/harness/commands/, so it can only run source-tree.
+          #     It is source-tree green and gated by the source-tests job.
+          FAILED=0
+          for t in .claude/harness/scripts/*_test.sh; do
+            name="$(basename "$t")"
+            case "$name" in
+              orchestration_observations_test.sh)
+                echo "SKIP $name (source-tree-only; gated by source-tests job)"
+                continue
+                ;;
+            esac
+            log="$RUNNER_TEMP/$name.log"
+            if bash "$t" >"$log" 2>&1; then
+              echo "PASS $name"
+            else
+              rc=$?
+              echo "FAIL $name (rc=$rc)"
+              echo "  ---- last 40 lines of $name output ----"
+              tail -n 40 "$log" | sed 's/^/  | /'
+              echo "  ---------------------------------------"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          echo "deployed-suite failures: $FAILED"
+          exit "$FAILED"
 
-      - name: Run harness_commit_isolation_test.sh
-        working-directory: ${{ env.FIXTURE_DIR }}
-        run: bash .claude/harness/scripts/harness_commit_isolation_test.sh
+  # Review #41: ubuntu-only CI (bash 5.x) is blind to bash-3.2-only breakage
+  # (e.g. `set -u` + empty-`"${arr[@]}"` expansion crashes on 3.2 but not on
+  # >= 4.4, while `declare -a` without assignment crashes on >= 4.3 but not
+  # on 3.2 — issue #7). macOS system bash is frozen at 3.2.57 (GPLv3), which
+  # is exactly the runtime this plugin promises to support on developer Macs.
+  macos-bash32-tests:
+    name: macOS bash 3.2 tests (source-tree suite)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Run simulate_clone_test.sh
-        working-directory: ${{ env.FIXTURE_DIR }}
-        run: bash .claude/harness/scripts/simulate_clone_test.sh
+      # macOS runners ship a python3, but pin via setup-python so the version
+      # is deterministic and pip-installing PyYAML targets the same
+      # interpreter the tests invoke.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      - name: Run run_retro_self_audit_test.sh
-        working-directory: ${{ env.FIXTURE_DIR }}
-        run: bash .claude/harness/scripts/run_retro_self_audit_test.sh
+      - name: Install PyYAML
+        run: pip install pyyaml
+
+      - name: Assert /bin/bash is 3.x
+        # Fail loudly if the runner image ever stops shipping bash 3.2 —
+        # a silent upgrade would quietly void this job's entire purpose.
+        run: |
+          /bin/bash -c 'echo "system bash: $BASH_VERSION"'
+          /bin/bash -c '[ "${BASH_VERSINFO[0]}" = 3 ] || { echo "ERROR: /bin/bash is no longer 3.x — bash-3.2 coverage lost, update this job" >&2; exit 1; }'
+
+      - name: Run plugin self-test suite under /bin/bash 3.2
+        # PATH=/bin first so nested bare `bash` invocations inside the runner
+        # and the tests also resolve to the system 3.2 binary (not any
+        # Homebrew bash 5.x that may appear on the image). /bin holds only
+        # system binaries, so prepending it cannot shadow setup-python.
+        run: PATH="/bin:$PATH" /bin/bash plugins/harness-zh/scripts/run_all_tests.sh

@@ -38,4 +38,14 @@ fi
 # auth probe — that consumes quota and would defeat the purpose of cheap
 # pre-flight. Trust the path; downstream in-flight detection (run.md stage 3
 # stderr regex) catches auth/quota at first invocation.
-printf '{"available": true, "reason": "ok", "binary_path": "%s", "remediation": null}\n' "$FOUND"
+#
+# review #56：binary_path 不再裸插值进 JSON（路径含 `"` / `\` 时输出坏 JSON，
+# 下游 json.load 直接炸）。与 check_test_harness_env.sh v0.1.21 fix #2 对齐用
+# python3 json.dumps；python3 不在场时退化到 sed 转义 `\` 和 `"`（输出仍合法）。
+if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json, sys
+print(json.dumps({"available": True, "reason": "ok", "binary_path": sys.argv[1], "remediation": None}))' "$FOUND"
+else
+    _esc="$(printf '%s' "$FOUND" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+    printf '{"available": true, "reason": "ok", "binary_path": "%s", "remediation": null}\n' "$_esc"
+fi

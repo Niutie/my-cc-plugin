@@ -41,7 +41,6 @@ fi
 ### 1.2 detector 脚本在场
 
 ```bash
-DETECT="bash .claude/harness/scripts/detect_deferred_work_schema.sh"
 if [ ! -x ".claude/harness/scripts/detect_deferred_work_schema.sh" ]; then
     cat <<'EOF'
 ERROR: .claude/harness/scripts/detect_deferred_work_schema.sh 不存在或不可执行
@@ -57,21 +56,30 @@ fi
 ## 2. 跑 detector + 解析 JSON
 
 ```bash
-DETECT_JSON="$($DETECT 2>/dev/null)"
+# stderr 捕到临时文件（不丢弃 — 异常分支要 verbatim 贴进 halt 报告）
+DETECT_ERR="$(mktemp -t harness-dw-detect-stderr-XXXXXX)"
+DETECT_JSON="$(bash .claude/harness/scripts/detect_deferred_work_schema.sh 2>"$DETECT_ERR")"
 DETECT_EXIT=$?
+echo "DETECT_EXIT=$DETECT_EXIT"
+printf '%s\n' "$DETECT_JSON"
+echo "DETECT_ERR=$DETECT_ERR"
 ```
 
 按 exit code 处理：
 
 | DETECT_EXIT | 含义 | 行为 |
 |---|---|---|
-| `0` | 成功，JSON 含 classification | 进 §3 分类分支 |
+| `0` | 成功，JSON 含 classification | `rm -f` 上面 echo 的 DETECT_ERR 字面路径 → 进 §3 分类分支 |
 | `2` | deferred-work.md 不存在 | emit 提示 + 跑 `/harness-zh:init`（init §A.3.b 会 bootstrap）→ 退出 |
-| 其他 | detector 异常 | emit JSON + stderr verbatim + halt（怀疑 plugin 缺陷可跑 `/harness-zh:report-issue` 直提 issue） |
+| 其他 | detector 异常 | emit JSON + stderr verbatim（`cat` 上面 echo 出的 `DETECT_ERR=` 字面路径 — 新 Bash 调用里变量已失效）+ halt（怀疑 plugin 缺陷可跑 `/harness-zh:report-issue` 直提 issue） |
+
+> stderr 里可能混有 `read_harness_config` 的良性 `WARN` 行（如 artifacts_root 未设回落
+> 默认值）——emit 时注明来源即可，不影响分类，**不要**因此丢弃整个 stderr。
 
 从 JSON 提取（用 `python3 -c` 或 `jq`，按项目 toolchain 选）：
 
 ```bash
+# DETECT_JSON 用上一块 printf 出的字面 JSON 代入（跨 Bash 调用变量不持久）
 CLASSIFICATION="$(printf '%s' "$DETECT_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("classification",""))')"
 FU_TOTAL="$(printf '%s' "$DETECT_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("fu_total",0))')"
 FU_V1="$(printf '%s' "$DETECT_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("fu_v1",0))')"
@@ -79,13 +87,19 @@ FU_LEGACY_HEAD="$(printf '%s' "$DETECT_JSON" | python3 -c 'import sys,json; prin
 FU_LEGACY_INLINE="$(printf '%s' "$DETECT_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("fu_legacy_inline_resolved",0))')"
 FU_RETRO_NS="$(printf '%s' "$DETECT_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("fu_retro_namespace",0))')"
 V1_PCT="$(printf '%s' "$DETECT_JSON" | python3 -c 'import sys,json; print(round(json.load(sys.stdin).get("v1_pct",0)*100,1))')"
+
+# 块尾输出全部后续消费的状态（§3 emit 模板引用）
+echo "CLASSIFICATION=$CLASSIFICATION FU_TOTAL=$FU_TOTAL FU_V1=$FU_V1 V1_PCT=$V1_PCT"
+echo "FU_LEGACY_HEAD=$FU_LEGACY_HEAD FU_LEGACY_INLINE=$FU_LEGACY_INLINE FU_RETRO_NS=$FU_RETRO_NS"
 ```
 
 读当前 mode：
 
 ```bash
+YAML_DST=".claude/harness/harness-project-config.yaml"
 CURRENT_MODE="$(grep -E '^deferred_work_mode:' "$YAML_DST" | head -1 | sed -E "s/^deferred_work_mode:[[:space:]]+//;s/^['\"]//;s/['\"]$//")"
 [ -z "$CURRENT_MODE" ] && CURRENT_MODE="strict"  # 缺字段视为 strict（plugin 升级前装的旧 yaml）
+echo "CURRENT_MODE=$CURRENT_MODE"
 ```
 
 ---
@@ -152,6 +166,7 @@ sed yaml-update 片段 + archive 片段 + 指南文本块）：
 #### 3.3.A）Advisory
 
 ```bash
+YAML_DST=".claude/harness/harness-project-config.yaml"
 if grep -qE "^deferred_work_mode:" "$YAML_DST"; then
     sed -i.bak -E "s/^deferred_work_mode:.*$/deferred_work_mode: 'advisory'/" "$YAML_DST"
     rm -f "$YAML_DST.bak"
@@ -177,8 +192,13 @@ emit OK：
 `mv`；任何步骤失败必须**回滚**已 `mv` 的归档文件，避免主账本永久缺失。
 
 ```bash
-DW_DIR="_bmad-output/implementation-artifacts"
-DW_DST="$DW_DIR/deferred-work.md"
+# 步骤 0: 账本路径 SoT — 与 §2 detector 同源（read_harness_config.sh 从 yaml
+# artifacts_root 派生），避免 artifacts_root 配成非默认值时「detector 检查的文件」
+# 与「本分支归档的文件」错位（归档错对象 / 空白模板写错位置）
+YAML_DST=".claude/harness/harness-project-config.yaml"
+source .claude/harness/scripts/read_harness_config.sh
+DW_DST="$HARNESS_DEFERRED_WORK_PATH"
+DW_DIR="$(dirname "$DW_DST")"
 
 # 步骤 1: 解析 plugin templates/ 路径（同 /harness-zh:init §A.0 / update §1 同款 2-tier bootstrap）
 # 完整 fallback chain 由 $PLUGIN_ROOT/scripts/discover_plugin_root.sh 维护单份 SoT；
@@ -229,8 +249,10 @@ if [ -f "$ARCHIVE_PATH" ]; then
     ARCHIVE_PATH="$DW_DIR/deferred-work.legacy-pre-schema-v1.$(date +%Y%m%d-%H%M%S).md"
 fi
 
-# 步骤 4: mv 归档；步骤 5: 写入新模板，**失败必须 rollback** mv
-mv "$DW_DST" "$ARCHIVE_PATH"
+# 步骤 4: mv 归档（失败即停 — 此刻未做任何修改，绝不能带着错位状态继续写模板/翻 mode）
+mv "$DW_DST" "$ARCHIVE_PATH" || { echo "ERROR: 归档 mv 失败（${DW_DST} → ${ARCHIVE_PATH}）— 未做任何修改，流程终止" >&2; exit 1; }
+
+# 步骤 5: 写入新模板，**失败必须 rollback** mv
 
 WRITE_OK=0
 if [ "$SOURCE_MODE" = "plugin-template" ]; then
@@ -256,7 +278,8 @@ else
 
 ---
 
-（暂无延后项 — 第一条 FU 由 dev / review / chore agent 按 schema v1 写入。）
+（暂无延后项 — 第一条 FU 由 dev / review / chore agent 按 schema v1 写入；
+按出生时间挂在新增的 `## Deferred from: <source-描述> (YYYY-MM-DD)` 章节下。）
 TPL
     then
         WRITE_OK=1
@@ -266,7 +289,8 @@ fi
 if [ "$WRITE_OK" != "1" ]; then
     # Rollback: 把刚 mv 走的 legacy 文件搬回来
     mv "$ARCHIVE_PATH" "$DW_DST"
-    cat <<'ERREOF' >&2
+    # 定界符不加引号 — 正文需要展开三个诊断变量（无反引号 / 其他 $ 需保护）
+    cat <<ERREOF >&2
 ERROR: greenfield 写入新 deferred-work.md 失败 — 已回滚归档操作。
        PLUGIN_ROOT='${PLUGIN_ROOT}'  TEMPLATE_PATH='${TEMPLATE_PATH}'  SOURCE_MODE='${SOURCE_MODE}'
        检查文件系统权限 / 磁盘空间 / plugin 路径，再重跑 /harness-zh:upgrade-deferred-work。
@@ -279,6 +303,9 @@ if grep -qE "^deferred_work_mode:" "$YAML_DST"; then
     sed -i.bak -E "s/^deferred_work_mode:.*$/deferred_work_mode: 'strict'/" "$YAML_DST"
     rm -f "$YAML_DST.bak"
 fi
+
+# 块尾输出后续 emit 模板消费的状态
+echo "SOURCE_MODE=$SOURCE_MODE ARCHIVE_PATH=$ARCHIVE_PATH"
 ```
 
 emit OK：

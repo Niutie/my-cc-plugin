@@ -11,6 +11,233 @@
 
 ---
 
+## v0.1.38 — 2026-06-10 — 全量对抗式 review 收口：96 findings 八主题修复 + 测试体系重建 + 发布门加固
+
+### 触发
+
+对 plugin 全资产（python / bash / md 编排协议 / prompt-suffixes / 测试 / CI / 文档）做了
+一轮全量对抗式 review，产出 96 条 findings（1 critical / 11 high / 35 medium / 49 low，
+每条带验证者复核记录；另 15 条候选被验证驳回留档）。完整清单见仓库根
+`REVIEW-2026-06-10.md`——下文括号内 `#N` 即该报告 finding 编号。本版按八个主题块收口。
+
+### 改动范围
+
+**一、安全门双洞（#1 critical / #7 high / #79，`harness-commit.py`）**
+
+- porcelain 扫描改 `git status --porcelain -uall -z`（#1）：旧 `--porcelain` 把整个
+  untracked 新目录折叠成 `dir/` 一行，目录**内部**的 blacklist 文件（凭证/密钥）对扫描
+  完全不可见——子 agent 新建 `config/` 塞一个 `aws-credentials.json` 整目录被静默
+  `git add`。`-uall` 展开到每个文件；`-z` 走 NUL 分隔原始路径，顺带修 #79（C-quoted
+  路径：文件名含双引号/换行不再对错误的字面路径操作）。
+- `glob_match` 改 gitignore 语义（#7）：`**/` 此前至少吃一段目录 → **仓库根目录**的
+  `.env` / `*.pem` / `credentials.json` 全部绕过安全门。现 `**/` 匹配零段起，根目录与
+  深层路径同等被拦。
+- BLACKLIST 拆两档（#1/#7 修复的衍生设计——洞补上后 junk 文件开始可见，不能全 halt）：
+  凭证档（`.env*` / `*.pem` / `*.key` / credentials 族 / `**/secrets/**`）维持
+  `STATUS=halt`；垃圾档（`.DS_Store` / `*.tmp` / `*.swp` / `__pycache__` / `*.pyc`）
+  改自动跳过 + stderr `NOTE: skipped junk file: <path>` 一行，不 stage、不 halt——
+  不再为一个 .DS_Store 卡死整条 story 流水线。垃圾档**只对不在 HEAD 的路径生效**
+  （regression R1 收口：tracked 文件的修改 / `git rm` 删除照常走流水线入 commit；
+  `*.log` 从垃圾档移除——.log 是常见合法项目文件，构建日志归项目 .gitignore 管）。
+- 新增 `harness_commit_blacklist_test.sh`（21 断言）：根目录凭证被拦 / 新目录嵌套凭证
+  被拦（pre-fix 两者全漏）/ junk 自动跳过 + NOTE / tracked .log 修改与 tracked
+  .DS_Store 删除不被误剔（R1 回归）/ i18n 豁免（issue #2/#5 路径）回归。
+
+**二、codex 降级链端到端闭环（#4 high / #6 high / #38 / #82）**
+
+- `<KEY>.codex-skipped.json` 纳入 stage 2/4/5 expected-output 契约、
+  `<KEY>.codex-skipped.resolved.json` 纳入 stage 3/4/5（#4）：此前 marker 在任何 stage
+  都被判 `unexpected_artifact` → 走 graceful-skip 的 story 在 stage 5 commit 必 halt，
+  `/harness-zh:codex-catchup` 又被同一个 marker 卡死——优雅降级机制实际从未端到端走通。
+  现 stage 5 把 marker 随 commit 入库，catchup 的 stage 4 commit 把 `.resolved.json`
+  归档结果一并带走。
+- codex-catchup §4 重排（#6）：§4.6 归档 marker 挪到 stage 4 commit（§4.7）**之前**，
+  归档结果随 commit 入库——旧顺序归档发生在 commit 后，`.resolved.json` 永远是 untracked
+  残留，下一个 story 的 §4.2 dirty-worktree 检查撞上自己上一轮的产物自锁 halt。§4.2
+  同步放宽：允许本命令已知的归档残留形态在场（其余 dirty 仍 halt）。
+- catchup stage 3 review 窗口锚定（#38）：review diff 改锚 `harness/<KEY>/done` tag +
+  detached worktree——旧口径复用 `--base stage2_base` 但 HEAD 已含后续 story 的全部
+  提交，codex 看到的是污染窗口；锚定失败走显式降级口径（`CATCHUP_WT_ACTIVE=0`，
+  §4.5 按"仅处理本 story finding"自决）。
+- run.md §3 防护表的"配额关键词命中即 halt"标注 **stage 3 例外**（#82）：阶段 ③ codex
+  subagent 的 quota/auth 命中不 halt，按 §③.1 skip+marker 处理（catchup-friendly），
+  与 §−1.b 的 halt 总则交叉引用消歧。
+
+**三、retro 契约真实接线（#5 high / #29 / #72 / #8 high / #16 / #17 / #28）**
+
+- Form 1 格式契约送达通道（#5）：run.md 阶段 ①（create-story）与阶段 ⑥（retro，含
+  §0.C retro-only 路径）的 subagent prompt 模板注入**强制 Read 契约**——"先 Read
+  `.claude/harness/prompt-suffixes/bmad-create-story-suffix.md` / `bmad-retrospective-suffix.md`
+  并全程遵守"。此前 suffix 写明 Form 1 / Category / Pre-retro self-audit 契约但没有任何
+  机制把文件送到 subagent 眼前，stage 6 fail-loud halt 全靠碰运气（issue #6 secondary
+  的三连 halt 根因）。
+- `**Category**: dev|harness` 声明被真实消费（#29）：`_parse_retro_action_items` 改返回
+  `(code, title, category)` 三元组（新增 `_extract_item_category`，仅 Form 1 H3 块有
+  per-item 声明通道；Form 2/3 恒 None），seeder 给 yaml 写 `category: dev|harness` 子键；
+  未声明/非法值 → 不写子键 + stderr WARN，gate 侧把无 category 项按 NOCAT 通道处理
+  （WARN 不阻，等效 harness；dev 强约束在补分类前不生效）。
+  retro suffix 的 Category 声明从死字段变成 `grep_pending_dev_retro_items.sh` /
+  `check_retro_action_items.sh` 真实读取的数据。新增 `retro_category_round_trip_test.sh`
+  双向回归。
+- follow-through 过滤补整文件兜底路径（#72）：旧实现只在找到 canonical §Action items
+  时过滤上期 recap，整文件兜底扫描会把上期 `AI-N.M` 表格 seed 进当前 epic——现兜底扫描
+  前先切除 follow-through / carryover 段。
+- EOF 换行全分支归一化（#8，issue #6 的剩余分支收口）：`_seed_retro_action_items` /
+  `_fill_chore_spec_field` 所有写入路径先确保现有内容以 `\n` 收尾再追加，文件末行无
+  换行符时不再产出粘连的损坏 YAML（0.1.36 只修了父键缺失分支）。
+- 4 份 retro_action_items parser 的文法/枚举收敛进 `deferred_work_schema_lib.sh`
+  （#16/#17）：`check_retro_action_items.sh` / `grep_pending_dev_retro_items.sh` /
+  `process_retro_residue.sh` / `grep_prev_retro_action_items.sh` 统一吃 lib 常量
+  （awk 经 `awk -v`、bash 经 `=~`），code 文法对齐多字母 epic letter、status 枚举补
+  `migrated-upstream`——四处各自漂移的状态机收口为单一 SoT。
+- create-story suffix 的 `chore-retro-c<epic>-*.md` 放行说明改为与 harness-commit.py
+  实际 stage 范围一致（#28），照做不再必 halt。
+
+**四、状态机与配置 SoT（#77 / #76 / #9 high / #33 / #80 / #60 / #24）**
+
+- `_sync_sprint_status_for_stage` 改两阶段 read-then-set（#77）：先全部读出当前值
+  算出需要翻转的集合，再统一写入——幂等（current == target 即 skip）、stage 6 双 key
+  （`epic-N-retrospective` + `epic-N`）翻转不再有半途 halt 留半套状态的窗口。
+  `sprint-status.py` `cmd_status` 支持 `epic-*` key（此前被 story-key 过滤恒 rc=1）、
+  新增 `next-in-epic <num>` 子命令（#35 配套）。
+- `read_story_status` 容多词 status（#76）：`in-progress` / `Ready for Review` 不再被
+  误报为 Status 行缺失；与 harness-state.py 的副本同步。
+- E2E 路径去硬编码（#9）：`harness_config.py` 新增 `get_frontend_dir()` /
+  `get_e2e_test_subdir()` getter（quiet fallback），harness-commit.py 的 F2 E2E spec
+  白名单前缀由两者派生；run-test.md T3/T4 改占位符渲染，不再写死 `console-web`。
+- 三处原始项目硬编码改 config 派生（#33）：blacklist 豁免 / F2 白名单 / 分组排除跟随
+  `harness-project-config.yaml`，自定义项目不再静默失效或误伤；`_ARTIFACTS_ALLOW_PREFIX`
+  等同步走 config。
+- `get_artifacts_root` 对绝对路径/越界相对路径降级不 raise（#80）：解析到 repo 内 →
+  归一化为 repo-relative；解析到 repo 外 → WARN + 降级 default，三个 consumer 不再在
+  import 期抛 ValueError traceback。harness-prompt-suffix.py 模块加载期 `relative_to`
+  崩溃一并消除（#73）。
+- upgrade-deferred-work §3.3.B 与 init §A.3 的 deferred-work 路径统一走
+  `read_harness_config`（#60），archive 分支不再硬编码默认 artifacts_root 且 `mv` 失败
+  显式检查（#24）。
+
+**五、bash 基建（#2 high / #58 / #3 high / #55+#57+#87 / #21+#54 / #50）**
+
+- pre-commit gate ②：纯删除 diff（清理/归档 FU 条目）不再触发 pipefail 无声 exit 1
+  阻断 commit（#2，`|| true` + 空集语义显式化）。
+- `install_git_hooks.sh` hooksPath 良性拒装改 `exit 3`（#58）：exit 1 收窄为真实安装
+  失败，init/update 的退出码契约表同步——真实失败不再被当成 hooksPath WARN 吞掉。
+- `check_test_harness_env.sh` Playwright chromium 缓存路径按 `uname -s` 分流（#3）：
+  Darwin → `~/Library/Caches/ms-playwright`、其它 → `~/.cache/ms-playwright`，Linux 上
+  e2e 不再被永远误判 sandbox-skip。
+- `deploy_assets.sh` 健壮性三连（#55/#57/#87）：所有临时文件进 EXIT trap；manifest 写
+  `mv -f` 原子替换；`find` 排除隐藏文件（`.DS_Store` 不再被投递进用户项目）；purge
+  瞬态失败的 candidate 回写新 manifest——skip 不再是 forever-skip，下次 update 自动
+  重试。新增 `deploy_assets_purge_test.sh`（22 断言，含 purge 失败回写 / manifest
+  原子性 / 越界路径拒绝）。
+- `run_all_tests.sh`：`for t in $(ls ...)` 改 glob 循环（含空格路径不碎裂，#21）；
+  `--strict` 下 KNOWN_FAILS 恒 0 的死逻辑修复 + 死变量清理（#54）；FAIL 时 dump 测试
+  输出 tail（不再 `>/dev/null 2>&1` 吞诊断，#44 附带项）；stale-listed 测试 PASS 时
+  打 `remove from KNOWN_STALE` 提示防名单腐化。
+- 新增 `scripts/prompt_template_lib.sh`（#50）：占位符渲染共享库，python 实现替代两处
+  重复的 sed 单字符转义逻辑，`project_display_name` 含 `&` / `\` 不再损坏输出。
+
+**六、md 编排协议收口（init / update / report-issue / run / run-test）**
+
+- init.md：所有分支判据 bash 块改块尾 echo（§A.2 投递统计 / §A.3 族检测 / §A.4 等，
+  #23——跨 Bash 调用 shell 变量不持久，不输出即不可观察）；§4.3.5 BACKUP_PATH 改
+  确定性命名 + 块尾 echo 字面路径（#22，rollback 不再引用空变量）；§A.2 新增
+  `DEPLOY_EXIT` 检查 + §7 防护清单条款 6（#64，与 update §7.2 对齐）；§A.3.c.i
+  `v1_pct` 渲染 ×100（#61）；全流程单一 TaskCreate（#62 命名漂移消除）；§6.5 重复的
+  `(c)` 分支重标号（#63）；字段计数全文统一 **16**（#90，frontmatter / §2 标题 /
+  §异常 halt 判据原说 14、§2 表实际 16 行自相矛盾）。
+- update.md：§5/§6 错号引用修正 + §6 报告模板补 purged 统计与清单行（#59，purge 二次
+  确认安全网落实到模板）。
+- report-issue.md：BODY_FILE（随机 mktemp 路径）与 TITLE 块尾 echo（#26）；title 截断
+  改 python3 按字符语义（#68，BSD awk 按字节切 CJK 出 mojibake）；`halt-recovery`
+  label 已在目标 repo 创建 + md 改述 gh 对缺失 label 的真实行为（#25，halt 类 issue
+  不再必然提交失败）。
+- run.md：删除 §−1.a / §1 commit 范围表残留的『主 agent 手工 `set` 兜底』指令（#70，
+  与 2026-05-04 现协议冲突的最后两处；本版 release_check.sh Gate 3 机检防回流）；
+  阶段 ⑤ deferred-work 趋势统计改 schema v1 口径（#81，旧 grep 的 inline 标记已被
+  gate ② 拒收、新项目永远显示 0）；§0.C 显式定义 `$KEY` 取法（该 epic 最后一条 done
+  story，#83）+ epic-of 验证；single-epic 取 key 改 `next-in-epic`（#35，目标 epic 前
+  有其它 backlog 时不再一条不跑就退出）；`--epic` 无参 fallback 进 §0.C 前补
+  `epic-all-done` 验证（#36）；§3 子 agent 预算重算（#37，⑤.5/⑥/⑥.5/§0.A.0 不计入
+  主预算、各设独立上限，正常路径不再必然超额）。
+- run-test.md：T4 `E2E_RC` 改 PIPESTATUS 取真实 e2e 退出码（#34，旧写法取到 tee 的
+  退出码，verdict 分类失效）；部署后断裂的相对链接与失效 recipe 引用清理（#71/#84）。
+
+**七、测试体系重建 + CI 收编（#10 high / #11 / #12 / #39+#45 / #40 / #41 / #44 / #46）**
+
+- 8 个 KNOWN_STALE 测试全部修绿移出名单（#10/#44）：名单只剩 `simulate_clone_test.sh`
+  （clone宿主部署树是其测试主体，源树本质跑不了——由 CI bootstrap-tests job 在 fixture
+  内实跑收编）。`grep_pending_deferred_for_story_test.sh` 按 schema v1 全量重写（#11，
+  旧版 11/16 断言失败、被测脚本实际零覆盖）。
+- `orchestration_observations_test.sh`（最大测试）大修后首次全绿：26/26 PASS（#12——
+  2>&1 合并流断言 / 不存在的部署 config 依赖 / 路径不一致全修）。
+- 新增 `sprint_status_format_test.sh`（44 断言）：单行 / BMad 多行块 / 混合三格式覆盖
+  `next` / `next-in-epic` / `status` / `epic-all-done` / `set`——issue #4 修复核心
+  从零回归测试（#39/#45）到双格式全覆盖。
+- 新增 `harness_commit_blacklist_test.sh`（15 断言，主题一）与
+  `deploy_assets_purge_test.sh`（22 断言，主题五）。
+- ci.yml 重构为 3 job（#40/#41）：`source-tests`（源树套件 + release gates）、
+  `bootstrap-tests`（fixture 内 glob sweep 部署式测试——不再点名固定 4 个，新增测试
+  自动入网）、`macos-bash32-tests`（macOS runner 系统 bash 3.2 跑源树套件，双环境
+  兼容承诺首次有真覆盖）。源树套件现 24 PASS / 0 FAIL / 1 known-stale SKIP。
+
+**八、资产与发布工程（#30 / #74+#92+#95 / #42 / #67 / #86 / #88 / #89 / #90 / #43）**
+
+- 删除 `prompt-templates/` 目录（4 个文件）停止分发（#30）：部署的运行时死资产，内容
+  停在 pre-schema-v1 且含下游项目专属引用，无任何脚本/命令消费。
+- 3 个 prompt-suffix 与 `conventions/deferred-work-schema.md` 去项目专属内容（#74/#92/
+  #95 配套）：Aegis / console-web / console-api 引用全部参数化或删除，
+  `run_retro_self_audit.sh` 同步。
+- `release_check.sh` 版本门扩到**四处一致**（#42）：plugin.json（SoT）/ marketplace.json
+  / README 版本表（顶部 plugin 表 + Versioning 表首行）/ changelog.md 头条 `## vX.Y.Z`。
+  changelog 头条是 `collect_issue_context.sh` 运行时上报版本号的事实来源，README 表
+  历史上漂移过连续 9 个版本（0.1.17-0.1.25）。另加两道防漂移机检门：Gate 3 ——run.md
+  同行出现独立词 `set` + 『兜底』且不含『不再』/『不要』即 exit 4（#70 防回流，否定句
+  协议说明放行）；Gate 4 —— 提取 upgrade-deferred-work.md 的 `<<'TPL'` heredoc 与
+  `templates/deferred-work.md.template` 逐字节 diff，不一致 exit 5（#67 的机检建议；
+  heredoc 末段已先同步 template 的章节组织指引句）。退出码契约表同步（新增 4/5）。
+- marketplace.json 删 `allowCrossMarketplaceDependenciesOn` 死配置（#86，v0.1.28 删
+  codex 硬依赖后无消费方）。
+- `.gitignore` `.bak.*` → `*.bak.*`（#88）：旧模式只匹配以 `.bak.` 开头的文件名，对
+  deploy_assets / install_git_hooks 实际产出的 `<file>.bak.<TS>` 后缀式命名零命中
+  （init 的 preinit 备份写 /tmp，无需 pattern）。
+- README：`/harness-zh:run --help` 引导改为真实 flag 清单 + 指向 run.md §0.0/§5 参数表
+  （#89，run.md 不存在 --help 分支，照跑会直接进主循环）；『14 字段』改 16（#90）；
+  版本表加 0.1.38 行。
+- architecture.md 0.1.28-0.1.38 收口（#43/#85）：`just process-retro-residue` 等不存在
+  的 recipe 引用全部替换为真实 bash 入口；命令分工表 6→7 个 + codex-catchup 行补
+  v0.1.38 闭环修正；树形图按 ls 实况重写（7 commands / 61 scripts 文件 /
+  deferred-work.md.template）；§〇.5 改述 plugin.json 自 v0.1.28 起无硬依赖（#85）；
+  补 §0.A.0 retro-fulfill gate / sprint-status 多行块双格式 / base-26 epic letter
+  三段机制描述；字段计数对齐 16。
+
+### 验证
+
+`run_all_tests.sh` 24 PASS / 0 FAIL / 1 SKIP（simulate_clone，known-stale → CI
+bootstrap-tests 实跑）。`release_check.sh` 4 gate 全绿（exit 0），且每道新门均做过
+故意漂移红测：版本门对 README/changelog 任一处错版本 exit 2；Gate 3 对插入
+『主 agent 调 `set` 兜底』行 exit 4、对现存否定句全放行；Gate 4 对 heredoc 改一字
+exit 5 + 输出 unified diff。各主题块的逐 finding 验证记录见 `REVIEW-2026-06-10.md`
+内嵌的验证者复核段。
+
+### 后续注意
+
+- 发布仍无 git tag（#91）：建议从本版起每次 bump 后打 `harness-zh/v0.1.x` 轻量 tag。
+- harness-state.py 性能项（#78，compute_state 6 遍全量 git log）未动——正确性无虞，
+  大仓库慢时再优化。
+- architecture.md 全文（含 §12.1 树形图）已对齐 16 字段口径，无『14 字段』残留。
+
+### 更正（0.1.36 条目）
+
+0.1.36 验证段称 orchestration 测试 T2/T3/T4 组的 FAIL 项「该测试本就在
+`run_all_tests.sh` 的 KNOWN_STALE，bootstrap CI 跑」——该表述与**当时事实不符**：
+#40 查实，彼时 ci.yml 的 bootstrap-tests job 只点名跑另外 4 个测试，orchestration
+测试在任何 CI job 都不执行（KNOWN_STALE 头注释的同款声明亦为假）。本版已让该测试
+修绿入 `run_all_tests.sh` 源树直跑（26/26）+ CI source-tests / macos-bash32-tests
+双收编，声明与现实重新一致。
+
+---
+
 ## v0.1.37 — 2026-06-10 — `read_harness_config.sh` `_RHC_THIS` unset-after-source 修复，stage ⑥.5 复活（closes #7）
 
 ### 触发

@@ -20,6 +20,35 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=read_harness_config.sh
 source "$SCRIPT_DIR/read_harness_config.sh"
+# shellcheck source=prompt_template_lib.sh
+if [ -f "$SCRIPT_DIR/prompt_template_lib.sh" ]; then
+    source "$SCRIPT_DIR/prompt_template_lib.sh"
+fi
+if ! declare -F render_prompt_template >/dev/null 2>&1; then
+    # 内联兜底：prompt_template_lib.sh 缺失（部分部署 skew — issue #7 同族；
+    # 与 lint_deferred_work.sh 的 DWSL_* 内联兜底同款约定）。逻辑必须与
+    # prompt_template_lib.sh::render_prompt_template 保持一致：awk index()
+    # 字面替换 + ENVIRON 传值（display name 含 & / \ 不损坏 — review
+    # 2026-06-10 #50；bash patsub 与 sed 在 3.2/5.2 间语义不一致，勿改回）。
+    render_prompt_template() {
+        HZH_PTL_DISPLAY_NAME="${2:-}" awk '
+            BEGIN {
+                repl = ENVIRON["HZH_PTL_DISPLAY_NAME"]
+                ph = "${project_display_name}"
+                plen = length(ph)
+            }
+            {
+                line = $0
+                out = ""
+                while ((i = index(line, ph)) > 0) {
+                    out = out substr(line, 1, i - 1) repl
+                    line = substr(line, i + plen)
+                }
+                print out line
+            }
+        ' "$1"
+    }
+fi
 ROOT="$HARNESS_REPO_ROOT"
 SPRINT_STATUS="$HARNESS_SPRINT_STATUS_PATH"
 DEFERRED_WORK="$HARNESS_DEFERRED_WORK_PATH"
@@ -138,8 +167,10 @@ echo "## ROLE & TASK INSTRUCTIONS（按下面 prompt 模板执行）"
 echo ""
 # 占位符替换 — \${project_display_name} 由 harness-project-config.yaml 提供值。
 # 设计原则：harness 通用化 — clone 到新项目时仅改 yaml，prompt 模板不动。
+# review 2026-06-10 #50：替换逻辑收敛进 prompt_template_lib.sh（字面替换，
+# display name 含 & / \ / 引号不再损坏输出或崩溃）。
 PROJECT_DISPLAY_NAME="$(read_harness_config_field project_display_name 'this project')"
-sed "s/\${project_display_name}/${PROJECT_DISPLAY_NAME//\//\\/}/g" "$PROMPT_TEMPLATE"
+render_prompt_template "$PROMPT_TEMPLATE" "$PROJECT_DISPLAY_NAME"
 echo ""
 echo "================================================================="
 echo "## 当前 batch 元信息"
@@ -165,7 +196,16 @@ echo "## 输入文件 2/2 — sprint-status.yaml development_status 段（核对
 echo "================================================================="
 echo ""
 echo '```yaml'
-awk '/^development_status:/,/^[a-zA-Z_]+:/ { print }' "$SPRINT_STATUS" | head -200
+# review 2026-06-10 #48：旧 awk 范围模式 `/^development_status:/,/^[a-zA-Z_]+:/`
+# 的起始行自身就命中终止 pattern，范围同行开闭 — 整段只剩标题一行。改用
+# in_block 状态机（同文件 done_keys() 的写法），到下一顶层 key 前全量输出。
+# 200 行截断挪进 awk 内（外接 `| head -200` 在块真正变长后会让 awk 吃 SIGPIPE，
+# pipefail + set -e 下杀死整个脚本）。
+awk '
+    /^development_status:/ { f = 1; print; n = 1; next }
+    f && /^[^[:space:]#]/ { exit }
+    f { print; n++; if (n >= 200) { print "# [... truncated at 200 lines ...]"; exit } }
+' "$SPRINT_STATUS"
 echo '```'
 echo ""
 

@@ -101,6 +101,11 @@ check "T3 awk fallback under set -u" "$rc_t3" "$out_t3" 0 "Fixture Issue7"
 # ---------------------------------------------------------------------------
 # T4 — process_retro_residue.sh 端到端：deployed 式树 + config 在场。
 #      pre-fix：line 240 call 崩（_RHC_THIS）；bash >= 4.3 还有 EXISTING_SPECS。
+#
+#      注（2026-06-10 Phase B 验证）：fixture **有意不拷** prompt_template_lib.sh
+#      —— process_retro_residue.sh 对该 lib 是 guarded-source（缺失时走内联
+#      fallback 渲染，partial-deployment skew 防御），本 fixture 顺带锁定该
+#      fallback 路径可用。别"顺手补拷"该 lib，否则 fallback 分支失去覆盖。
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== T4 — process_retro_residue.sh end-to-end with config present ==="

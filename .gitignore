@@ -16,10 +16,13 @@ __pycache__/
 *.swo
 *~
 
-# OS / build artifacts that might appear in scripts/templates output
+# OS / build artifacts that might appear in scripts/templates output.
+# deploy_assets.sh / install_git_hooks.sh back up as `<file>.bak.<TS>`
+# (suffix form — review 2026-06-10 finding #88; the old `.bak.*` prefix
+# pattern matched nothing). init's preinit backup goes to /tmp, not the repo.
 *.log
 *.tmp
-.bak.*
+*.bak.*
 
 # Plugin install cache leftovers (if user accidentally does dev-time symlink)
 node_modules/

@@ -4,7 +4,7 @@
 > 的 prompt 拼接告知 dev / review / chore 阶段 agent 按本契约写入
 > `_bmad-output/implementation-artifacts/deferred-work.md`。
 >
-> **取代关系**：
+> **取代关系**（模板项目立此 schema 时的历史记录，新项目无需关心）：
 > - `chore-retro-c11-deferred-grep-injection.md` 已实施部分（grep 脚本骨架）保留；
 >   解析路径切到读本 schema tag，不再走 word-boundary regex 文本拼接（见 §6）
 > - `chore-retro-c12-deferred-resolved-backfill.md` **取代** — fresh agent 反查工作仍
@@ -70,7 +70,7 @@ partial 状态示例（残余路径 spawn 新 FU）：
 needs-review 状态示例（C12 反查产物）：
 
 ```markdown
-- **FU-1.10.A** `[status:needs-review]` `[bucket:sandbox]` `[target:Story 1.12]` `[source:dev-of-1.10]` — aegis-cli 7 用例 chaos test
+- **FU-1.10.A** `[status:needs-review]` `[bucket:sandbox]` `[target:Story 1.12]` `[source:dev-of-1.10]` — <cli-tool> 7 用例 chaos test
   - **触发条件**：Story 1.12 chaos test 实施
   - **历史**：
     - 2026-05-02 `pending → needs-review` by fresh-agent-backfill — Story 1.12 done 含 chaos scaffold；无显式 verify-chain + reconcile-check 7 用例落点；solo-dev 确认是否真消化
@@ -110,16 +110,21 @@ pending ──→ in-progress ──→ partial ──→ resolved
 
 | 值 | 语义 | 是否计入 §1 hard threshold |
 |---|---|---|
-| `epic-6` | Epic 6 production lockdown / hardening / deployment hardening | ✅（threshold 30）|
-| `v0.2+` | v0.2+ 真增量 | ✅（threshold 40）|
-| `v1.0+` | v1.0+ 真增量（FR68/FR69/FR70/FR77 等） | ✅（threshold 30，与 v2.0+ 合并）|
-| `v2.0+` | v2.0+ 真增量 | ✅（与 v1.0+ 合并）|
-| `sandbox` | sandbox-bound（docker daemon-locked 操作员复跑） | ✅（threshold 25）|
+| `epic-6` | production lockdown / hardening 类里程碑（枚举名沿用模板项目的 hardening epic 编号；新项目把自己的 hardening / 收尾 epic 映射到此桶） | ✅（threshold 30）|
+| `v0.2+` | 下一小版本真增量 | ✅（threshold 40）|
+| `v1.0+` | 1.0 正式版真增量 | ✅（threshold 30，与 v2.0+ 合并）|
+| `v2.0+` | 更远期真增量 | ✅（与 v1.0+ 合并）|
+| `sandbox` | sandbox-bound——当前执行环境无法完成、需操作员在非受限环境复跑（模板项目示例：docker daemon-locked 操作） | ✅（threshold 25）|
 | `cross-story` | 待下游 Story 自然消化（明确指向 Story X.Y） | ❌（计 open 但不算债）|
 | `test-harness` | FU-Test-* 测试 harness 流水线产物 | ❌（独立命名空间）|
 | `other` | 客户反馈触发 / 历史 stale-residual / 未明确分类 | ❌（计 open 不算债）|
 
 > v1.0+ / v2.0+ threshold 合并为 30 — 历史 §1 表已是合并口径，schema 沿用。
+>
+> **枚举值与 threshold 数字是 schema 常量**（`grep_deferred_buckets.sh` 等
+> 工具链按字面识别这 8 个值）——新项目**沿用枚举名**、把自己的里程碑语义
+> 映射进去，不要发明新 bucket 值（对不上枚举的项归 `other`，工具链会
+> WARN 但不 halt）。
 
 **`retro` bucket 已移除**（Q4 决策 2026-05-04）：
 
@@ -136,7 +141,7 @@ pending ──→ in-progress ──→ partial ──→ resolved
 - `Epic N`（如 `Epic 6`）
 - `Epic N retro`（如 `Epic 6 retro`）
 - `Epic 6 production lockdown`
-- `v0.2+ first-sprint` / `v0.2+ customer-feedback` / `v1.0+ FR77` / `v2.0+ customer-feedback`
+- `v0.2+ first-sprint` / `v0.2+ customer-feedback` / `v1.0+ <FR-id>`（如 `v1.0+ FR77`——FR 编号按本项目 PRD）/ `v2.0+ customer-feedback`
 - `customer-feedback` — 客户实测触发，不绑定 phase
 - `N/A` — 由其它机制兜底（yaml linter / 上游 tool / FU-RETRO-*）
 
@@ -160,7 +165,7 @@ pending ──→ in-progress ──→ partial ──→ resolved
 ### 4.1 文件顶层结构
 
 ```
-# Deferred Work — Aegis AI Audit
+# Deferred Work — <project_display_name>
 （前言 2-3 行）
 
 ---
@@ -205,11 +210,13 @@ pending ──→ in-progress ──→ partial ──→ resolved
 
 ---
 
-## §5 历史回填策略（commit-2 阶段执行）
+## §5 历史回填策略（半路接入项目适用）
 
-第二个 commit 的工作。本 schema 文档落地后才执行：
+仅适用于**已有 pre-schema-v1 deferred-work.md** 的项目（greenfield 项目从
+首条 FU 起就按 schema v1 写，跳过本节）。schema 文档落地后、单独成 commit
+执行（节内步骤措辞保留模板项目首次回填时的快照口径，供参考）：
 
-1. **Pass 1（机器自动，~80%）** — Python 脚本扫现有 1002 行：
+1. **Pass 1（机器自动，~80%）** — 脚本扫现有全文件（模板项目回填时 ~1000 行）：
    - inline `— Resolved by Story X.Y (date): ...` → 提取 → `status:resolved` + 历史子项
    - inline `— Partial resolution by Story X.Y (date): ...` → `status:partial` + 历史子项
    - inline `Story X.Y done but no resolution evidence — needs solo-dev review` → `status:needs-review`
@@ -254,7 +261,7 @@ pending ──→ in-progress ──→ partial ──→ resolved
 
 - **v1 在 markdown bullet + tag 模式上 cap** —— 不再演进到 yaml SoT（throwaway risk）
 - **触发 v2 的条件**：
-  - bullet 总数 > 1000（当前 280）→ 物理拆 `deferred-work/` 目录 + per-FU 文件
+  - bullet 总数 > 1000（参考量级：模板项目 schema 落地时 ~280）→ 物理拆 `deferred-work/` 目录 + per-FU 文件
   - tag 字段超 6 个 → 引入 frontmatter 块替代 bullet 头部 tag
   - 工具链 awk-only 路径不够（如需要 cross-reference / 联表）→ 引入 yq + yaml SoT
 - 上述任一触发前，schema 锁 v1

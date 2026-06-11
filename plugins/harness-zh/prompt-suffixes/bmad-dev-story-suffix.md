@@ -1,13 +1,13 @@
 # bmad-dev-story prompt suffix（项目层）
 
 > 由 epic-3 retro C2 (2026-05-04) 立。CLAUDE.md 严禁动 `.claude/skills/bmad-*/`
-> 上游 SKILL —— 本文件作为项目层 prompt 拼接路径（C11 范式）。bmad-dev-story
-> skill 启动时主 agent 在 user prompt 内 inject 引用本文件，让"复制粘贴 pattern"
-> 沉淀到 SKILL 级标准 checklists。
+> 上游 SKILL —— 本文件作为项目层 prompt 拼接路径（C11 范式），让"复制粘贴
+> pattern"沉淀到 SKILL 级标准 checklists。
 >
-> 加载机制：调 bmad-dev-story 前主 agent 在 user prompt 内 inject:
-> > 参考 `.claude/harness/prompt-suffixes/bmad-dev-story-suffix.md` 的 Standard checklists
-> > 段填写 Dev Agent Record 各 self-review 子段。
+> **加载机制**：`run.md` 阶段 ② 的 dev dispatch prompt 末尾拼接
+> `harness-prompt-suffix.py 2` 的 stdout，其中 "Deferred-work 扫描约定"
+> 与 Q6 块显式指向本文件相应段。dev agent 据此 Read 本文件，并按
+> §Standard checklists 段填写 Dev Agent Record 各 self-review 子段。
 >
 > 历史：
 > - 2026-05-04 C2: 5-question self-review gate / Mech-verify dry-run / Dev
@@ -71,7 +71,9 @@ dev agent 在 implementation 完成后必须在 story spec `## Dev Agent Record`
 
 dev agent 必须在 stage handover 前显式回答以下 5 问（每条独立答；不允许一字答 yes/no）。
 
-source-of-truth：`_bmad-output/implementation-artifacts/dev-story-self-review-gate.md`
+source-of-truth：**本段即权威**（模板项目曾沉淀
+`_bmad-output/implementation-artifacts/dev-story-self-review-gate.md` 详述文档；
+该文件在新项目不存在——若本项目后续沉淀同类文档，可在此追加引用）。
 
 #### 1. 可观测性反向验证
 
@@ -109,7 +111,9 @@ source-of-truth：`_bmad-output/implementation-artifacts/dev-story-self-review-g
 
 dev agent 必须跑 spec 中所有 mech-verify 命令并贴 dry-run 结果到此段。
 
-source-of-truth：`_bmad-output/implementation-artifacts/mech-verify-dry-run-protocol.md`
+source-of-truth：**本段即权威**（模板项目曾沉淀
+`_bmad-output/implementation-artifacts/mech-verify-dry-run-protocol.md` 详述文档；
+该文件在新项目不存在——若本项目后续沉淀同类文档，可在此追加引用）。
 
 | Command | Tag | Output excerpt | Notes |
 |---------|-----|----------------|-------|
@@ -118,18 +122,24 @@ source-of-truth：`_bmad-output/implementation-artifacts/mech-verify-dry-run-pro
 
 **4 项验证维度**（每命令必标）：
 1. **grep 真命中**：命令针对当前文件状态多行结构 / 命名差异都覆盖。
-2. **file existence check 路径正确**：避免"架构文档双源"footgun（D20 在 architecture-validation-results.md 而非 core-architectural-decisions.md）。
+2. **file existence check 路径正确**：命令引用的文档 / 产物路径真实存在；
+   警惕"同名内容多源"footgun——同一决策 / 字段可能记录在多个架构文档里，
+   核对命令查的是事实来源（模板项目案例：D20 实际在
+   architecture-validation-results.md 而非 core-architectural-decisions.md）。
 3. **退出码语义一致**：exit 0 / 1 / 2 与 spec 描述对齐。
-4. **命令依赖可达**：docker exec 容器名 / sqlc schema 文件可达。
+4. **命令依赖可达**：命令依赖的外部工具 / 容器名 / schema 文件在当前环境
+   可达（按本项目实际工具链核对；模板项目示例：docker exec 容器名 /
+   sqlc schema 文件）。
 
 ---
 
 ### Q6 — 全栈贯通 review (forward-looking from Epic 4)
 
-由 Epic 3 retro C3 (2026-05-04) 立。Epic 3 codex high finding 14 项中 ≥ 6
-项是"集成期断点"类（OpenSearch writer 漏写 / canonical pin 漏验 / mapping
-漏 / i18n key 漏 / 详情页漏渲染）—— Q6 sub-bullet 强制 dev agent 在新
-审计字段引入时端到端追溯到所有写入面。
+由 Epic 3 retro C3 (2026-05-04) 立（立项依据来自模板项目：其 Epic 3 codex
+high finding 14 项中 ≥ 6 项是"集成期断点"类——search writer 漏写 /
+canonical pin 漏验 / mapping 漏 / i18n key 漏 / 详情页漏渲染）。Q6
+sub-bullet 强制 dev agent 在新审计字段 / 新数据写入面引入时端到端追溯到
+所有写入面。
 
 **项目特定的 sub-bullet 清单（(a)-(z)）由 `harness-prompt-suffix.py` stage 2
 从 `.claude/harness/harness-project-config.yaml` 的 `extra.fullstack_review_steps:`
@@ -150,24 +160,33 @@ dev agent 在 Dev Agent Record 段填的格式：
 - ...（按 prompt 注入的 fullstack_review_steps 顺序逐行）
 ```
 
-#### Q6 reference examples
+#### Q6 reference examples（示例来自模板项目，仅体例参考）
 
-参考 Epic 3 真 dev story Dev Agent Record 答复模式：
+> 以下两个 spec 路径 / 字段名是**模板项目** Epic 3 的产物，新项目里**不存在**
+> ——不要去找这些文件，更不要在 Dev Agent Record 里引用它们。体例之外的
+> 项目特定内容一律以 `harness-project-config.yaml` 的
+> `extra.fullstack_review_steps` 字段（即 prompt 里注入的 (a)-(z) 清单）为准。
+> 本项目积累出真实 dev story 后，可把下面示例替换为本项目自己的。
 
-**Story 3.6 ai_model 字段全栈追溯**（spec: `_bmad-output/implementation-artifacts/3-6-fr15a-ai-provider-model-extractor.md`）
+**Story 3.6 ai_model 字段全栈追溯**（模板项目 spec: `3-6-fr15a-ai-provider-model-extractor.md`）
 - 7 sub-bullet 全 ✓ 覆盖 ai_model + ai_provider 字段端到端写入路径
 
-**Story 3.8 masked_fields 字段全栈追溯**（spec: `_bmad-output/implementation-artifacts/3-8-vision-llm-provider-interface-noop-masked-fields.md`）
+**Story 3.8 masked_fields 字段全栈追溯**（模板项目 spec: `3-8-vision-llm-provider-interface-noop-masked-fields.md`）
 - (a)-(f) ✓ 覆盖；(g) deferred-to-FU-3.8.X（详情页 masked_fields chip 渲染留 v0.2+）
 
-dev agent 实施时直接 quote 上述 reference example 段以建立"答复体例"。
+dev agent 实施时参照上述**答复体例**（每行一个写入面 + ✓/N/A/deferred 判定 +
+deferred 项带 FU id）组织自己的 Q6 答复；quote 的对象是体例，不是内容。
 
 ---
 
-## 审计 hash chain 准入约束（forward-looking）
+## 审计 hash chain 准入约束（forward-looking；模板项目 sealed pattern）
 
-任何引入新 hash chain canonical 字段的 story 必须新加 `canonical_pin_story_*_test.go`
-固定字段集与序列化顺序；任何字段排除决策（add-only 不进 hash chain）必须在
-spec D-decisions 段显式登记决策 + 排除路径反证。
+> 仅适用于存在审计 hash chain / canonical 序列化机制的项目；本项目无此机制
+> 则跳过本段。
 
-（Epic 3 retro §9.5 sealed pattern 之一。）
+任何引入新 hash chain canonical 字段的 story 必须新加 canonical pin 测试
+（模板项目命名：`canonical_pin_story_*_test.go`）固定字段集与序列化顺序；
+任何字段排除决策（add-only 不进 hash chain）必须在 spec D-decisions 段
+显式登记决策 + 排除路径反证。
+
+（模板项目 Epic 3 retro §9.5 sealed pattern 之一。）

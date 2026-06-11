@@ -18,7 +18,7 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
 
 **共享行为契约**（与 init / update 一致）：
 - 代答政策：不调度子 agent；决策按 `.claude/harness/answer-policy.md` 自决
-- TaskCreate 任务 `Harness Report Issue: <one-line desc>`（§1 启动 in_progress；§5 报告 completed）
+- TaskCreate 任务 `Harness Report Issue: <one-line desc>`（§1 启动 in_progress；§6 报告 completed）
 - 不动任何 git 状态（不 commit / 不 push / 不切 branch）；只读取信息
 
 ---
@@ -57,6 +57,7 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
 ## 2. 调采集脚本拼 issue body
 
 ```bash
+# TYPE / DESC / STORY 等由主 agent 用 §1 收集到的字面值代入（跨 Bash 调用变量不持久）
 TYPE="${TYPE:?}"
 DESC="${DESC:?}"
 ARGS=( --type "$TYPE" --description "$DESC" )
@@ -68,11 +69,15 @@ ARGS=( --type "$TYPE" --description "$DESC" )
 
 BODY_FILE="$(mktemp -t harness-issue-XXXXXX.md)"
 bash .claude/harness/scripts/collect_issue_context.sh "${ARGS[@]}" > "$BODY_FILE"
+printf 'BODY_FILE=%s\n' "$BODY_FILE"
 ```
 
 脚本退出码总是 0（best-effort）；只有 `--type` / `--description` 缺才退出 2，那时主 agent 的参数兜底逻辑就有 bug，halt + 报告。
 
-把 `$BODY_FILE` 完整内容**显示给用户**让其 review（直接 `cat $BODY_FILE` 输出到对话流即可；不要省略）。
+把块尾 printf 出的 `BODY_FILE=...` **字面路径**绑定到对话上下文 — mktemp 路径是随机值，
+Bash 调用间 shell 变量不持久，§4 各路径里的 `$BODY_FILE` 一律用该字面路径替换。
+
+把 `$BODY_FILE` 完整内容**显示给用户**让其 review（直接 `cat <BODY_FILE 字面路径>` 输出到对话流即可；不要省略）。
 
 ---
 
@@ -87,10 +92,14 @@ bash .claude/harness/scripts/collect_issue_context.sh "${ARGS[@]}" > "$BODY_FILE
 | `halt` | `[halt][${HALT_CMD:-?} stage ${HALT_STAGE:-?}] <DESC>` | `bug,halt-recovery` |
 | `other` | `[other] <DESC>` | `question` |
 
-Title 长度截断到 ≤ 100 字符（`gh` 接受更长但 GitHub UI 不友好）：
+Title 长度截断到 ≤ 100 字符（`gh` 接受更长但 GitHub UI 不友好）。用 python3 按**字符**
+语义截断（流程 §2 已依赖 python3；macOS BSD awk 的 length/substr 按字节计，CJK 标题
+会被切出残缺 UTF-8 字符）：
 
 ```bash
-TITLE="$(printf '%s' "$TITLE" | awk 'length>100 {print substr($0,1,97) "..."} length<=100 {print}')"
+# TITLE 由主 agent 按上表用字面值代入
+TITLE="$(python3 -c 'import sys; s=sys.argv[1]; print(s if len(s)<=100 else s[:97]+"...")' "$TITLE")"
+echo "TITLE=$TITLE"
 ```
 
 ---
@@ -105,7 +114,8 @@ TITLE="$(printf '%s' "$TITLE" | awk 'length>100 {print substr($0,1,97) "..."} le
 >
 > **C) Cancel** — 不提，删 `$BODY_FILE`，emit "已取消"
 
-**A) 路径执行**：
+**A) 路径执行**（`$BODY_FILE` / `$TITLE` / `$LABEL` 用 §2 / §3 输出的**字面值**替换 —
+跨 Bash 调用变量不持久）：
 
 ```bash
 # Preflight: gh CLI 装了？已 auth？
@@ -144,11 +154,18 @@ else
 fi
 ```
 
-`gh` 拿不到 label（label 不存在）时它会 ignore label 但 issue 仍提交；不需要主 agent 介入。
+**label 缺失的降级路径**：`gh` 在创建前会把每个 label 名解析成 ID，**任何一个 label
+不存在都会导致整体失败**（stderr 报 `could not add label: 'X' not found`，issue 完全
+不会被创建）— 不是「忽略缺失 label 仍提交」。`halt-recovery` label 已在
+`Niutie/my-cc-plugin` 仓库预创建，正常情况下可用；若 stderr 仍报 label `not found`
+（label 被删 / repo 指向 fork 等），主 agent **自动降级重试一次**：从 `--label` 里剥掉
+所有非 GitHub 默认 label（只保留 `bug` / `enhancement` / `question` 中适用者），用同一
+`--body-file` 重新提交；二次仍失败才按 §7-4 失败分支处理（保留 body 文件 + 手工
+fallback 指令）。降级重试**不询问用户、不 halt**（自动化红线：label 缺失不是危险操作）。
 
-**B) Edit 路径**：emit 一行说明：
+**B) Edit 路径**：emit 一行说明（`$BODY_FILE` 用 §2 printf 出的字面路径替换）：
 
-> Body 已写到：`$BODY_FILE`
+> Body 已写到：`<§2 输出的 BODY_FILE 字面路径>`
 >
 > 编辑完成后跟我说 "继续提交" / "submit" / "ok"，我会重新走第 4 步 A 路径（不再问 type / description，直接提交编辑后的 body 文件）。
 
@@ -157,6 +174,7 @@ fi
 **C) Cancel 路径**：
 
 ```bash
+# $BODY_FILE 用 §2 printf 出的字面路径替换（新 shell 中该变量为空，rm 空参成静默 no-op）
 rm -f "$BODY_FILE"
 echo "ℹ️ 已取消；未提交 issue。"
 ```
@@ -208,7 +226,7 @@ echo "ℹ️ 已取消；未提交 issue。"
 1. §1 用户取消（"Cancel" 选项）→ emit "已取消"，**正常退出**（非 halt；用户主动行为）
 2. §1 / §2 `collect_issue_context.sh` exit ≠ 0 且 ≠ 2（参数 bug / 内部错）→ halt + 贴 stderr verbatim
 3. §4 A 路径 `gh` 未装 / 未登录 → 不 halt（已在脚本内 emit 引导文字）；exit 1 给主 agent 知道，主 agent emit 一行"装好 gh 后重跑 /harness-zh:report-issue"，正常退出
-4. §4 A 路径 `gh issue create` exit ≠ 0（rate limit / repo 权限问题 / 网络问题）→ 不 halt；emit 失败原因 + body 文件路径 + 手工 fallback 指令（已在脚本内）；正常退出
+4. §4 A 路径 `gh issue create` exit ≠ 0（rate limit / repo 权限问题 / 网络问题）→ 不 halt；emit 失败原因 + body 文件路径 + 手工 fallback 指令（已在脚本内）；正常退出。注：label `not found` 类失败先走 §4 的自动降级重试（剥非默认 label 重提一次），重试仍失败才进本条
 5. runtime quota 信号 → 与 init / run 同款配额模板（emit halt 模板请求用户授权重启）
 
 **Halt 模板**（仅 §7-2 / 7-5 适用）：
