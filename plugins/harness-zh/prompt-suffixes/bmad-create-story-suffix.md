@@ -19,6 +19,10 @@
 >   artifact 时必须声明 frontmatter 白名单 + 派给 dev agent 而非"主 agent"
 >   （详 §"cross-story artifacts 声明约束"；触发场景：retro AI 收口 / 跨
 >   story 引用状态翻转）。
+> - 2026-06-12 planning-artifacts (issue #9, v0.1.39): spec 要求回写
+>   `_bmad-output/planning-artifacts/*.md`（如 forward-only remediation 回写
+>   epics.md）时必须声明 frontmatter `planning_artifacts:` 白名单（详
+>   §"planning-artifacts 回写声明约束"）。
 
 ---
 
@@ -93,6 +97,44 @@ cross_story_artifacts:
 - 每条必须是 bare basename（不能含 `/` 或 `..`）
 - 必须 `.md` 结尾（`.json` / `.yaml` 是不同威胁面，不允许通过此白名单）
 - 不能列本 story 自己的文件（已默认放行；列了是 smell）
+
+## planning-artifacts 回写声明约束（issue #9，v0.1.39）
+
+某些 spec（典型：retro 残余转化出的 forward-only remediation chore）显式要求
+dev agent 回写 `_bmad-output/planning-artifacts/` 下的规划文档——比如把修正后
+的 AC 文本 / drift-registry 表回写 `epics.md`（spec source of truth 本身就是
+交付物）。这类路径默认命中 `harness-commit.py` 的 `OUT_OF_SCOPE_BMAD` halt
+（issue #5 守卫），**必须**在 spec frontmatter 声明 `planning_artifacts:`
+白名单才放行（权威实现：`scripts/harness-commit.py`
+`read_planning_artifacts_allowlist`）。
+
+### frontmatter 写法
+
+与 `cross_story_artifacts:` 不同，本字段写**完整 repo-relative 路径**（不是
+bare basename）——声明必须无歧义地指明回写的是哪棵树：
+
+```markdown
+---
+status: ready-for-dev
+planning_artifacts:
+  - _bmad-output/planning-artifacts/epics.md
+---
+```
+
+**约束**（违反则该条目被静默丢弃）：
+
+- 必须位于 `_bmad-output/planning-artifacts/` 子树（brainstorming/ /
+  research/ 等其它兄弟子树不在豁免范围，仍 halt）
+- 必须 `.md` 结尾；禁 `..` / 绝对路径
+- 仅声明 spec Tasks 真正要求的回写路径——不是给"顺手想改的规划文档"开后门
+
+retro-fulfill 路径下（spec = `chore-retro-c<epic>-<code>-*.md`）该 frontmatter
+同样生效——harness-commit.py 优先按 sprint-status.yaml 的 `chore_spec:` 字段
+解析 chore spec，缺失时 code-first glob 兜底。
+
+**适用范围**：白名单仅在允许 project code 的 stage（②/④/⑤/retro-fulfill）
+生效；回写动作必须派给 dev/fulfill agent 在这些 stage 执行（stage ① 创建
+spec 时不要顺手改 planning 文档——会命中 OUT_OF_SCOPE_BMAD halt）。
 
 ### 编排措辞：动作必须派给 dev agent，不是"主 agent"
 

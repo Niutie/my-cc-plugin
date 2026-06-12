@@ -11,6 +11,121 @@
 
 ---
 
+## v0.1.39 — 2026-06-12 — epic-6 实跑反馈四连修：planning_artifacts 白名单 + process-marker 自动剔除 + 子 agent task 工具禁令 + retro 瞬态重试 (closes #8, closes #9)
+
+### 触发
+
+issue #9（epic-6 全量 run 反馈，4 findings：1 high / 1 medium / 1 low / 1 info）+ issue #8
+（feature：过程文件类额外产出自动剔除而非 halt——与 #9 finding 3 同源）。epic-6 run 全程
+唯一一次需要 solo-dev 人工介入的 halt 是 #9 finding 1：retro chore spec（E11 forward-only
+remediation）**显式要求**回写 `_bmad-output/planning-artifacts/epics.md`，但 retro-fulfill
+commit 被 issue #5 的 OUT_OF_SCOPE_BMAD 守卫拦下，被迫手工 out-of-band `git add` + 独立
+docs commit 再重跑——脚本自己的 GUIDANCE 教的正是 harness 本应消灭的人工步骤。
+
+### 改动范围
+
+**① `planning_artifacts:` frontmatter 白名单（#9 finding 1, high）— `scripts/harness-commit.py`**
+
+- 新增 `read_planning_artifacts_allowlist(key, epic, stage)` + `_resolve_spec_md_path()`：
+  spec md frontmatter 可声明 `planning_artifacts:` YAML list（完整 repo-relative 路径，与
+  `cross_story_artifacts:` 的 bare-basename 约定不同——回写哪棵树必须无歧义）。约束：仅
+  `<bmad-output-parent>/planning-artifacts/` 子树（前缀从 artifacts_root 推导，跟随自定义
+  配置）、仅 `.md`、禁 `..` / 绝对路径；非法条目静默丢弃（best-effort，与 cross_story 同
+  姿态）。brainstorming/ / research/ 等兄弟子树不在豁免范围。
+- spec 解析：story stages 用 `<ARTIFACTS_DIR><key>.md`；retro-fulfill 的 key 是 retro item
+  code（如 E11），**优先**读 sprint-status.yaml `retro_action_items` 块该 code 的
+  `chore_spec:` 字段（stage 6-5 已写入；§0.A.0 只兑现有该字段的项——对 code 前缀互撞免疫，
+  值经 `chore-retro-c<epic>-<code>-<slug>.md` 全匹配校验防陈旧/异 code 值），缺失时才
+  code-first glob 兜底（slug 首字符 `[a-z0-9]` 只能挡大写续接；小写 kebab code 互为前缀时
+  glob 多命中 → WARN + 忽略 frontmatter，fail-closed）。
+- step 2.5 守卫：声明路径绕过 OUT_OF_SCOPE_BMAD halt，流入 project bucket 随 commit stage，
+  STATUS=ok 时输出 `PLANNING_ARTIFACT=<path>` 信息行；未声明路径照旧 halt，GUIDANCE 行
+  现在指向 `planning_artifacts:` 机制。白名单**仅在允许 project code 的 stage**
+  （2/4/5/retro-fulfill）生效——project_code=False stage 上 gated off，保持清晰的
+  OUT_OF_SCOPE_BMAD 诊断（而非放行后落入晦涩的 FORBIDDEN halt），GUIDANCE 注明本 stage
+  不适用。
+- 配套文档：run.md §−1.d 新增"Spec-driven planning-artifacts 回写"段 + §0.A.0 兑现 prompt
+  补 scope 说明；bmad-create-story-suffix.md 新增 §"planning-artifacts 回写声明约束"；
+  process_retro_residue_prompt.md frontmatter 模板 + 自检清单补该字段（残余处理器生成的
+  chore spec 在 Tasks 要求回写时自动声明——E11 这类 spec 从源头就带白名单）。
+
+**② process-marker 自动剔除（#8 + #9 finding 3, low）— `scripts/harness-commit.py` + `scripts/harness-prompt-suffix.py`**
+
+- 新增 `PROCESS_MARKER_TAGS = ("maven-skipped", "sandbox-skipped")` + `detect_process_markers()`，
+  挂在既有 step 1.6 auto-prune 通道（与 `AUTO_FIXED=unexpected-md` 同代码路径）：
+  `<KEY>.<tag>.json` 且 untracked/newly-added → unstage + rm + `AUTO_FIXED=process-marker
+  <path> action=unstaged+rm tag=<tag>`，不 halt。modified（已 tracked）永不自动删（与另两个
+  auto-fixer 同不变量）。
+- 白名单**显式枚举**，绝不泛化到 `*.json` / `*-skipped.json`——`<KEY>.codex-skipped.json` /
+  `.resolved.json` 是 schema 内 artifact（STAGES story_json）不可吞；新 marker 变种保持
+  halt，确认安全后人工进白名单。
+- 源头收敛：`harness-prompt-suffix.py` stage 2/4 新增"禁止过程 marker 文件"段（sandbox 跳过
+  只写 dev-result.json `checks_skip_reasons`）；run.md stage ② prompt 模板同步补一行；
+  run.md §−1.d 新增"过程 marker .json 自动剔除"段。
+- dry-run 一致性：`--dry-run` 只读检测 marker 并从分类中排除（输出
+  `action=planned-unstage+rm-dry-run`），与实跑结果一致——不再出现"dry-run 报
+  UNEXPECTED_ARTIFACT halt、实跑却 AUTO_FIXED ok"的预演失真（既有 unexpected-md 的
+  dry-run 分歧是 Opt 2 旧行为，本次不动）。
+- prune 后空 worktree 收口：worktree 只含被自动剔除的文件时，剔除后按 step 1b 同款分支
+  skip（skip_if_empty stage）或 halt"nothing left to commit"——不再输出会诱导空 commit 的
+  STATUS=ok。
+
+**③ 子 agent 任务追踪工具禁令（#9 finding 2, medium）— `scripts/harness-prompt-suffix.py` + `commands/run-test.md`**
+
+- `harness-prompt-suffix.py` 全 stage（1-6）新增"任务追踪工具禁令"段：禁止 TaskCreate /
+  TaskUpdate / TaskList / TaskGet / TaskStop——sprint 任务清单归主 orchestrator 独占（epic-6
+  run 实测：stage-2/5/5.5 子 agent 反复翻/建/删主任务，一度清空整个任务清单）。进度只走
+  prompt 规定渠道（story md checkbox / progress JSON / 返回 message）。
+- 不走 harness-prompt-suffix.py 的 spawn 点逐一补禁令：run-test.md T1 / T3 prompt 模板、
+  run.md 阶段 ⑤.5 的 run-test subagent spawn prompt（issue #9 实测污染源之一——它执行
+  run-test.md 时会被 §进度可视化 要求 TaskCreate）、process_retro_residue_prompt.md
+  （⑥.5 residue fresh agent，严格禁止 #11）；T4 无子 agent 不涉及。
+- run-test.md §进度可视化 改双模式：独立触发（会话主 agent）时照旧 TaskCreate；被
+  run-sprint ⑤.5 作为 subagent 调起时禁用任务工具、只通过返回 message 汇报——消除
+  "run-test 要求建任务、⑤.5 禁令禁止建任务"的自相矛盾。
+
+**④ retro 瞬态错误重试注记（#9 finding 4, info）— `commands/run.md` stage ⑥ + §3**
+
+- 等待返回处补充：retro subagent 死于瞬态 infra 错误（`API Error: Overloaded`，区别于配额
+  信号——以 §−1.a / §3 第一行完整关键词列表为准）且 `git status --porcelain` 干净 → 直接
+  重 dispatch 一次，不 halt；重试仍失败或 worktree 不干净 → 照旧 §3 halt 模板。
+- §3 硬约束表同步镜像该例外（沿用 stage ③ 配额例外的"§1 例外必须镜像进 §3"惯例）：
+  产物缺失行加 stage ⑥ 瞬态例外 carve-out；子 agent 预算行明确"配额中断重启或瞬态重试
+  合计至多 1 次（单 epic ⑥ 总 dispatch 上限 = 2）"；"绝对禁止重新拉子 agent"条款加同款
+  豁免——否则两处文本会让忠实读者得出相反行为（halt vs 重试）。
+
+### 验证
+
+- 新增 `scripts/harness_commit_planning_artifacts_test.sh`（7 fixture + 1 parser 探针：声明
+  放行 + PLANNING_ARTIFACT 行 / 未声明仍 halt + GUIDANCE 提示 / 非法条目丢弃——非 .md 与
+  错子树各有 load-bearing 的 OUT_OF_SCOPE_BMAD 断言（杀校验删除变异），`..` 穿越在
+  porcelain 层不可钉（git 路径恒规范化）改由 P3b importlib parser 探针钉 / retro-fulfill
+  glob 兜底放行（E11 场景复刻）/ retro-fulfill 未声明仍 halt / P6 project_code=False stage
+  gated off 且诊断清晰（无 FORBIDDEN）/ P7 yaml `chore_spec:` 优先于歧义 glob）。
+- 新增 `scripts/harness_commit_process_marker_test.sh`（7 fixture，真实 git repo 为主：
+  maven-skipped / sandbox-skipped 自动剔除 + 文件实删 / 未知 tag `gradle-skipped` 仍 halt /
+  codex-skipped schema artifact 照常 STAGED 不被吞 / tracked marker 永不自动删 / M6 dry-run
+  预演一致且不动盘 / M7 marker-only worktree 剔除后清晰 halt）。
+- `scripts/harness_prompt_suffix_test.sh` 扩 Test 7（全 stage 含任务工具禁令）+ Test 8
+  （stage 2/4 含 process-marker 禁令、stage 5 不含）。
+- `run_all_tests.sh` 全量：PASS=27 / FAIL=0 / SKIP=1（simulate_clone 既有 known-stale，CI
+  bootstrap job 实跑）。
+
+### 后续注意
+
+- `PROCESS_MARKER_TAGS` 初始只收录已观测的 `maven-skipped` + 合理同义 `sandbox-skipped`；
+  下游再冒新 marker 变种时按 UNEXPECTED_ARTIFACT halt 现场确认冗余后追加 tag（一行改动 +
+  process_marker test 加 fixture）。
+- `planning_artifacts:` 故意只开 planning-artifacts/ 子树；若未来出现 research/ 等其它子树
+  的合法回写需求，扩 `_PLANNING_ARTIFACTS_SUBDIR` 前需重新评估威胁面（不要顺手泛化）。
+- 下游项目需跑 `/harness-zh:update` 刷新 `.claude/harness/scripts/` + `.claude/commands/`
+  后①-④才生效。
+- 本版初稿经一轮多视角对抗式 review（4 lens + 逐 finding 反驳式复核）修了 9 处自身缺陷
+  （含 P3 测试空断言、⑤.5/⑥.5 spawn 点禁令缺口、§3 镜像缺失、residue 模板活例子会被逐字
+  照抄重开 issue #5 守卫等）——上面各小节描述的已是修正后的终态。
+
+---
+
 ## v0.1.38 — 2026-06-10 — 全量对抗式 review 收口：96 findings 八主题修复 + 测试体系重建 + 发布门加固
 
 ### 触发

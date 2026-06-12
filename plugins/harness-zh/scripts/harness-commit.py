@@ -65,8 +65,15 @@ Behavior:
                                                                   stage 5 → harness/<key>/done)
          AUTO_FIXED=<msg>                            (informational — script auto-resolved
                                                       a build-artifact untracked binary by
-                                                      unstage+rm+gitignore; see Opt 1 in
-                                                      harness-changelog 2026-05-01 §I)
+                                                      unstage+rm+gitignore (Opt 1, harness-
+                                                      changelog 2026-05-01 §I), an unexpected
+                                                      subagent .md (Opt 2, 2026-05-03 §A), or
+                                                      a redundant process-marker .json
+                                                      (issue #8, v0.1.39))
+         PLANNING_ARTIFACT=<path>                    (informational on STATUS=ok — spec-declared
+                                                      planning-artifacts writeback staged with
+                                                      this commit via the `planning_artifacts:`
+                                                      frontmatter whitelist; issue #9)
          CACHED_STAT=<git diff --cached --stat output>  (only on STATUS=ok)
     8. Exit code:
          0 = ready to commit (caller runs git commit with HEREDOC)
@@ -151,6 +158,36 @@ BUILD_ARTIFACT_MIN_SIZE = 1_000_000  # 1 MB; below this we don't auto-fix
 #   2. os.remove(<path>)            (delete from worktree)
 #   3. emit AUTO_FIXED=unexpected-md <path> action=unstaged+rm extra=<tag>
 SUBAGENT_EXTRA_TAGS = ("bmad-code-review", "review-summary", "dev-notes", "review-report")
+
+
+# --- Process-marker auto-prune (issue #8 / issue #9 finding 3, v0.1.39) ---
+#
+# Detection: untracked-or-newly-added file at exactly
+# `<ARTIFACTS_DIR><KEY>.<tag>.json` where `<tag>` ∈ PROCESS_MARKER_TAGS —
+# sandbox/build process markers a dev subagent sometimes spills alongside the
+# sanctioned dev-result.json (observed: `<KEY>.maven-skipped.json` recording
+# "backend tests skipped, no mvn in sandbox"). The marker's content is fully
+# redundant: the skip is already captured by dev-result.json
+# `checks.<x>="skip"` + `checks_skip_reasons` (+ a registered FU-Test item),
+# so deleting it loses zero information. Same risk tier as the unexpected-md
+# prune above (untracked, no credentials, no cross-story reach) — auto-prune
+# instead of UNEXPECTED_ARTIFACT halt, per the "halt is reserved for REAL
+# danger" red line (review 2026-06-10 findings #1/#7).
+#
+# The tag set is an EXPLICIT enumeration — never generalize to `*.json` or
+# `*-skipped.json`: `<KEY>.codex-skipped.json` and
+# `<KEY>.codex-skipped.resolved.json` are schema artifacts (STAGES story_json
+# entries) and must never be swallowed. A new marker variant keeps halting
+# until it is deliberately added here.
+#
+# Only untracked / newly-added paths trip; tracked modifications never
+# auto-delete (same invariant as the other two auto-fixers).
+#
+# When triggered, the script:
+#   1. git restore --staged <path>  (unstage if already added)
+#   2. os.remove(<path>)            (delete from worktree)
+#   3. emit AUTO_FIXED=process-marker <path> action=unstaged+rm tag=<tag>
+PROCESS_MARKER_TAGS = ("maven-skipped", "sandbox-skipped")
 
 
 def find_go_module_roots():
@@ -269,6 +306,27 @@ def auto_prune_subagent_extra(path):
     except OSError:
         return False
     return True
+
+
+def detect_process_markers(paths, key):
+    """Return list of (path, tag) for `<KEY>.<tag>.json` process markers
+    (tag in PROCESS_MARKER_TAGS) that are untracked/newly-added (xy starts
+    with "?" or contains "A"). Tracked modifications never trigger — same
+    invariant as detect_subagent_extras."""
+    out = []
+    prefix = f"{ARTIFACTS_DIR}{key}."
+    for xy, p in paths:
+        if not (xy.startswith("?") or "A" in xy):
+            continue
+        if not p.startswith(prefix):
+            continue
+        suffix = p[len(prefix):]
+        if not suffix.endswith(".json"):
+            continue
+        tag = suffix[: -len(".json")]
+        if tag in PROCESS_MARKER_TAGS:
+            out.append((p, tag))
+    return out
 
 
 # §-1.d step 2 — global blacklist patterns. Custom glob with gitignore-style
@@ -2082,6 +2140,201 @@ def read_cross_story_allowlist(key):
     return allowed
 
 
+def _lookup_chore_spec_from_yaml(epic, code):
+    """Read the `chore_spec:` sub-field recorded for `code` in the
+    sprint-status.yaml `retro_action_items.epic-<epic>-retro` block.
+
+    Returns the validated filename (basename) or None. The value must match
+    `chore-retro-c<epic>-<code>-<slug>.md` exactly — a stale/foreign value
+    falls back to None rather than authorizing the wrong spec.
+
+    Path note: uses the CWD-relative `ARTIFACTS_DIR` form (same as every
+    other file op in this module) rather than get_sprint_status_path() —
+    the two are equivalent in production (CWD = repo root,
+    sprint_status = artifacts_root/sprint-status.yaml) and the relative form
+    keeps the function testable against tmp fixture repos."""
+    try:
+        with open(f"{ARTIFACTS_DIR}sprint-status.yaml", "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    block_marker_prefix = f"  epic-{epic}-retro:"
+    rai_seen = False
+    in_block = False
+    in_entry = False
+    code_re = re.compile(r"^    ([A-Za-z][A-Za-z0-9-]*):\s")
+    chore_spec_re = re.compile(r"^      chore_spec:\s*['\"]?([^'\"\n]+?)['\"]?\s*$")
+    for line in lines:
+        stripped_nl = line.rstrip("\n")
+        if stripped_nl == "retro_action_items:" or \
+           stripped_nl.startswith("retro_action_items: "):
+            rai_seen = True
+            continue
+        if not rai_seen:
+            continue
+        if not in_block:
+            if stripped_nl.startswith(block_marker_prefix):
+                in_block = True
+            continue
+        if line.strip() and not line.startswith("    "):
+            break  # end of the epic-N-retro block
+        m = code_re.match(line)
+        if m:
+            in_entry = (m.group(1) == code)
+            continue
+        if in_entry:
+            m = chore_spec_re.match(line)
+            if m:
+                val = m.group(1).strip()
+                if re.fullmatch(
+                    rf"chore-retro-c{re.escape(str(epic))}-{re.escape(code)}-[a-z0-9][a-z0-9-]*\.md",
+                    val,
+                ):
+                    return val
+                return None
+    return None
+
+
+def _resolve_spec_md_path(key, epic, stage):
+    """Resolve the spec md whose frontmatter governs this commit (issue #9).
+
+    Story stages: `<ARTIFACTS_DIR><key>.md` (key is the story key). Stage
+    retro-fulfill: `key` is the retro action item code (e.g. E11), not a
+    story key — the governing spec is the chore spec
+    `chore-retro-c<epic>-<code>-<slug>.md`. Resolution order:
+
+    1. The `chore_spec:` field recorded for this code in sprint-status.yaml
+       retro_action_items (written by stage 6-5; §0.A.0 only fulfills items
+       that have it) — authoritative and immune to code-prefix ambiguity.
+    2. Fallback glob `chore-retro-c<epic>-<code>-*.md` with the same slug
+       shape as _fill_chore_spec_field. NOTE: the `[a-z0-9]` slug-start only
+       blocks UPPERCASE continuations (`C` vs `C2`); two lowercase-kebab
+       codes that prefix each other (`E-flyway` vs `E-flyway-extra`) DO
+       cross-match here, which is why the yaml field is consulted first.
+       Multiple candidates → WARN + None (fail-closed: frontmatter
+       whitelists are simply not honored for this commit).
+
+    Returns None when no unambiguous spec exists.
+    """
+    if stage == "retro-fulfill":
+        if not epic:
+            return None
+        fname = _lookup_chore_spec_from_yaml(epic, key)
+        if fname:
+            path = f"{ARTIFACTS_DIR}{fname}"
+            if os.path.exists(path):
+                return path
+        prefix = f"chore-retro-c{epic}-{key}-"
+        slug_re = re.compile(rf"^{re.escape(prefix)}[a-z0-9][a-z0-9-]*\.md$")
+        try:
+            listing = sorted(os.listdir(ARTIFACTS_DIR.rstrip("/")))
+        except OSError:
+            return None
+        candidates = [f for f in listing if slug_re.match(f)]
+        if len(candidates) > 1:
+            print(
+                f"WARN [_resolve_spec_md_path]: code {key!r} matched "
+                f"{len(candidates)} chore specs: {candidates}; ignoring "
+                f"frontmatter whitelists for this commit",
+                file=sys.stderr,
+            )
+            return None
+        if not candidates:
+            return None
+        return f"{ARTIFACTS_DIR}{candidates[0]}"
+    path = f"{ARTIFACTS_DIR}{key}.md"
+    return path if os.path.exists(path) else None
+
+
+# The only _bmad-output/ sibling subtree a spec may declare writebacks into
+# (issue #9). brainstorming/ / research/ etc. stay halt-only — no observed
+# legitimate story-pipeline writeback target outside planning-artifacts/.
+_PLANNING_ARTIFACTS_SUBDIR = "planning-artifacts/"
+
+
+def read_planning_artifacts_allowlist(key, epic, stage):
+    """Parse spec md frontmatter for `planning_artifacts:` field (issue #9).
+
+    A chore/story spec may explicitly mandate writing back planning docs —
+    the observed case: a forward-only remediation chore (epic-5 retro E11)
+    whose Tasks require updating `_bmad-output/planning-artifacts/epics.md`
+    (AC text + drift-registry table). Without a declaration channel the
+    out-of-scope guard (step 2.5, issue #5) halts on exactly the writeback
+    the spec demands, forcing a manual out-of-band commit. This whitelist is
+    the pass-through: declared paths bypass the step-2.5 halt and are staged
+    as project paths with an informational `PLANNING_ARTIFACT=` line.
+
+    Format (spec md head, before any `## ` heading) — full repo-relative
+    paths, deliberately NOT bare basenames (unlike `cross_story_artifacts:`)
+    so the declaration is unambiguous about which tree it touches:
+
+        ---
+        planning_artifacts:
+          - _bmad-output/planning-artifacts/epics.md
+        ---
+
+    Restrictions enforced here (invalid entries silently dropped — the field
+    is best-effort, same posture as cross_story_artifacts):
+    - entry must live under `<bmad-output-parent>/planning-artifacts/`
+      (prefix derived from the configured artifacts_root, so the field
+      follows a custom artifacts_root like everything else)
+    - entry must end with `.md` (planning docs only; .yaml/.json planning
+      state would be a different threat surface)
+    - no `..` traversal, no absolute paths
+
+    Returns set of repo-relative path strings; empty set when the spec md is
+    missing/ambiguous, frontmatter absent, field absent, or the out-of-scope
+    guard is disabled (_BMAD_OUTPUT_PREFIX is None — nothing to exempt from).
+
+    Parser structure deliberately mirrors read_cross_story_allowlist (same
+    frontmatter walk, same tolerance for a repeated field header) — kept as a
+    separate function rather than refactoring the reviewed original.
+    """
+    if _BMAD_OUTPUT_PREFIX is None:
+        return set()
+    spec_path = _resolve_spec_md_path(key, epic, stage)
+    if spec_path is None:
+        return set()
+    required_prefix = _BMAD_OUTPUT_PREFIX + _PLANNING_ARTIFACTS_SUBDIR
+    allowed = set()
+    in_frontmatter = False
+    in_field = False
+    try:
+        with open(spec_path, "r", encoding="utf-8") as f:
+            for line_idx, line in enumerate(f):
+                stripped = line.rstrip()
+                if line_idx == 0:
+                    if stripped == "---":
+                        in_frontmatter = True
+                        continue
+                    return set()
+                if not in_frontmatter:
+                    return set()
+                if stripped == "---":
+                    return allowed  # end of frontmatter
+                if not in_field:
+                    if stripped.startswith("planning_artifacts:"):
+                        in_field = True
+                    continue
+                m = re.match(r"^\s+-\s+(.+?)\s*$", line)
+                if m:
+                    val = m.group(1).strip().strip("'").strip('"')
+                    if val.startswith("/") or ".." in val:
+                        continue
+                    if not val.endswith(".md"):
+                        continue
+                    if not val.startswith(required_prefix):
+                        continue
+                    allowed.add(val)
+                else:
+                    in_field = False
+                    if stripped.startswith("planning_artifacts:"):
+                        in_field = True  # weird repeat, tolerate
+    except OSError:
+        return set()
+    return allowed
+
+
 def cross_story_ok(path, key, epic, cross_story_allowlist=None, chore_retro=False):
     """Return True if path is allowed under §-1.d step 3.
 
@@ -2318,20 +2571,62 @@ def main():
             paths = filter_junk_paths(paths, dry_run=args.dry_run)
 
     # 1.6 — auto-prune subagent-spilled extra .md artifacts (Opt 2;
-    # harness-changelog 2026-05-03 §A). Applies to all stages; the rule
-    # checks suffix shape so it can't match canonical artifacts.
+    # harness-changelog 2026-05-03 §A) + redundant process-marker .json
+    # files (issue #8, v0.1.39). Applies to all stages; both rules check
+    # exact suffix shape against an explicit tag enumeration so they can't
+    # match canonical artifacts.
     extra_prunes = []
+    marker_prunes = []
     if not args.dry_run:
         for p, tag in detect_subagent_extras(paths, key):
             if auto_prune_subagent_extra(p):
                 extra_prunes.append((p, tag))
-        if extra_prunes:
+        for p, tag in detect_process_markers(paths, key):
+            if auto_prune_subagent_extra(p):
+                marker_prunes.append((p, tag))
+        if extra_prunes or marker_prunes:
             paths, err = porcelain_paths()
             if paths is None:
                 emit("STATUS=halt")
                 emit(f"REASON=git status failed after extra-prune: {err}")
                 sys.exit(1)
             paths = filter_junk_paths(paths, dry_run=args.dry_run)
+            # A worktree that contained ONLY auto-pruned spills is now empty —
+            # re-run the step-1b emptiness branch so the caller gets skip/halt
+            # instead of a STATUS=ok that would suggest committing nothing.
+            if not paths:
+                if spec["skip_if_empty"]:
+                    emit("STATUS=skip")
+                    emit(f"REASON=worktree contained only auto-pruned files for stage {args.stage}; nothing left to commit")
+                    sys.exit(2)
+                emit("STATUS=halt")
+                emit(f"REASON=worktree contained only auto-pruned files (extra .md / process markers) for stage {args.stage} — nothing left to commit but stage requires non-empty output")
+                for p, tag in extra_prunes:
+                    emit(f"AUTO_FIXED=unexpected-md {p} action=unstaged+rm extra={tag}")
+                for p, tag in marker_prunes:
+                    emit(f"AUTO_FIXED=process-marker {p} action=unstaged+rm tag={tag}")
+                sys.exit(1)
+    else:
+        # dry-run: detect read-only and exclude would-be prunes from
+        # classification, so a dry-run predicts the real-run outcome instead
+        # of halting UNEXPECTED_ARTIFACT on a marker the real run auto-fixes
+        # (same posture as filter_junk_paths dry_run handling). Scoped to
+        # process markers (new in v0.1.39); the extra-md dry-run divergence
+        # is pre-existing Opt 2 behavior and unchanged here.
+        marker_prunes = detect_process_markers(paths, key)
+        if marker_prunes:
+            pruned = {p for p, _ in marker_prunes}
+            paths = [(xy, p) for xy, p in paths if p not in pruned]
+            if not paths:
+                if spec["skip_if_empty"]:
+                    emit("STATUS=skip")
+                    emit(f"REASON=worktree contained only auto-pruned files for stage {args.stage}; nothing left to commit")
+                    sys.exit(2)
+                emit("STATUS=halt")
+                emit(f"REASON=worktree contained only auto-pruned files (extra .md / process markers) for stage {args.stage} — nothing left to commit but stage requires non-empty output")
+                for p, tag in marker_prunes:
+                    emit(f"AUTO_FIXED=process-marker {p} action=planned-unstage+rm-dry-run tag={tag}")
+                sys.exit(1)
 
     # 1.7 — sprint-status auto-sync (chore-harness-epic-4-orchestration-observations T1)
     #
@@ -2406,7 +2701,8 @@ def main():
         emit("CHANGED_ALL=" + "; ".join(p for _, p in paths))
         sys.exit(1)
 
-    # 2.5 — out-of-scope _bmad-output/ guard (§-1.d; issue #5)
+    # 2.5 — out-of-scope _bmad-output/ guard (§-1.d; issue #5) + spec-declared
+    # planning-artifacts writeback whitelist (issue #9).
     # Files under _bmad-output/ but OUTSIDE implementation-artifacts/ (e.g.
     # brainstorming/, planning-artifacts/, research/) are cross-cutting BMad
     # planning docs — often produced by a *parallel* bmad session unrelated to
@@ -2416,19 +2712,59 @@ def main():
     # separately (same spirit as cross-story isolation within
     # implementation-artifacts/). Runs after the blacklist gate, so blacklisted
     # _bmad-output/ paths (e.g. .harness-logs/**) still report as BLACKLIST=.
-    out_of_scope_bmad = [p for _, p in paths if is_out_of_scope_bmad_output(p)]
+    #
+    # Exception (issue #9): a spec whose Tasks explicitly mandate a planning
+    # doc writeback (e.g. forward-only remediation updating epics.md) declares
+    # the exact paths in its frontmatter `planning_artifacts:` list — those
+    # paths bypass the halt and flow on into the project bucket (staged with
+    # this commit, reported as PLANNING_ARTIFACT= lines on STATUS=ok).
+    #
+    # The whitelist only takes effect on stages whose spec allows project
+    # code (2/4/5/retro-fulfill, ...): on project_code=False stages an
+    # exempted path would just fall through classify() into the opaque
+    # FORBIDDEN halt — keeping the gate here yields the clearer
+    # OUT_OF_SCOPE_BMAD diagnosis with stage-appropriate guidance.
+    planning_allowlist = (
+        read_planning_artifacts_allowlist(key, epic, args.stage)
+        if spec["project_code"] else set()
+    )
+    out_of_scope_bmad = []
+    planning_writebacks = []
+    for _, p in paths:
+        if not is_out_of_scope_bmad_output(p):
+            continue
+        if p in planning_allowlist:
+            planning_writebacks.append(p)
+            continue
+        out_of_scope_bmad.append(p)
     if out_of_scope_bmad:
         emit("STATUS=halt")
         emit("REASON=_bmad-output/ file outside implementation-artifacts/ — out of scope for story commits (issue #5)")
         for p in out_of_scope_bmad:
             emit(f"OUT_OF_SCOPE_BMAD={p}")
+        if spec["project_code"]:
+            declare_hint = (
+                f"If the spec for this commit explicitly mandates the "
+                f"writeback (e.g. forward-only remediation updating "
+                f"epics.md), declare the path in the spec frontmatter "
+                f"`planning_artifacts:` list "
+                f"(`{_BMAD_OUTPUT_PREFIX}{_PLANNING_ARTIFACTS_SUBDIR}*.md` "
+                f"only — issue #9) and re-run. Otherwise commit"
+            )
+        else:
+            declare_hint = (
+                f"The `planning_artifacts:` frontmatter whitelist (issue #9) "
+                f"does not apply on stage {args.stage} (stage forbids project "
+                f"code) — commit"
+            )
         emit(
             f"GUIDANCE=paths under {_BMAD_OUTPUT_PREFIX} but outside "
             f"{_BMAD_OUTPUT_INSCOPE_PREFIX} (e.g. brainstorming/, "
-            f"planning-artifacts/) are not story artifacts. Commit them "
-            f"separately outside the sprint pipeline (likely from a parallel "
-            f"bmad session), or move them under implementation-artifacts/ if "
-            f"they are genuine story deliverables."
+            f"planning-artifacts/) are not story artifacts. {declare_hint} "
+            f"them separately outside the sprint pipeline (likely from a "
+            f"parallel bmad session), or move them under "
+            f"implementation-artifacts/ if they are genuine story "
+            f"deliverables."
         )
         emit("CHANGED_ALL=" + "; ".join(p for _, p in paths))
         sys.exit(1)
@@ -2615,6 +2951,11 @@ def main():
         emit(f"AUTO_FIXED=binary-blob {p} action=unstaged+rm+gitignored size={size_mb}MB")
     for p, tag in extra_prunes:
         emit(f"AUTO_FIXED=unexpected-md {p} action=unstaged+rm extra={tag}")
+    for p, tag in marker_prunes:
+        action = "planned-unstage+rm-dry-run" if args.dry_run else "unstaged+rm"
+        emit(f"AUTO_FIXED=process-marker {p} action={action} tag={tag}")
+    for p in planning_writebacks:
+        emit(f"PLANNING_ARTIFACT={p}")
     for p in expected:
         emit(f"STAGED={p}")
     for p in project:

@@ -83,6 +83,30 @@ else
     fail "stage2-q6-block" "stage 2 缺 Q6 全栈贯通 review 块（yaml-driven 渲染）"
 fi
 
+# --- Test 7: 所有 stage（1-6）都含任务追踪工具禁令（issue #9 finding 2）---
+all_stages_have_task_ban=1
+for s in 1 2 3 4 5 6; do
+    if ! python3 "$SUFFIX_PY" "$s" 2>&1 | grep -q "任务追踪工具禁令"; then
+        fail "task-tools-ban-stage-$s" "stage $s 缺任务追踪工具禁令段（TaskCreate/TaskUpdate/TaskList 污染主 orchestrator 任务清单）"
+        all_stages_have_task_ban=0
+    fi
+done
+[ "$all_stages_have_task_ban" = "1" ] && pass "task-tools-ban-all-stages"
+
+# --- Test 8: stage 2/4 含禁止过程 marker 文件段（issue #8）；stage 5 不含 ---
+marker_ban_ok=1
+for s in 2 4; do
+    if ! python3 "$SUFFIX_PY" "$s" 2>&1 | grep -q "禁止过程 marker 文件"; then
+        fail "no-process-marker-stage-$s" "stage $s 缺禁止过程 marker 文件段（maven-skipped.json 之类的冗余产出源头收敛）"
+        marker_ban_ok=0
+    fi
+done
+if python3 "$SUFFIX_PY" 5 2>&1 | grep -q "禁止过程 marker 文件"; then
+    fail "no-process-marker-stage-5-absent" "stage 5 不应含禁止过程 marker 文件段（仅 dev stage 2/4）"
+    marker_ban_ok=0
+fi
+[ "$marker_ban_ok" = "1" ] && pass "no-process-marker-stages-2-4"
+
 echo
 if [ "$failed" -eq 0 ]; then
     echo "All tests passed."

@@ -11,7 +11,7 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 **与 `/harness-zh:run` 共享的行为契约**：
 
 - **代答政策**：每个用 `Agent` / `SendMessage` 调度的 testarch 子 agent，prompt 末尾必须含"按 `.claude/harness/answer-policy.md` 自决，不要发问"。该文件只含跨项目**通用决策原则**（见 [`answer-policy.md`](../harness/answer-policy.md)）；项目特定语境按其自述由 `harness-prompt-suffix.py` 注入——run-test 的 testarch 子 agent（T 系 stage 无 suffix 入口）仅依赖通用原则自决。
-- **进度可视化**：用 TaskCreate 给本次 test sprint 建一个任务（标题形如 `Test Sprint: <key>`），stage 进入时 `in_progress`，完成时 `completed`。
+- **进度可视化（双模式，issue #9）**：仅当本命令由用户**独立触发**（你是会话主 agent）时，用 TaskCreate 给本次 test sprint 建一个任务（标题形如 `Test Sprint: <key>`），stage 进入时 `in_progress`，完成时 `completed`。当由 `/harness-zh:run` 阶段 ⑤.5 作为 subagent 调起时，**禁止**调用 TaskCreate / TaskUpdate / TaskList 等任务管理工具——任务清单归 run-sprint 主 orchestrator 独占（子 agent 建/翻/删任务会污染主调度清单，曾发生整单清空事故），进度只通过最终返回 message 汇报。
 - **Commit 协议**：每次 commit 调 `python3 .claude/harness/scripts/harness-commit.py <stage> <key>`（stage 取值：`T1` / `T3` / `T4`）；不允许 `git add -A`。
 - **结构化校验信任链**：不做"广义错误词"文本扫描；产物缺失 / schema 不合规 / harness-commit 退出码 1 — 这三类硬错误才 halt。
 
@@ -131,6 +131,8 @@ prompt 核心：
 > 请直接调用 /bmad-testarch-test-design，目标 epic 编号 = ${EPIC}。这是 epic 级别 test design，必须以 non-interactive 模式运行（任何 <ask> 节点都不要发问，按 `.claude/harness/answer-policy.md` 自决）。
 >
 > 产出文件：`_bmad-output/implementation-artifacts/test_artifacts/epic-${EPIC}-test-design.md`，含 risk-based 测试计划（哪些 AC 必须 e2e / 哪些 unit / 哪些 sandbox-bound）。完成后停止，不要做任何 git 操作。
+>
+> **任务追踪工具禁令（issue #9）**：禁止调用 TaskCreate / TaskUpdate / TaskList 等任务管理工具——任务清单由主 orchestrator 独占维护，你的进度只通过最终返回 message 汇报。
 
 **验收**：`test -f _bmad-output/implementation-artifacts/test_artifacts/epic-${EPIC}-test-design.md` 且非空。
 
@@ -162,6 +164,8 @@ prompt 核心：
 > spec.ts 是**红相 scaffold**（实施前先写测试），断言期望故事 spec ## Acceptance Criteria 段每条对应一个 e2e assertion；Playwright API 用 `@playwright/test` 标准 import；不依赖任何 fixtures（首次接通保持简单）。
 >
 > 必须以 non-interactive 模式运行，按 `.claude/harness/answer-policy.md` 自决。完成后停止，不要做任何 git 操作。
+>
+> **任务追踪工具禁令（issue #9）**：禁止调用 TaskCreate / TaskUpdate / TaskList 等任务管理工具——任务清单由主 orchestrator 独占维护，你的进度只通过最终返回 message 汇报。
 
 调度前主 agent 把 prompt 里的 `$FRONTEND_DIR` / `$E2E_SUBDIR` 替换为 §0.1 解析出的真实值——子 agent 拿到的必须是字面路径，不要把占位符原样发出去。
 
@@ -212,7 +216,7 @@ echo "E2E_RC=$E2E_RC"
 
 v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / multi-story 留 v0.2+。
 
-退出条件：T4 commit 完成（无论 verdict）→ 把 TaskCreate 任务标 `completed` → 退出。
+退出条件：T4 commit 完成（无论 verdict）→ 把 TaskCreate 任务标 `completed`（仅独立触发模式；被 run-sprint 阶段 ⑤.5 调起时无任务可标，跳过——见 §进度可视化 双模式）→ 退出。
 
 ---
 
