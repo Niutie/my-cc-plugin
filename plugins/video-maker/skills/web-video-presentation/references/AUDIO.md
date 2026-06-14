@@ -49,6 +49,13 @@ presentation/public/audio/
 
 ## 标准流程
 
+> **可提前给单章合 demo**（第 1 章验收时校准节奏用）：下面的流程**只作用于
+> `chapters.ts` 当前已注册的章节**。第 1 章验收阶段只注册了第 1 章，所以直接跑
+> 一遍就只合第 1 章 —— 免费用 `PRESENTATION_TTS=edge-tts`，开 `?auto=1` 听真实
+> 节奏。合成是**增量**的（跳过已存在 mp3），Phase 3 全量跑时第 1 章直接复用、只补
+> 其余章。**注意**：之后改了该章 narration 文案，要 `--force` 重合或删掉
+> `public/audio/<id>/`（增量按文件存在判定，不看内容）。
+
 ### 1. 抽取 segments
 
 ```bash

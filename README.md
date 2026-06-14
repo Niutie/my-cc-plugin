@@ -5,7 +5,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 | Plugin | Version | What it does |
 |---|---|---|
 | **[harness-zh](plugins/harness-zh/README.md)** | 0.1.39 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
-| **[video-maker](plugins/video-maker/skills/web-video-presentation/README.md)** | 1.4.0 | Turn scripts / articles into click-driven 16:9 web presentations you can screen-record as cinematic videos |
+| **[video-maker](plugins/video-maker/skills/web-video-presentation/README.md)** | 1.5.0 | Turn scripts / articles into click-driven 16:9 web presentations you can screen-record as cinematic videos |
 
 ---
 

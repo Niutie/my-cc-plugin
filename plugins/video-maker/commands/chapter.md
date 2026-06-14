@@ -23,4 +23,8 @@ Part 8 反馈速查）。
    按 2.5 bump `presentation/src/hooks/useStepper.ts` 的 `STORAGE_KEY`。
 3. 完工自检（CHAPTER-CRAFT Part 7，优先 Agent Teams → subagent → 自检），**按 fail 改完再汇报**。
 4. **若这是第 1 章：做完必须停下来等用户验收**（SKILL.md 2.2 验收清单：视觉气质 / 节奏 /
-   内容驱动动画 / 双源细节 / 反 AI 味），**不可跳过**。其余章做完正常汇报，提示继续。
+   内容驱动动画 / 双源细节 / 反 AI 味），**不可跳过**。验收提示里要带上**怎么预览节奏**
+   （Manual 逐步看；M→M→SPACE 切 AUTO 用字数估算节奏通播一遍），并 **offer 一个可选的
+   第 1 章音频 demo**（用户想要才做：`npm run extract-narrations` +
+   `PRESENTATION_TTS=edge-tts npm run synthesize-audio`，此时天然只合第 1 章、Phase 3
+   增量复用 —— 完整说明见 SKILL.md 2.2）。其余章做完正常汇报，提示继续。

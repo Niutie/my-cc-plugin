@@ -314,6 +314,11 @@ rm -rf presentation/src/chapters/01-example
 ```
 第 1 章 <id> 做完了，dev server 在 localhost:5173 运行。
 
+怎么看：
+  • 默认 Manual —— 点击 / 方向键逐步推进，细看每一屏。
+  • 想感受节奏 —— 按 M→M 切到 AUTO，再按 SPACE 通播一遍。
+    （此时还没音频，用字数估算节奏 ≈ 真实口播的 4 字/秒，够判断快慢。）
+
 验收重点：
   □ 视觉气质对不对？符合 <theme nameZh> 的预期吗？
   □ 节奏对不对？某些步太快 / 太慢 / 信息太薄？
@@ -322,7 +327,30 @@ rm -rf presentation/src/chapters/01-example
   □ 反 AI 味检查：紫粉渐变 / 圆角彩色边框 / 假插画 / emoji 是否有？
 
 问题告诉我，我针对性改。OK 了告诉我"继续"，我按选定模式做第 2 章及之后。
+
+（可选）想顺便听真实节奏？我可以用免费的 edge-tts 给**这一章**先合一版音频
+（约 <S> 段、几十秒，pip install edge-tts、无需 key），再 ?auto=1 通播 —— 这版
+音频 Phase 3 会直接复用、不浪费。说"听一下"就给你合。
 ```
+
+> **可选 · 第 1 章音频 demo（节奏 anchor 的延伸）**。第 1 章是节奏锚点，但
+> 「音频驱动的真实节奏 / step 时长」默认要等 Phase 3（所有章做完后）才暴露。
+> 用户想提前校准时，**只给第 1 章**合一版音频即可 —— 此时 `chapters.ts` 只注册了
+> 第 1 章，`extract-narrations` 天然只产出第 1 章 segments，**无需过滤**：
+>
+> ```bash
+> cd presentation
+> npm run extract-narrations
+> PRESENTATION_TTS=edge-tts npm run synthesize-audio   # 免费 / 无 key；英文片加 --voice=en-US-AriaNeural
+> ```
+>
+> 然后让用户开 `localhost:5173/?auto=1` → SPACE 听，重点抓「某段 ≥15s = 文案太密 /
+> step 没拆够」（见 [`AUDIO.md`](references/AUDIO.md) 「校验时长」）。
+> - **增量安全**：合成跳过已存在 mp3，Phase 3 全量跑时直接复用第 1 章、只补 2~N，不重烧。
+> - **改稿会 stale**：之后改了本章 narration 文案 → `--force` 重合或删掉
+>   `public/audio/<id>/`（增量按文件存在判定，不看内容）。
+> - 这是**预览**，**不是** Checkpoint Audio 决策 —— 「要不要全量音频 + 用哪个 provider」
+>   仍只在 Checkpoint Audio 定一次；demo 用 edge-tts，最终可换 minimax/openai。
 
 ### 2.3 第 2~N 章 —— 按选定模式
 
