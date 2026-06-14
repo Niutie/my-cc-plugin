@@ -187,6 +187,23 @@ Everything lives inside `skills/web-video-presentation/`, auto-discovered by Cla
 
 The bundled skill is **model-invoked** — just ask Claude to "turn this article/script into a web-video presentation" and it picks up `video-maker:web-video-presentation`. Full workflow in [`plugins/video-maker/skills/web-video-presentation/SKILL.md`](plugins/video-maker/skills/web-video-presentation/SKILL.md); see also the skill's [README](plugins/video-maker/skills/web-video-presentation/README.md) / [中文文档](plugins/video-maker/skills/web-video-presentation/README.zh-CN.md).
 
+### Commands
+
+Prefer explicit control? The plugin also ships per-phase commands plus a one-click orchestrator. They coexist with the model-invoked skill.
+
+| Command | Phase | What it does |
+|---|---|---|
+| `/video-maker:plan [article]` | 1 | Article / script → `script.md` + `outline.md` (self-checked); stops at the 5-item **Checkpoint Plan** |
+| `/video-maker:themes` | — | List / recommend the 23 built-in themes by `bestFor` |
+| `/video-maker:scaffold --theme=<id>` | 2.1 | Scaffold the Vite + React + TS project with the chosen theme; remove the example chapter |
+| `/video-maker:chapter <n>` | 2.2 / 2.4 | Build one chapter per `CHAPTER-CRAFT.md` (chapter 1 pauses for acceptance) |
+| `/video-maker:chapters --mode=A\|B\|C` | 2.3 | Build chapters 2–N in the chosen mode (C = parallel subagents) |
+| `/video-maker:audio [--provider=…]` | 3 | Extract narrations → review segments → synthesize per-step mp3s |
+| `/video-maker:record` | 4 | Pick the auto (`?auto=1`) / manual recording path and start the dev server |
+| `/video-maker:make […flags]` | 1–4 | One-click end-to-end; **preserves the 3 hard checkpoints** (pre-answer via `--theme` / `--mode` / `--audio` to minimize stops, `--yolo` to skip chapter-1 acceptance) |
+
+Commands are thin orchestrators over the bundled skill — they read the same `references/` and use on-disk artifacts (`script.md`, `outline.md`, `.theme`, `narrations.ts`, …) as the source of truth, so you can mix commands with plain conversation and resume anytime.
+
 ---
 
 ## License
