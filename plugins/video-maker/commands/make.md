@@ -1,6 +1,6 @@
 ---
 description: 一键自动化 — 端到端串起 plan→scaffold→chapters→audio→record，保留 3 个硬节点（可用参数预答减少停顿）
-argument-hint: '[article 路径] [--theme=<id>] [--mode=A|B|C] [--audio=yes|no] [--assets=placeholder|mine] [--yolo]'
+argument-hint: '[article 路径] [--lang=zh|en] [--theme=<id>] [--mode=A|B|C] [--audio=yes|no] [--assets=placeholder|mine] [--yolo]'
 allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 ---
 
@@ -14,7 +14,8 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 
 编排（每步等价于对应拆分命令，复用同一套自检 / CHAPTER-CRAFT 要求）：
 
-1. **Phase 1 = `/video-maker:plan`**：产出 script.md + outline.md + 自检 → 打印 Checkpoint Plan 5 件事。
+1. **Phase 1 = `/video-maker:plan`**：**先定成片语言**（SKILL.md 1.1.5）→ 产出 script.md + outline.md + 自检 → 打印 Checkpoint Plan（带成片语言 + 5 件事）。
+   - 成片语言：`--lang=zh|en` 给了就直接用；没给 → 默认跟随原文，并用一句话确认（给反悔机会）。语言决定 script/narration/TTS 音色，**必须在产出 script.md 前定**。
    - `--theme` / `--mode` / `--assets` 给了就直接采纳并**说明选择**；任一没给 → **停下**让用户对齐（硬节点）。
 2. **Phase 2.1 = `/video-maker:scaffold`**：用选定主题脚手架 + 删 example 章。
 3. **Phase 2.2 = `/video-maker:chapter 1`**：做第 1 章完整样板 → **停下验收**（硬节点，除非显式 `--yolo`）。

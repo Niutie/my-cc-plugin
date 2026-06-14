@@ -10,17 +10,19 @@ Auto 模式会自动按 step 播放并自动推进——录屏可以一镜到底
 > 这个老问题。
 
 合成器是 **provider-agnostic** 的：runner 本身不绑定任何 TTS 后端，每个
-后端是 `scripts/tts-providers/<name>.sh` 一个文件。**内置 2 个 provider**：
+后端是 `scripts/tts-providers/<name>.sh` 一个文件。**内置 3 个 provider**
+（两个收费 + 一个免费）：
 
-| Provider | 默认 | 何时用 |
-|---|---|---|
-| `minimax` | ✓ | 中文口播首选（用 `mmx-cli`，要 MiniMax API key） |
-| `openai`  | —— | 多数 agent 已有 `OPENAI_API_KEY`；curl-based、响应快 |
+| Provider | 默认 | 收费 | 何时用 |
+|---|---|---|---|
+| `minimax`  | ✓ | 收费 | 中文口播首选（用 `mmx-cli`，要 MiniMax API key） |
+| `openai`   | —— | 收费 | 多数 agent 已有 `OPENAI_API_KEY`；curl-based、响应快 |
+| `edge-tts` | —— | **免费 / 无 key** | 不想花钱时首选；`pip install edge-tts`，调微软 Edge 在线 TTS，中英音色都有 |
 
 换 / 加 provider 见
 [`scripts/tts-providers/README.md`](../templates/scripts/tts-providers/README.md)
 （脚手架跑完后路径是 `presentation/scripts/tts-providers/README.md`）。
-README 里还附了 5 套**可粘贴**的现成片段（ElevenLabs / edge-tts / macOS say /
+README 里还附了 4 套**可粘贴**的现成片段（ElevenLabs / macOS say /
 Azure / Google Cloud）和写自定义 provider 的三函数契约。
 
 ---
@@ -78,8 +80,9 @@ ls scripts/tts-providers/    # 看本项目带了哪些
 
 - 用默认 `minimax` → 走 [2.A](#2a-用内置-minimax-合成)
 - 用内置 `openai` → 走 [2.B](#2b-用内置-openai-合成)
-- 想用别的 TTS / 自带 TTS → 走 [2.C](#2c-换-provider--加自定义-provider)
-- 一个都没装好 → 走 [2.D](#2d-退化路径)
+- 用内置 `edge-tts`（免费 / 无 key）→ 走 [2.C](#2c-用内置-edge-tts-合成免费--无-key)
+- 想用别的 TTS / 自带 TTS → 走 [2.D](#2d-换-provider--加自定义-provider)
+- 一个都没装好 → 走 [2.E](#2e-退化路径)
 
 #### 2.A 用内置 minimax 合成
 
@@ -125,11 +128,39 @@ OPENAI_TTS_MODEL=tts-1-hd PRESENTATION_TTS=openai \
 
 `tts_check` 会检查 curl / jq / `OPENAI_API_KEY` 三件套，缺哪个报哪个。
 
-#### 2.C 换 provider / 加自定义 provider
+#### 2.C 用内置 edge-tts 合成（免费 / 无 key）
 
-内置之外的常见后端在 `scripts/tts-providers/README.md` 里有 5 段
-**可粘贴**代码片段（ElevenLabs / edge-tts / macOS `say` / Azure / Google
-Cloud）。
+不想花钱、也不想配 key 时走这个。edge-tts 用微软 Edge 的在线 TTS，
+**零账号零费用**，只要装一个 Python CLI：
+
+```bash
+pip install edge-tts                              # 一次性安装
+PRESENTATION_TTS=edge-tts npm run synthesize-audio
+```
+
+英文视频要换英文音色（edge-tts 音色按语言区分；**成片语言在 Phase 1.1.5
+已确认**，按那个语言挑音色）：
+
+```bash
+# 英文片
+PRESENTATION_TTS=edge-tts npm run synthesize-audio -- --voice=en-US-AriaNeural
+# 中文片（默认 zh-CN-YunxiNeural，可换女声）
+PRESENTATION_TTS=edge-tts npm run synthesize-audio -- --voice=zh-CN-XiaoxiaoNeural
+# 全部可选音色
+edge-tts --list-voices | less
+```
+
+常用音色：`zh-CN-YunxiNeural`（中文男声 · 默认）/ `zh-CN-XiaoxiaoNeural`
+（中文女声）/ `en-US-AriaNeural`（英文女声）/ `en-US-GuyNeural`（英文男声）。
+
+`tts_check` 只校验 `edge-tts` 在不在 PATH；没装会提示 `pip install edge-tts`。
+需要网络（调微软的端点）。质量不如收费的 minimax/openai 细腻，但做"伪装成
+视频的网页"的口播完全够用，且免费。
+
+#### 2.D 换 provider / 加自定义 provider
+
+内置之外的常见后端在 `scripts/tts-providers/README.md` 里有 4 段
+**可粘贴**代码片段（ElevenLabs / macOS `say` / Azure / Google Cloud）。
 
 挑一个 → 复制 README 里的代码块 → 保存为
 `scripts/tts-providers/<name>.sh` → 设好环境变量 → 切换 provider 跑：
@@ -137,7 +168,7 @@ Cloud）。
 ```bash
 PRESENTATION_TTS=elevenlabs npm run synthesize-audio
 # 或
-npm run synthesize-audio -- --provider=edge-tts
+npm run synthesize-audio -- --provider=azure
 ```
 
 如果用户的 TTS 完全自研，**按三函数契约**写一个 `<name>.sh` 即可：
@@ -151,32 +182,37 @@ npm run synthesize-audio -- --provider=edge-tts
 抄 `openai.sh`（HTTP-based）或 `minimax.sh`（CLI-based）起手最快。
 详细规范在 `scripts/tts-providers/README.md`。
 
-#### 2.D 退化路径
+#### 2.E 退化路径
 
-如果两个内置 provider 都没就绪（没装 mmx 也没有 OpenAI key）告诉用户：
+如果默认的 minimax 没就绪（没装 mmx），**先推免费的 edge-tts** —— 它零
+费用零 key，是最省事的兜底。告诉用户：
 
 ```
 我可以：
 
-  1. 用内置 openai provider（如果你已有 OpenAI key）
+  1. 用内置 edge-tts（免费 · 无 key · 推荐）
+     pip install edge-tts
+     PRESENTATION_TTS=edge-tts npm run synthesize-audio
+     # 英文片加 --voice=en-US-AriaNeural
+
+  2. 用内置 openai provider（如果你已有 OpenAI key）
      export OPENAI_API_KEY=sk-...
      PRESENTATION_TTS=openai npm run synthesize-audio
 
-  2. 帮你装 MiniMax CLI（默认 provider，中文音色更稳）
+  3. 帮你装 MiniMax CLI（默认 provider，中文音色更稳，收费）
      npm install -g mmx-cli && mmx auth login --api-key sk-xxxxx
      API key 在 https://platform.minimaxi.com 获取
 
-  3. 换其它 provider
-     scripts/tts-providers/README.md 里有 5 种现成代码片段：
+  4. 换其它 provider
+     scripts/tts-providers/README.md 里有 4 种现成代码片段：
        • ElevenLabs  (要 ELEVENLABS_API_KEY，英文音色最佳)
-       • edge-tts    (免费 / 无 key / pip install edge-tts)
        • macOS say   (零依赖离线，质量一般，适合预览)
        • Azure       (要 AZURE_SPEECH_KEY)
        • Google      (要 gcloud auth)
      复制一段保存成 tts-providers/<name>.sh，
      再 PRESENTATION_TTS=<name> npm run synthesize-audio
 
-  4. 暂时跳过
+  5. 暂时跳过
      稿子和 narrations 都在，你自己用任意 TTS 录制即可——文件
      按 audio-segments.json 的 audio 字段命名就行。
 ```
@@ -257,6 +293,15 @@ openai 专属：
 | 走代理 / 走 Azure-OpenAI | `export OPENAI_BASE_URL=https://your-proxy/v1` |
 | HD 太慢 | 改成 `OPENAI_TTS_MODEL=tts-1`（默认）；HD 大约慢 2 倍 |
 | 中文音色不像真人 | OpenAI 6 种音色都是英语偏向；中文角色用 `minimax` 更合适 |
+
+edge-tts 专属：
+
+| 现象 | 原因 / 修法 |
+|---|---|
+| `edge-tts not found` | `pip install edge-tts`（或 `pipx install edge-tts`）；装完确认 `edge-tts --list-voices` 能跑 |
+| 全部段 FAILED | 多半是断网（edge-tts 调微软在线端点）或音色名拼错；`edge-tts --list-voices` 查正确 id，`bash -x scripts/synthesize-audio.sh` 看实际调用 |
+| 英文片读出中文腔 | 默认音色是 `zh-CN-YunxiNeural`；英文片传 `--voice=en-US-AriaNeural` 之类的 en 音色 |
+| 偶发超时 / 限流 | 微软端点偶尔抖动；`npm run synthesize-audio` 重跑即可（已存在的会跳过，只补失败段） |
 
 换其它（自定义）provider 之后：
 

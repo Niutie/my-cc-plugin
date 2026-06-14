@@ -17,6 +17,7 @@
 npm run synthesize-audio
 
 # 换 provider
+PRESENTATION_TTS=edge-tts npm run synthesize-audio   # 免费 / 无 key
 PRESENTATION_TTS=openai npm run synthesize-audio
 npm run synthesize-audio -- --provider=elevenlabs
 
@@ -36,11 +37,13 @@ npm run synthesize-audio -- --force
 
 | 文件 | 后端 | 鉴权 | 备注 |
 |---|---|---|---|
-| `minimax.sh` | MiniMax `mmx` CLI | `mmx auth login --api-key` | **默认**；中文口播质量稳 |
-| `openai.sh` | OpenAI Audio Speech API | `OPENAI_API_KEY` env var | curl-based；多数 agent 已有 key |
+| `minimax.sh` | MiniMax `mmx` CLI | `mmx auth login --api-key`（收费） | **默认**；中文口播质量稳 |
+| `openai.sh` | OpenAI Audio Speech API | `OPENAI_API_KEY` env var（收费） | curl-based；多数 agent 已有 key |
+| `edge-tts.sh` | 微软 Edge 在线 TTS（`edge-tts` Python CLI） | **无 key / 免费** | `pip install edge-tts`；不想花钱时的首选；中英音色都有 |
 
-只内置这两个 —— 我们不替你做更多技术选型。其它后端的代码片段在下面，
-复制到 `tts-providers/<name>.sh` 即可启用。
+内置这三个：两个收费（minimax / openai）+ 一个免费（edge-tts）。其它后端
+的代码片段在下面，复制到 `tts-providers/<name>.sh` 即可启用 —— 更多技术
+选型我们不替你做。
 
 ---
 
@@ -83,9 +86,10 @@ npm run synthesize-audio -- --force
 
 ## 常见 TTS 后端的现成片段
 
-下面**不是**内置 provider —— 是你自己写 `tts-providers/<name>.sh` 时
-可以**直接抄过去**的代码片段。复制 → 保存为 `<name>.sh` → 调通了
-就 `PRESENTATION_TTS=<name>` 用。
+下面**四段**（ElevenLabs / macOS `say` / Azure / Google）才是要你自己抄的
+代码片段：复制 → 保存为 `<name>.sh` → 调通了就 `PRESENTATION_TTS=<name>` 用。
+开头的 **OpenAI / edge-tts 两段是已内置 provider 的交叉指引**（无需复制），
+列在这里是给你写 HTTP-based / 免费 provider 时当参考。
 
 > 大多数云 TTS 的 API key 通过环境变量传入（例如 `OPENAI_API_KEY`、
 > `ELEVENLABS_API_KEY`）。把 `export` 加到你的 shell rc，或在
@@ -143,35 +147,24 @@ tts_synthesize() {
 }
 ```
 
-### edge-tts — `tts-providers/edge-tts.sh`（免费 / 无 API key）
+### edge-tts（免费 / 无 API key）
+
+**已内置** —— 直接看 [`edge-tts.sh`](./edge-tts.sh)，无需复制。这是不想花钱
+时的首选：`pip install edge-tts`，零账号零 key，调微软 Edge 的在线 TTS。
+
+启用：
 
 ```bash
-# Docs:   https://github.com/rany2/edge-tts
-# Install: pip install edge-tts
-# Voices: edge-tts --list-voices
-#   zh-CN-YunxiNeural     (男声)
-#   zh-CN-XiaoxiaoNeural  (女声)
-#   en-US-AriaNeural      (英文女声)
-#   en-US-GuyNeural       (英文男声)
-
-tts_check() {
-  command -v edge-tts >/dev/null || { echo "✗ edge-tts not found" >&2; return 1; }
-}
-
-tts_install_help() {
-  cat <<'EOF' >&2
-Install edge-tts (free, uses Microsoft Edge's TTS backend, no API key):
-  pip install edge-tts
-List available voices:
-  edge-tts --list-voices | less
-EOF
-}
-
-tts_synthesize() {
-  local text="$1" out="$2" voice="${3:-zh-CN-YunxiNeural}"
-  edge-tts --text "$text" --voice "$voice" --write-media "$out" >/dev/null 2>&1
-}
+pip install edge-tts
+PRESENTATION_TTS=edge-tts npm run synthesize-audio
+# 英文视频换英文音色（edge-tts 音色按语言区分）
+PRESENTATION_TTS=edge-tts npm run synthesize-audio -- --voice=en-US-AriaNeural
+# 全部可选音色
+edge-tts --list-voices | less
 ```
+
+常用音色：`zh-CN-YunxiNeural`（中文男声 · 默认）/ `zh-CN-XiaoxiaoNeural`
+（中文女声）/ `en-US-AriaNeural`（英文女声）/ `en-US-GuyNeural`（英文男声）。
 
 ### macOS `say` — `tts-providers/say.sh`（离线 / 兜底）
 

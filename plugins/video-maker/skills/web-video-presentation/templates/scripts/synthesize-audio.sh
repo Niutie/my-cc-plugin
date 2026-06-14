@@ -13,8 +13,8 @@
 #   tts_install_help                             (optional)
 #
 # See tts-providers/README.md for the full contract and copy-pasteable
-# recipes for adding more providers (OpenAI / ElevenLabs / edge-tts /
-# Azure / etc.).
+# recipes for adding more providers (ElevenLabs / macOS say / Azure /
+# Google / etc.).
 #
 # Choosing a provider:
 #   PRESENTATION_TTS=<name>       env var  (default: minimax)
@@ -36,6 +36,7 @@
 # Examples:
 #   npm run synthesize-audio
 #   npm run synthesize-audio -- --force
+#   PRESENTATION_TTS=edge-tts npm run synthesize-audio    # free, no API key
 #   PRESENTATION_TTS=openai npm run synthesize-audio
 #   npm run synthesize-audio -- --provider=elevenlabs --voice=Rachel
 # ────────────────────────────────────────────────────────────────────

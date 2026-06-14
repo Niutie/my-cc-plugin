@@ -1,6 +1,6 @@
 ---
 description: 内容编写 — 把文章/口播稿产出成 script.md + outline.md（各自走自检），停在 Checkpoint Plan 让你一次对齐 5 件事
-argument-hint: '[article 文件路径 | 直接粘贴/描述内容]'
+argument-hint: '[article 文件路径 | 直接粘贴/描述内容] [--lang=zh|en]'
 allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 ---
 
@@ -17,14 +17,19 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
    - `${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/SKILL.md` 的「Phase 1」节
    - `${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/references/SCRIPT-STYLE.md`
    - `${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/references/OUTLINE-FORMAT.md`
-2. 识别输入类型（原始文章 / 现成口播稿 / 无）→ **一次产出** `./script.md` + `./outline.md`；
+2. 识别输入类型（原始文章 / 现成口播稿 / 无）。
+3. **产出 script.md 前先确认成片语言**（SKILL.md 1.1.5）：`--lang=zh|en` 给了就直接用；
+   否则判定原文主语言 → 用一句话显式确认「就做<中/英>成片，要换语言吗？」（默认跟随原文，给反悔机会）。
+   用户要跨语言（如中文文章做英文片）→ 确认后按目标语言写 script/narration。
+4. 按确认的语言 **一次产出** `./script.md` + `./outline.md`；
    用户给了原文就落盘 `./article.md` 并保留（双源原则，开发阶段画面信息源）。
-3. 对 `script.md` / `outline.md` 分别走 SKILL.md 的「硬性自检协议」
+5. 对 `script.md` / `outline.md` 分别走 SKILL.md 的「硬性自检协议」
    （优先 Agent Teams → subagent → 自检），**按 fail 项改完再汇报**。
-4. 读全部 `${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/themes/*/theme.json`
+6. 读全部 `${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/themes/*/theme.json`
    （动态读，不要硬编码），按 script 内容主动推荐 2~3 套最匹配的（命中 `bestFor`）。
-5. 输出 SKILL.md「Checkpoint Plan」的 5 件事对齐总结：
-   稿子 / outline / 主题推荐 / 素材清单 / 开发模式（A 逐章 · B 顺序 · C 并行），然后**停下**。
+7. 输出 SKILL.md「Checkpoint Plan」的对齐总结：**先带出已确认的成片语言**，
+   再让用户一次对齐 5 件事 —— 稿子 / outline / 主题推荐 / 素材清单 /
+   开发模式（A 逐章 · B 顺序 · C 并行），然后**停下**。
 
 **这是硬节点 —— 不要自动往 Phase 2 走。** 用户确认后用
 `/video-maker:scaffold --theme=<id>` 继续，或用 `/video-maker:make` 一键串联。
