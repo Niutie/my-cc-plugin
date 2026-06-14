@@ -72,7 +72,7 @@ fi
 if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT" ]; then
     cat >&2 <<EOF
 ERROR: 无法定位 harness-zh plugin 安装目录
-       请先：/plugin marketplace add Niutie/my-cc-plugin
+       请先：/plugin marketplace add https://github.com/Niutie/my-cc-plugin.git
              /plugin install harness-zh@my-cc-plugin
 EOF
     exit 1

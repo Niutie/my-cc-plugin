@@ -31,7 +31,7 @@
 │    ├─ test-stage-triggers.yaml                                   │
 │    └─ architecture.md / answer-policy.md / changelog.md          │
 └─────────────────────┬────────────────────────────────────────────┘
-                      │ /plugin marketplace add Niutie/my-cc-plugin
+                      │ /plugin marketplace add https://github.com/Niutie/my-cc-plugin.git
                       │ /plugin install harness-zh@my-cc-plugin
                       ▼
 ┌──────────────────────────────────────────────────────────────────┐

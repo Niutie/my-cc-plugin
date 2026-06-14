@@ -14,7 +14,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 Add the marketplace once, then install whichever plugin you want:
 
 ```
-/plugin marketplace add Niutie/my-cc-plugin
+/plugin marketplace add https://github.com/Niutie/my-cc-plugin.git
 /plugin install harness-zh@my-cc-plugin
 /plugin install video-maker@my-cc-plugin
 ```

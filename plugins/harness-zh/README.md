@@ -80,7 +80,7 @@ Provides `/codex:rescue` and `/codex:setup` (adversarial review subagent invoked
 ## Install
 
 ```
-/plugin marketplace add Niutie/my-cc-plugin
+/plugin marketplace add https://github.com/Niutie/my-cc-plugin.git
 /plugin install harness-zh@my-cc-plugin
 ```
 

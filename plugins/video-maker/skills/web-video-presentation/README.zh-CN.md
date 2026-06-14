@@ -106,7 +106,7 @@ video-maker/                             # 插件
 从 marketplace 安装插件：
 
 ```
-/plugin marketplace add Niutie/my-cc-plugin
+/plugin marketplace add https://github.com/Niutie/my-cc-plugin.git
 /plugin install video-maker@my-cc-plugin
 ```
 

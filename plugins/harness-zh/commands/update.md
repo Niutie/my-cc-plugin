@@ -70,7 +70,7 @@ fi
 # 3) miss → halt
 if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT" ]; then
     echo "ERROR: 无法定位 harness-zh plugin 安装目录" >&2
-    echo "       请先：/plugin marketplace add Niutie/my-cc-plugin && /plugin install harness-zh@my-cc-plugin" >&2
+    echo "       请先：/plugin marketplace add https://github.com/Niutie/my-cc-plugin.git && /plugin install harness-zh@my-cc-plugin" >&2
     exit 1
 fi
 echo "PLUGIN_ROOT=$PLUGIN_ROOT"

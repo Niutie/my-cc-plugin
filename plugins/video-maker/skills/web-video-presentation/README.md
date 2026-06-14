@@ -106,7 +106,7 @@ video-maker/                             # the plugin
 Install the plugin from the marketplace:
 
 ```
-/plugin marketplace add Niutie/my-cc-plugin
+/plugin marketplace add https://github.com/Niutie/my-cc-plugin.git
 /plugin install video-maker@my-cc-plugin
 ```
 
