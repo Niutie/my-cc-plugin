@@ -10,6 +10,12 @@
       "source": "./plugins/harness-zh",
       "description": "BMad-based sprint orchestration harness for solo-dev + AI workflows (zhenhua's flavor).",
       "version": "0.1.39"
+    },
+    {
+      "name": "video-maker",
+      "source": "./plugins/video-maker",
+      "description": "Turn scripts and articles into click-driven 16:9 web presentations you can screen-record as cinematic videos (bundles the web-video-presentation skill).",
+      "version": "1.2.2"
     }
   ]
 }

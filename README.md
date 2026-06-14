@@ -1,10 +1,11 @@
 # my-cc-plugin
 
-Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niutie). Currently distributes one plugin:
+Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niutie). Currently distributes two plugins:
 
 | Plugin | Version | Purpose |
 |---|---|---|
 | **harness-zh** | 0.1.39 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **video-maker** | 1.2.2 | Turn scripts/articles into click-driven 16:9 web presentations you can screen-record as cinematic videos (bundles the `web-video-presentation` skill) |
 
 ---
 
@@ -161,6 +162,30 @@ For full runtime architecture (5-stage state machine, sprint-status.yaml schema,
 | 0.1.0 | 2026-05-06 | Initial plugin extraction from Aegis AI Audit project's `.claude/harness/` |
 
 See [`plugins/harness-zh/changelog.md`](plugins/harness-zh/changelog.md) for detailed per-commit history.
+
+---
+
+## video-maker
+
+Bundles the **web-video-presentation** skill — a method + collaboration workflow that turns a script or article into a click-driven 16:9 web presentation you can screen-record as a cinematic video ("dynamic PPT, but not PPT"). Each click advances one narration beat, every step owns the full 1920×1080 stage, and the progress chrome stays hidden so recordings come out clean.
+
+### What it ships
+
+Everything lives inside `skills/web-video-presentation/`, auto-discovered by Claude Code when the plugin is enabled:
+
+- A **Vite + React + TypeScript scaffold** (`scripts/scaffold.sh`) with a `(chapter, step)` cursor model, hover-only chrome, and a one-take auto-play recording mode (`?auto=1`).
+- **23 themes**, each a full design system (not a color swap), picked via `--theme=<id>`.
+- A **provider-agnostic TTS audio pipeline** — MiniMax (`mmx-cli`) and OpenAI built in; drop one shell file into `tts-providers/` to add ElevenLabs / edge-tts / Azure / Google / macOS `say`.
+- Hard collaboration checkpoints: the agent pauses after the script + outline + theme plan, after chapter 1 acceptance, and before optional audio synthesis.
+
+### Install
+
+```
+/plugin marketplace add Niutie/my-cc-plugin
+/plugin install video-maker@my-cc-plugin
+```
+
+The bundled skill is **model-invoked** — just ask Claude to "turn this article/script into a web-video presentation" and it picks up `video-maker:web-video-presentation`. Full workflow in [`plugins/video-maker/skills/web-video-presentation/SKILL.md`](plugins/video-maker/skills/web-video-presentation/SKILL.md); see also the skill's [README](plugins/video-maker/skills/web-video-presentation/README.md) / [中文文档](plugins/video-maker/skills/web-video-presentation/README.zh-CN.md).
 
 ---
 

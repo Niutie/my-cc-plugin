@@ -1,0 +1,20 @@
+{
+  "name": "video-maker",
+  "version": "1.2.2",
+  "description": "Turn scripts, articles, lessons, product demos, and talks into click-driven 16:9 web presentations that can be screen-recorded as cinematic videos. Bundles the web-video-presentation skill: a Vite + React + TypeScript scaffold, a (chapter, step) cursor model, hard collaboration checkpoints, 23 theme tokens, and a provider-agnostic TTS audio pipeline (MiniMax + OpenAI built in).",
+  "author": {
+    "name": "zhenhua zhu"
+  },
+  "homepage": "https://github.com/Niutie/my-cc-plugin",
+  "repository": "https://github.com/Niutie/my-cc-plugin",
+  "keywords": [
+    "video",
+    "presentation",
+    "react",
+    "vite",
+    "typescript",
+    "tts",
+    "screen-recording",
+    "skill"
+  ]
+}
