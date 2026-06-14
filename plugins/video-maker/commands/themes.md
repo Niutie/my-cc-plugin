@@ -1,5 +1,5 @@
 ---
-description: 列出 / 推荐 video-maker 的 23 套内置主题（含 bestFor 适配场景）
+description: 列出 / 推荐 video-maker 的 24 套内置主题（含 bestFor 适配场景）
 argument-hint: ''
 allowed-tools: Bash, Read
 ---

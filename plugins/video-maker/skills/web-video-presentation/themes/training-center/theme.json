@@ -1,0 +1,28 @@
+{
+  "id": "training-center",
+  "name": "Training Center",
+  "nameZh": "企业培训",
+  "description": "Institutional enablement-course aesthetic: clean white surface, deep royal-blue accent, bilingual-friendly sans, high information density. Signature: a 6px royal-blue level rail on the stage's left edge. Built for layered certification / enablement-course videos.",
+  "descriptionZh": "企业培训 / 认证课气质：净白底 + 深 royal 蓝 + 中英双语友好的无衬线 + 高信息密度。签名：舞台左缘 6px royal 蓝色层级条。为分层认证 / 赋能课程视频而生（导学 / 模块深讲都合适）。",
+  "mood": [
+    "light",
+    "corporate",
+    "institutional",
+    "instructional",
+    "clean",
+    "professional"
+  ],
+  "bestFor": [
+    "企业培训 / 认证课程",
+    "Partner / 销售赋能",
+    "解决方案顾问 / SC 培训",
+    "产品 onboarding / 导学",
+    "内部知识体系课 / 新人培养"
+  ],
+  "preview": {
+    "shell": "#0f1830",
+    "surface": "#ffffff",
+    "text": "#14213d",
+    "accent": "#2b3f9e"
+  }
+}

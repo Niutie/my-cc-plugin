@@ -5,7 +5,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 | Plugin | Version | What it does |
 |---|---|---|
 | **[harness-zh](plugins/harness-zh/README.md)** | 0.1.39 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
-| **[video-maker](plugins/video-maker/skills/web-video-presentation/README.md)** | 1.3.0 | Turn scripts / articles into click-driven 16:9 web presentations you can screen-record as cinematic videos |
+| **[video-maker](plugins/video-maker/skills/web-video-presentation/README.md)** | 1.4.0 | Turn scripts / articles into click-driven 16:9 web presentations you can screen-record as cinematic videos |
 
 ---
 
@@ -35,7 +35,7 @@ A 5-stage TDD-flavored development loop (`/harness-zh:run`) plus a test-automati
 
 ### video-maker
 
-Turns a script or article into a click-driven 16:9 web presentation you can screen-record as a cinematic video ("dynamic PPT, but not PPT"). Each click advances one narration beat, every step owns the full 1920×1080 stage, and the progress chrome stays hidden so recordings come out clean. Bundles the **web-video-presentation** skill: a Vite + React + TypeScript scaffold, 23 themes, a provider-agnostic TTS audio pipeline (MiniMax + OpenAI built in), and hard collaboration checkpoints.
+Turns a script or article into a click-driven 16:9 web presentation you can screen-record as a cinematic video ("dynamic PPT, but not PPT"). Each click advances one narration beat, every step owns the full 1920×1080 stage, and the progress chrome stays hidden so recordings come out clean. Bundles the **web-video-presentation** skill: a Vite + React + TypeScript scaffold, 24 themes, a provider-agnostic TTS audio pipeline (MiniMax + OpenAI + free no-key edge-tts built in), and hard collaboration checkpoints.
 
 - **Two ways to drive it:** ask in natural language (the bundled skill is model-invoked as `video-maker:web-video-presentation`), or use the commands below.
 - **Commands:** `/video-maker:plan`, `:scaffold`, `:chapter`, `:chapters`, `:audio`, `:record`, `:themes`, and the one-click `:make`

@@ -159,6 +159,7 @@ mkdir -p scripts/tts-providers
 cp "$TEMPLATES/scripts/tts-providers/README.md"   scripts/tts-providers/README.md
 cp "$TEMPLATES/scripts/tts-providers/minimax.sh"  scripts/tts-providers/minimax.sh
 cp "$TEMPLATES/scripts/tts-providers/openai.sh"   scripts/tts-providers/openai.sh
+cp "$TEMPLATES/scripts/tts-providers/edge-tts.sh" scripts/tts-providers/edge-tts.sh
 
 # Wire the audio scripts into npm so contributors don't have to remember
 # the exact command. Uses node to merge into the existing package.json.

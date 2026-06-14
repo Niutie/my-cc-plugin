@@ -1,0 +1,65 @@
+/* ─────────────────────────────────────────────────────────────────────
+ * Theme · training-center
+ *   Institutional clarity for enablement / certification courses. A deep
+ *   slate-navy shell makes the white surface read as the "course canvas";
+ *   one deep royal-blue accent carries every emphasis. Bilingual-friendly
+ *   sans (Inter + Noto Sans SC), tabular figures for time budgets and
+ *   module numbers, tight padding so a layered curriculum can breathe at
+ *   high information density. SIGNATURE: a 6px royal-blue level rail baked
+ *   into the LEFT edge of the stage — echoes a course "L0→L3" rail and
+ *   frames every module without a navbar / footer.
+ *
+ *   character knobs:
+ *     • hero numbers   — Inter, weight 800, tabular
+ *     • rule           — 1px solid cool gray
+ *     • card           — crisp refined corners (8px)
+ *     • surface        — clean white + left royal-blue level rail
+ *     • motion         — clear corporate snap (see theme.json mood)
+ * ───────────────────────────────────────────────────────────────────── */
+:root {
+  /* ─── palette ─── */
+  --shell:        #0f1830;             /* deep slate-navy — stage reads as the course canvas */
+  --surface:      #ffffff;
+  --surface-2:    #f3f6fc;             /* cool light module / card block */
+  --surface-3:    #e7edf8;             /* innermost nested panel */
+  --text:         #14213d;             /* deep navy ink, not pure black */
+  --text-2:       #38445c;
+  --text-mute:    #6b7689;
+  --text-faint:   #9aa4b6;
+  --rule:         #d6deea;
+  --accent:       #2b3f9e;             /* institutional royal blue */
+  --accent-soft:  rgba(43, 63, 158, 0.10);
+  --accent-glow:  rgba(43, 63, 158, 0.28);
+
+  /* ─── fonts: clean institutional sans, bilingual-friendly, no italic display ─── */
+  --font-display-cn: "Noto Sans SC", "Source Han Sans SC", -apple-system, sans-serif;
+  --font-display-en: "Inter", "Manrope", -apple-system, sans-serif;
+  --font-body:       "Inter", "Noto Sans SC", -apple-system, sans-serif;
+  --font-mono:       "IBM Plex Mono", "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+  --font-features:   "tnum", "ss01", "cv01";   /* tabular figures for time budgets / module numbers */
+
+  /* ─── design identity: institutional clarity, high density ─── */
+  --r-card:        var(--r-sm);        /* 8px crisp refined corners */
+  --r-stage:       0;
+  --rule-w:        1px;
+  --rule-style:    solid;
+  --hero-num-font:    var(--font-display-en);
+  --hero-num-style:   normal;
+  --hero-num-weight:  800;
+  --hero-num-track:   -0.02em;
+  --stage-pad-x:   96px;               /* tighter padding — a layered curriculum packs modules */
+  --stage-pad-y:   72px;
+  --card-shadow:
+    0 1px 2px rgba(20, 30, 70, 0.05),
+    0 14px 36px rgba(20, 30, 70, 0.09);
+  --shadow-stage:
+    0 60px 160px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(0, 0, 0, 0.06);
+
+  /* ─── decoration: SIGNATURE — 6px royal-blue level rail on the stage's LEFT edge ─── */
+  --surface-pattern:
+    linear-gradient(90deg, #2b3f9e 0%, #2b3f9e 6px, transparent 6px, transparent 100%);
+  --surface-pattern-size: 100% 100%;
+  --surface-pattern-blend: normal;
+  --surface-pattern-opacity: 1;
+}

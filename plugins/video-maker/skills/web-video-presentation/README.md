@@ -92,7 +92,7 @@ video-maker/                             # the plugin
         │   │       ├── openai.sh             # built-in — uses OPENAI_API_KEY via curl (paid)
         │   │       └── edge-tts.sh           # built-in — free, no key (pip install edge-tts)
         │   └── src/
-        └── themes/                    # 23 themes, each with its own signature
+        └── themes/                    # 24 themes, each with its own signature
             ├── midnight-press/
             ├── warm-keynote/
             ├── newsroom/
@@ -134,7 +134,7 @@ The generated `presentation/` project is a normal Vite + React + TypeScript app.
 - [CHAPTER-CRAFT.md](./references/CHAPTER-CRAFT.md) — core rules, chapter implementation, and visual checklist (Part 0 is the ten principles)
 - [OUTLINE-FORMAT.md](./references/OUTLINE-FORMAT.md) — required outline structure
 - [SCRIPT-STYLE.md](./references/SCRIPT-STYLE.md) — article-to-narration rewrite guidance
-- [THEMES.md](./references/THEMES.md) — theme token contract + 23 built-in themes + how to derive your own
+- [THEMES.md](./references/THEMES.md) — theme token contract + 24 built-in themes + how to derive your own
 - [EXAMPLES/](./references/EXAMPLES/) — optional chapter-structure references (hook / list-reveal / case-tech-review)
 - [AUDIO.md](./references/AUDIO.md) — optional narration synthesis workflow (provider-agnostic)
 - [tts-providers/README.md](./templates/scripts/tts-providers/README.md) — TTS provider contract + 3 built-ins (minimax / openai / free edge-tts) + ready-to-paste snippets for ElevenLabs / Azure / Google Cloud / macOS say

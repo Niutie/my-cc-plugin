@@ -39,7 +39,7 @@
 
 ## 内置主题
 
-23 套主题，每个都有**独立的设计 DNA** —— 不是简单的换色版。挑一个
+24 套主题，每个都有**独立的设计 DNA** —— 不是简单的换色版。挑一个
 匹配你主题情绪的，或者作为你自己主题的起点。
 
 ### 深色主题
@@ -74,6 +74,7 @@
 | `kraft-paper`        | 牛皮纸 —— **深棕当墨** + 牛皮米。Fraunces + Source Serif + 紫铜 accent。老笔记本 / 老信封感。**粗暖纸纹**是签名。慢速 tactile（1.55s）。                                                                       |
 | `dune`               | 沙丘 —— **炭褐当墨** + 沙底 + 几乎无 accent（muted clay）。Inter display + Source Serif 正文。**无装饰 + 极宽 padding（140×100）**是签名。建筑手册 / 画廊感。最慢节奏（1.75s）。                                |
 | `swiss-ikb`          | 瑞士国际主义。**极细 200 weight Inter / Helvetica** + 净暖白底 + IKB 克莱因蓝 + **1px 发丝网格 (64px)**。`r-card: 0` 直角。Massimo Vignelli / Helvetica Forever 能量。punchy + linear（400/650ms）。           |
+| `training-center`    | 企业培训 / 认证课。净白底 + 深 royal 蓝 + Inter / Noto Sans SC 全场（无衬线、无斜体）。**舞台左缘 6px royal 蓝色层级条**是签名，呼应课程 L0→L3 的层级 rail。中英双语友好、tabular 数字（时长 / 编号）、高信息密度（96×72 padding）。结构驱动的体裁，配 [`TRAINING-CENTER.md`](TRAINING-CENTER.md) 的 L0–L3 框架使用。 |
 
 
 随时列出可用主题：
@@ -242,6 +243,7 @@ CSS"领域 —— 在那里解决，别扩主题契约。
 | 文学 / 怀旧 / 书评 / 手工艺             | `kraft-paper`         |
 | 建筑 / 艺术展览 / 高端画廊              | `dune`                |
 | 瑞士国际主义 / Helvetica / 信息驱动设计 | `swiss-ikb`           |
+| 企业培训 / 认证课 / 赋能课程 / onboarding | `training-center`     |
 
 ```bash
 cd <path-to-web-video-presentation>/themes

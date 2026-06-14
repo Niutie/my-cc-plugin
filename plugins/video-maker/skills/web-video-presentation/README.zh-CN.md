@@ -92,7 +92,7 @@ video-maker/                             # 插件
         │   │       ├── openai.sh             # 内置：OpenAI TTS（curl + OPENAI_API_KEY，收费）
         │   │       └── edge-tts.sh           # 内置：免费 / 无 key（pip install edge-tts）
         │   └── src/
-        └── themes/                    # 23 套主题，每套独立设计签名
+        └── themes/                    # 24 套主题，每套独立设计签名
             ├── midnight-press/
             ├── warm-keynote/
             ├── newsroom/
@@ -134,7 +134,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/scripts/scaffold.sh" -
 - [CHAPTER-CRAFT.md](./references/CHAPTER-CRAFT.md)：核心原则 + 章节实现规则 + 视觉 checklist（Part 0 即十条原则）
 - [OUTLINE-FORMAT.md](./references/OUTLINE-FORMAT.md)：outline 必须遵循的结构
 - [SCRIPT-STYLE.md](./references/SCRIPT-STYLE.md)：文章转口播稿规则
-- [THEMES.md](./references/THEMES.md)：主题 token 契约 + 23 套内置主题 + 创作新主题流程
+- [THEMES.md](./references/THEMES.md)：主题 token 契约 + 24 套内置主题 + 创作新主题流程
 - [EXAMPLES/](./references/EXAMPLES/)：可选章节结构参考（钩子型 / 列举型 / 技术评测案例）
 - [AUDIO.md](./references/AUDIO.md)：可选口播音频合成流程（provider-agnostic）
 - [tts-providers/README.md](./templates/scripts/tts-providers/README.md)：TTS provider 三函数契约 + 内置 3 个 (minimax / openai / edge-tts 免费) + ElevenLabs / Azure / Google / macOS say 的现成代码片段
