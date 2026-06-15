@@ -145,20 +145,23 @@ pip install edge-tts                              # 一次性安装
 PRESENTATION_TTS=edge-tts npm run synthesize-audio
 ```
 
-英文视频要换英文音色（edge-tts 音色按语言区分；**成片语言在 Phase 1.1.5
-已确认**，按那个语言挑音色）：
+**音色按成片语言自动挑**（edge-tts 音色按语言区分；成片语言在 Phase 1.1.5
+已确认）：不传 `--voice` 时 `tts_synthesize` 按文本自动选**自然男声** ——
+中文 → `zh-CN-YunxiNeural`，英文 → `en-US-AndrewNeural`。想换别的音色再显式传：
 
 ```bash
-# 英文片
-PRESENTATION_TTS=edge-tts npm run synthesize-audio -- --voice=en-US-AriaNeural
-# 中文片（默认 zh-CN-YunxiNeural，可换女声）
+# 直接跑：中文片自动用 zh-CN-YunxiNeural，英文片自动用 en-US-AndrewNeural
+PRESENTATION_TTS=edge-tts npm run synthesize-audio
+# 想换音色（如中文女声 / 英文女声）才传 --voice
 PRESENTATION_TTS=edge-tts npm run synthesize-audio -- --voice=zh-CN-XiaoxiaoNeural
+PRESENTATION_TTS=edge-tts npm run synthesize-audio -- --voice=en-US-AriaNeural
 # 全部可选音色
 edge-tts --list-voices | less
 ```
 
-常用音色：`zh-CN-YunxiNeural`（中文男声 · 默认）/ `zh-CN-XiaoxiaoNeural`
-（中文女声）/ `en-US-AriaNeural`（英文女声）/ `en-US-GuyNeural`（英文男声）。
+常用音色：`zh-CN-YunxiNeural`（中文自然男声 · 中文片默认）/ `en-US-AndrewNeural`
+（英文自然男声 · 英文片默认）/ `zh-CN-XiaoxiaoNeural`（中文女声）/
+`en-US-AriaNeural`（英文女声）/ `en-US-GuyNeural`（英文男声）。
 
 `tts_check` 只校验 `edge-tts` 在不在 PATH；没装会提示 `pip install edge-tts`。
 需要网络（调微软的端点）。质量不如收费的 minimax/openai 细腻，但做"伪装成
@@ -200,7 +203,7 @@ npm run synthesize-audio -- --provider=azure
   1. 用内置 edge-tts（免费 · 无 key · 推荐）
      pip install edge-tts
      PRESENTATION_TTS=edge-tts npm run synthesize-audio
-     # 英文片加 --voice=en-US-AriaNeural
+     # 音色按语言自动挑自然男声（中文 YunxiNeural / 英文 AndrewNeural）；换音色才加 --voice
 
   2. 用内置 openai provider（如果你已有 OpenAI key）
      export OPENAI_API_KEY=sk-...
@@ -307,7 +310,7 @@ edge-tts 专属：
 |---|---|
 | `edge-tts not found` | `pip install edge-tts`（或 `pipx install edge-tts`）；装完确认 `edge-tts --list-voices` 能跑 |
 | 全部段 FAILED | 多半是断网（edge-tts 调微软在线端点）或音色名拼错；`edge-tts --list-voices` 查正确 id，`bash -x scripts/synthesize-audio.sh` 看实际调用 |
-| 英文片读出中文腔 | 默认音色是 `zh-CN-YunxiNeural`；英文片传 `--voice=en-US-AriaNeural` 之类的 en 音色 |
+| 英文片读出中文腔 | 正常会按文本自动选 `en-US-AndrewNeural`；若仍读中文腔，多半是显式传了中文 `--voice`，或文本里混进了中文字符——显式 `--voice=en-US-AndrewNeural` 覆盖 |
 | 偶发超时 / 限流 | 微软端点偶尔抖动；`npm run synthesize-audio` 重跑即可（已存在的会跳过，只补失败段） |
 
 换其它（自定义）provider 之后：

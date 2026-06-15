@@ -355,7 +355,7 @@ rm -rf presentation/src/chapters/01-example
 > ```bash
 > cd presentation
 > npm run extract-narrations
-> PRESENTATION_TTS=edge-tts npm run synthesize-audio   # 免费 / 无 key；英文片加 --voice=en-US-AriaNeural
+> PRESENTATION_TTS=edge-tts npm run synthesize-audio   # 免费 / 无 key；音色按语言自动挑男声（中文 YunxiNeural / 英文 AndrewNeural）
 > ```
 >
 > 然后让用户开 `localhost:5173/?auto=1` → SPACE 听，重点抓「某段 ≥15s = 文案太密 /
@@ -465,7 +465,7 @@ cd presentation
 npm run extract-narrations   # 扫所有 narrations.ts → audio-segments.json
 # 让用户扫一眼 audio-segments.json 确认文本对
 npm run synthesize-audio                       # 默认 minimax provider，增量
-# 或用内置免费 edge-tts (pip install edge-tts，无 key)；英文片加 --voice:
+# 或用内置免费 edge-tts (pip install edge-tts，无 key)；音色按语言自动挑男声（中文 YunxiNeural / 英文 AndrewNeural），换音色才加 --voice:
 PRESENTATION_TTS=edge-tts npm run synthesize-audio
 PRESENTATION_TTS=edge-tts npm run synthesize-audio -- --voice=en-US-AriaNeural
 # 或用内置 openai (要 OPENAI_API_KEY):

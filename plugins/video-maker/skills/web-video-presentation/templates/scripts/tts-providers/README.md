@@ -157,14 +157,16 @@ tts_synthesize() {
 ```bash
 pip install edge-tts
 PRESENTATION_TTS=edge-tts npm run synthesize-audio
-# 英文视频换英文音色（edge-tts 音色按语言区分）
-PRESENTATION_TTS=edge-tts npm run synthesize-audio -- --voice=en-US-AriaNeural
+# 不传 --voice 时按文本自动挑自然男声：中文 → zh-CN-YunxiNeural，英文 → en-US-AndrewNeural
+# 想换音色再显式传（如中文女声）：
+PRESENTATION_TTS=edge-tts npm run synthesize-audio -- --voice=zh-CN-XiaoxiaoNeural
 # 全部可选音色
 edge-tts --list-voices | less
 ```
 
-常用音色：`zh-CN-YunxiNeural`（中文男声 · 默认）/ `zh-CN-XiaoxiaoNeural`
-（中文女声）/ `en-US-AriaNeural`（英文女声）/ `en-US-GuyNeural`（英文男声）。
+常用音色：`zh-CN-YunxiNeural`（中文自然男声 · 中文片默认）/ `en-US-AndrewNeural`
+（英文自然男声 · 英文片默认）/ `zh-CN-XiaoxiaoNeural`（中文女声）/
+`en-US-AriaNeural`（英文女声）/ `en-US-GuyNeural`（英文男声）。
 
 ### macOS `say` — `tts-providers/say.sh`（离线 / 兜底）
 

@@ -1,6 +1,6 @@
 {
   "name": "video-maker",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Turn scripts, articles, lessons, product demos, and talks into click-driven 16:9 web presentations that can be screen-recorded as cinematic videos. Bundles the web-video-presentation skill: a Vite + React + TypeScript scaffold, a (chapter, step) cursor model, hard collaboration checkpoints, 24 built-in themes (incl. a training-center enablement-course style), and a provider-agnostic TTS audio pipeline (MiniMax + OpenAI + free no-key edge-tts built in).",
   "author": {
     "name": "zhenhua zhu"
