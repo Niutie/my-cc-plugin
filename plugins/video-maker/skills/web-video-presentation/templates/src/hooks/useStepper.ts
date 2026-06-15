@@ -39,9 +39,23 @@ function sanitize(cursor: Cursor, chapters: ChapterDef[]): Cursor {
 }
 
 export function useStepper(chapters: ChapterDef[]): StepperState {
+  // Captured ONCE at mount: was the page loaded with `?auto=1`? An auto-play
+  // load is an ephemeral recording session — it always starts from the top
+  // and never persists, so every refresh replays from the beginning and the
+  // manual (dev) cursor in localStorage is left untouched. Switching to auto
+  // later via the `M` key does NOT reset — only a fresh `?auto=1` load does.
+  // (Corollary: a session that LOADED in auto and is then switched to manual
+  // via `M` also won't persist for the rest of that session — intentional, so
+  // a recording session never overwrites the dev cursor.)
+  const [autoLoad] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return new URLSearchParams(window.location.search).get("auto") === "1";
+  });
+
   const [cursor, setCursor] = useState<Cursor>(() => {
     const fallback = { chapter: 0, step: 0 };
     if (typeof window === "undefined") return fallback;
+    if (autoLoad) return fallback; // auto-play always starts from the beginning
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (raw) return sanitize(JSON.parse(raw), chapters);
@@ -64,12 +78,13 @@ export function useStepper(chapters: ChapterDef[]): StepperState {
   }, [chapters]);
 
   useEffect(() => {
+    if (autoLoad) return; // ephemeral auto-play session — don't clobber the manual cursor
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(cursor));
     } catch {
       /* ignore */
     }
-  }, [cursor]);
+  }, [cursor, autoLoad]);
 
   const offsets = useMemo(() => {
     const arr: number[] = [];
