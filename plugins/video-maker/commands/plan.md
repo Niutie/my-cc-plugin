@@ -17,10 +17,11 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
    - `${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/SKILL.md` 的「Phase 1」节
    - `${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/references/SCRIPT-STYLE.md`
    - `${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/references/OUTLINE-FORMAT.md`
-2. 识别输入类型（原始文章 / 现成口播稿 / 无）。
-3. **产出 script.md 前先确认成片语言**（SKILL.md 1.1.5）：`--lang=zh|en` 给了就直接用；
-   否则判定原文主语言 → 用一句话显式确认「就做<中/英>成片，要换语言吗？」（默认跟随原文，给反悔机会）。
-   用户要跨语言（如中文文章做英文片）→ 确认后按目标语言写 script/narration。
+2. 识别输入类型（原始文章 / 现成口播稿 / 无）。**默认按培训中心体裁**
+   （结构驱动，L0–L3，SKILL.md 1.1.6）；只有用户明确要解说 / 娱乐向才切，切了要说明。
+3. **产出 script.md 前必须确认成片语言**（SKILL.md 1.1.5）：`--lang=zh|en` 给了就当已确认直接用；
+   没给 → **无论原文中 / 英都把「中文 / 英文」作为明确选择问出来**（判定原文语言只用于给提示，不预设答案），
+   例如「这篇原文是中文，成片你要中文还是英文？」。用户选跨语言（如中文文章做英文片）→ 按目标语言写 script/narration。
 4. 按确认的语言 **一次产出** `./script.md` + `./outline.md`；
    用户给了原文就落盘 `./article.md` 并保留（双源原则，开发阶段画面信息源）。
 5. 对 `script.md` / `outline.md` 分别走 SKILL.md 的「硬性自检协议」

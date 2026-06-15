@@ -15,7 +15,8 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 编排（每步等价于对应拆分命令，复用同一套自检 / CHAPTER-CRAFT 要求）：
 
 1. **Phase 1 = `/video-maker:plan`**：**先定成片语言**（SKILL.md 1.1.5）→ 产出 script.md + outline.md + 自检 → 打印 Checkpoint Plan（带成片语言 + 5 件事）。
-   - 成片语言：`--lang=zh|en` 给了就直接用；没给 → 默认跟随原文，并用一句话确认（给反悔机会）。语言决定 script/narration/TTS 音色，**必须在产出 script.md 前定**。
+   - 成片语言：`--lang=zh|en` 给了就当已确认直接用；没给 → **无论原文中 / 英都停下显式问「中文还是英文」**（不预设跟随原文）。语言决定 script/narration/TTS 音色，**必须在产出 script.md 前定**。
+   - 体裁：**默认培训中心**（SKILL.md 1.1.6，结构驱动，L0–L3）；只有用户明确要解说 / 娱乐向才切，切了要说明选择。
    - `--theme` / `--mode` / `--assets` 给了就直接采纳并**说明选择**；任一没给 → **停下**让用户对齐（硬节点）。
 2. **Phase 2.1 = `/video-maker:scaffold`**：用选定主题脚手架 + 删 example 章。
 3. **Phase 2.2 = `/video-maker:chapter 1`**：做第 1 章完整样板 → **停下验收**（硬节点，除非显式 `--yolo`）。

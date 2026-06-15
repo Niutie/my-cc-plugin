@@ -15,7 +15,7 @@
       "name": "video-maker",
       "source": "./plugins/video-maker",
       "description": "Turn scripts and articles into click-driven 16:9 web presentations you can screen-record as cinematic videos (bundles the web-video-presentation skill).",
-      "version": "1.5.1"
+      "version": "1.6.0"
     }
   ]
 }

@@ -39,7 +39,7 @@ The plugin is primarily a **methodology and collaboration workflow**. The scaffo
 ## Workflow
 
 ```text
-Phase 1.1  Identify input + confirm output language (zh / en, defaults to source)
+Phase 1.1  Identify input + confirm output language (zh / en, always asked regardless of source) + genre (training-center by default)
 Phase 1.2  Article -> narration script (in the confirmed language)
    |
 Checkpoint A1  Script, theme, and rough asset plan
