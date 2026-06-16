@@ -12,8 +12,8 @@
 
 ## 1. coldopen — 登顶悬念（5 steps · ~30s）
 
-- **step 1** (~5s) — 暗场远景粒子云 + 钩子字幕"我刷到一张图，愣了三秒"
-  · 动画：屏幕从纯黑慢速 fade 到暗暖底（1.5s ease-out）→ 远景光尘粒子云慢漂浮入（1.0s 错峰）→ 字幕 mono 打字机逐字打出（每字 100ms）；持续微动：粒子云永不停 brownian 漂移 + 暖橙暗角光晕 6s 周期慢呼吸 + ken burns 缓推
+- **step 1** (~5s) — 暗场远景粒子云 + 钩子标题文字"我刷到一张图，愣了三秒"
+  · 动画：屏幕从纯黑慢速 fade 到暗暖底（1.5s ease-out）→ 远景光尘粒子云慢漂浮入（1.0s 错峰）→ 标题文字 mono 打字机逐字打出（每字 100ms）；持续微动：粒子云永不停 brownian 漂移 + 暖橙暗角光晕 6s 周期慢呼吸 + ken burns 缓推
   · 手段：CSS background 慢 fade + Canvas 粒子云慢漂 + JS typewriter + filter: drop-shadow 暖橙呼吸 + transform: scale 永动 ken burns
 
 - **step 2** (~7s) — 排行榜慢镜景深聚焦 + 主分数 hero 数字 blur clear 浮出
