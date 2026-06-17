@@ -2,7 +2,7 @@
 
 **一个 Claude Code 插件：把文章或口播稿做成点击驱动的 16:9 网页演示，并通过录屏产出有电影感的视频。** 它内置 `web-video-presentation` skill —— 一套方法论驱动的设计 + 协作流程。
 
-[返回集合首页](../../../../README.md)
+[返回集合首页](../../README.md)
 
 ---
 
@@ -69,12 +69,13 @@ Phase 4   录屏与后期
 
 ```text
 video-maker/                             # 插件
+├── README.md                            # 本文件（插件文档）
 ├── .claude-plugin/
 │   └── plugin.json                      # 插件清单 —— 自动发现下面这个 skill
+├── commands/                            # 8 个斜杠命令（plan / scaffold / … / make）
 └── skills/
     └── web-video-presentation/          # 内置的 skill
         ├── SKILL.md
-        ├── README.md
         ├── references/
         │   ├── SCRIPT-STYLE.md
         │   ├── TRAINING-CENTER.md            # 默认体裁的 L0–L3 框架
@@ -138,12 +139,12 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/scripts/scaffold.sh" -
 
 ## Reference Map
 
-- [SCRIPT-STYLE.md](./references/SCRIPT-STYLE.md)：文章转口播稿规则（信息保留度 + 去 AI 味通用层，对所有体裁适用）
-- [TRAINING-CENTER.md](./references/TRAINING-CENTER.md)：**默认体裁**框架——产品无关的 L0–L3 分层、课程总览 vs 单模块两种粒度、中英双语 + 时长预算约定
-- [OUTLINE-FORMAT.md](./references/OUTLINE-FORMAT.md)：outline 必须遵循的结构（章节 / step 切分 + 章节级信息池；**刻意不规划动画**）
-- [CHAPTER-CRAFT.md](./references/CHAPTER-CRAFT.md)：写章节的单一必读入口——核心原则、视觉演示要求、逐步揭示、双源原则、反 AI 味、代码红线、完工自检
-- [THEMES.md](./references/THEMES.md)：主题 token 契约 + 24 套内置主题 + 创作新主题流程
-- [EXAMPLES/](./references/EXAMPLES/)：可选章节结构参考（钩子型 / 列举型 / 技术评测案例）
-- [AUDIO.md](./references/AUDIO.md)：可选口播音频合成流程（provider-agnostic）
-- [tts-providers/README.md](./templates/scripts/tts-providers/README.md)：TTS provider 三函数契约 + 内置 3 个 (minimax / openai / edge-tts 免费) + ElevenLabs / Azure / Google / macOS say 的现成代码片段
-- [RECORDING.md](./references/RECORDING.md)：录屏（含 `?auto=1` 一镜到底路径）与后期注意事项
+- [SCRIPT-STYLE.md](./skills/web-video-presentation/references/SCRIPT-STYLE.md)：文章转口播稿规则（信息保留度 + 去 AI 味通用层，对所有体裁适用）
+- [TRAINING-CENTER.md](./skills/web-video-presentation/references/TRAINING-CENTER.md)：**默认体裁**框架——产品无关的 L0–L3 分层、课程总览 vs 单模块两种粒度、中英双语 + 时长预算约定
+- [OUTLINE-FORMAT.md](./skills/web-video-presentation/references/OUTLINE-FORMAT.md)：outline 必须遵循的结构（章节 / step 切分 + 章节级信息池；**刻意不规划动画**）
+- [CHAPTER-CRAFT.md](./skills/web-video-presentation/references/CHAPTER-CRAFT.md)：写章节的单一必读入口——核心原则、视觉演示要求、逐步揭示、双源原则、反 AI 味、代码红线、完工自检
+- [THEMES.md](./skills/web-video-presentation/references/THEMES.md)：主题 token 契约 + 24 套内置主题 + 创作新主题流程
+- [EXAMPLES/](./skills/web-video-presentation/references/EXAMPLES/)：可选章节结构参考（钩子型 / 列举型 / 技术评测案例）
+- [AUDIO.md](./skills/web-video-presentation/references/AUDIO.md)：可选口播音频合成流程（provider-agnostic）
+- [tts-providers/README.md](./skills/web-video-presentation/templates/scripts/tts-providers/README.md)：TTS provider 三函数契约 + 内置 3 个 (minimax / openai / edge-tts 免费) + ElevenLabs / Azure / Google / macOS say 的现成代码片段
+- [RECORDING.md](./skills/web-video-presentation/references/RECORDING.md)：录屏（含 `?auto=1` 一镜到底路径）与后期注意事项

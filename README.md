@@ -5,7 +5,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 | Plugin | Version | What it does |
 |---|---|---|
 | **[harness-zh](plugins/harness-zh/README.md)** | 0.1.39 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
-| **[video-maker](plugins/video-maker/skills/web-video-presentation/README.md)** | 1.8.1 | Turn scripts / articles / lessons into click-driven 16:9 web presentations you can screen-record as cinematic videos |
+| **[video-maker](plugins/video-maker/README.md)** | 1.8.1 | Turn scripts / articles / lessons into click-driven 16:9 web presentations you can screen-record as cinematic videos |
 
 ---
 
@@ -41,7 +41,7 @@ Turns a script, article, or lesson into a click-driven 16:9 web presentation you
 - **One-take recording:** once audio is synthesized, open `?auto=1` and the whole film auto-plays, advancing on each clip's end — screen-record it in a single pass with no clicking.
 - **Two ways to drive it:** ask in natural language (the bundled skill is model-invoked as `video-maker:web-video-presentation`), or use the commands below.
 - **Commands:** `/video-maker:plan`, `:scaffold`, `:chapter`, `:chapters`, `:audio`, `:record`, `:themes`, and the one-click `:make`
-- **Full docs:** [README](plugins/video-maker/skills/web-video-presentation/README.md)（中文）
+- **Full docs:** [README](plugins/video-maker/README.md)（中文）
 
 ---
 
