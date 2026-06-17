@@ -38,7 +38,10 @@ function sanitize(cursor: Cursor, chapters: ChapterDef[]): Cursor {
   return { chapter, step };
 }
 
-export function useStepper(chapters: ChapterDef[]): StepperState {
+export function useStepper(
+  chapters: ChapterDef[],
+  navBlocked = false,
+): StepperState {
   // Captured ONCE at mount: was the page loaded with `?auto=1`? An auto-play
   // load is an ephemeral recording session — it always starts from the top
   // and never persists, so every refresh replays from the beginning and the
@@ -154,6 +157,9 @@ export function useStepper(chapters: ChapterDef[]): StepperState {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement) return;
+      // A modal start gate (AutoStartGate) is up — swallow nav keys so the
+      // same Space that releases auto-play doesn't also advance past page 1.
+      if (navBlocked) return;
       if (e.key === "ArrowRight" || e.key === " ") {
         e.preventDefault();
         next();
@@ -172,7 +178,7 @@ export function useStepper(chapters: ChapterDef[]): StepperState {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [next, prev, jumpToChapter, chapters]);
+  }, [next, prev, jumpToChapter, chapters, navBlocked]);
 
   const ch = chapters[cursor.chapter]!;
   return {

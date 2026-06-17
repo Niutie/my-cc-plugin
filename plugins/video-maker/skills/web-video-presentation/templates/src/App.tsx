@@ -25,12 +25,20 @@ function estimateMs(text: string): number {
 }
 
 export default function App() {
-  const stepper = useStepper(CHAPTERS);
+  const { mode, cycleMode, autoStarted, setAutoStarted } = useAutoMode();
+
+  // Auto mode shows a start gate until the user presses Space / clicks
+  // (browsers block autoplay without a gesture). While it's up we (1) block
+  // the stepper's nav keys so the SAME Space that releases auto-play doesn't
+  // also advance past page 1, and (2) hold the scene unmounted so page 1's
+  // entry animation plays in sync with its narration the moment playback
+  // starts — instead of running, unwatched, behind the gate.
+  const autoGateUp = mode === "auto" && !autoStarted;
+
+  const stepper = useStepper(CHAPTERS, autoGateUp);
   const ch = CHAPTERS[stepper.cursor.chapter]!;
   const Cmp = ch.Component;
   const stepText = ch.narrations[stepper.cursor.step] ?? "";
-
-  const { mode, cycleMode, autoStarted, setAutoStarted } = useAutoMode();
 
   // Audio path follows the convention: /audio/<chapter-id>/<step+1>.mp3
   // (1-indexed file names match what `extract-narrations.ts` outputs.)
@@ -54,9 +62,11 @@ export default function App() {
   return (
     <>
       <Stage onAdvance={stepper.next}>
-        <div key={ch.id} className="scene">
-          <Cmp step={stepper.cursor.step} />
-        </div>
+        {!autoGateUp && (
+          <div key={ch.id} className="scene">
+            <Cmp step={stepper.cursor.step} />
+          </div>
+        )}
       </Stage>
       <ProgressBar
         chapters={CHAPTERS}
@@ -64,10 +74,7 @@ export default function App() {
         onJumpChapter={stepper.jumpToChapter}
       />
       <AutoToggle mode={mode} onCycle={cycleMode} />
-      <AutoStartGate
-        visible={mode === "auto" && !autoStarted}
-        onStart={() => setAutoStarted(true)}
-      />
+      <AutoStartGate visible={autoGateUp} onStart={() => setAutoStarted(true)} />
     </>
   );
 }
