@@ -6,6 +6,11 @@
 #
 # Strengths: Chinese narration quality is consistently good; lots of
 # voice options; one-line CLI call.
+#
+# Voice: with no --voice, defaults to male-qn-jingying-jingpin
+# (精英青年男声·精品版) — a natural Chinese male voice. Override per-run
+# with --voice=<id> / PRESENTATION_TTS_VOICE=<id>; run `mmx speech --help`
+# to list the available voice ids.
 # ────────────────────────────────────────────────────────────────────
 
 tts_check() {
@@ -35,16 +40,10 @@ EOF
 tts_synthesize() {
   local text="$1"
   local out="$2"
-  local voice="${3:-}"
+  # No explicit --voice → default to a natural Chinese male voice
+  # (精英青年·精品版). Override per-run with --voice=<id>.
+  local voice="${3:-male-qn-jingying-jingpin}"
 
-  # Branch instead of using an empty array — runner uses `set -u`, and
-  # macOS-default bash 3.2 fires "unbound variable" on "${arr[@]}" when
-  # arr is empty. The two-branch form is portable to old bash.
-  if [[ -n "$voice" ]]; then
-    mmx speech synthesize --voice "$voice" --text "$text" --out "$out" \
-      >/dev/null 2>&1
-  else
-    mmx speech synthesize --text "$text" --out "$out" \
-      >/dev/null 2>&1
-  fi
+  mmx speech synthesize --voice "$voice" --text "$text" --out "$out" \
+    >/dev/null 2>&1
 }

@@ -298,7 +298,7 @@ tts_synthesize() {
 
 6. **不要修改全局状态**：provider 文件被 `source` 进 runner 的 shell。别 `cd`、别改 `IFS`、别 `set -e/+e` 切换，否则会污染 runner。把局部变量都 `local`。
 
-   ⚠️ 一个坑：runner 用 `set -u`，**macOS 默认 bash 3.2 在 `"${arr[@]}"` 展开空数组时会炸 `unbound variable`**。如果你的 provider 需要"可选 --voice 参数"，**不要**用 `local args=(); [[ -n $voice ]] && args=(--voice $v); cmd "${args[@]}"` —— 直接写两个 if 分支调命令（看 `minimax.sh` 的写法）。
+   ⚠️ 一个坑：runner 用 `set -u`，**macOS 默认 bash 3.2 在 `"${arr[@]}"` 展开空数组时会炸 `unbound variable`**。所以**不要**靠"空音色就不传 --voice"来选默认——别写 `local args=(); [[ -n $voice ]] && args=(--voice $v); cmd "${args[@]}"`。按第 4 点先把 `$voice` 解析成非空默认值，再**单次**调命令（看 `minimax.sh` / `edge-tts.sh` 的写法）；真要可选参数就写两个 if 分支，别用空数组展开。
 
 7. **API 长度上限**：单段大多数 API 都有上限（OpenAI ~4096 chars / MiniMax ~5000 / ElevenLabs ~5000）。Skill 的 narrations 单段一般 < 200 字符，正常不会撞到。如果你的 narration 撞到了，**先回去拆 step**——一个 step 的口播本来就不该这么长。
 
