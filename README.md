@@ -5,7 +5,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 | Plugin | Version | What it does |
 |---|---|---|
 | **[harness-zh](plugins/harness-zh/README.md)** | 0.1.39 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
-| **[video-maker](plugins/video-maker/skills/web-video-presentation/README.md)** | 1.5.0 | Turn scripts / articles into click-driven 16:9 web presentations you can screen-record as cinematic videos |
+| **[video-maker](plugins/video-maker/skills/web-video-presentation/README.md)** | 1.8.1 | Turn scripts / articles / lessons into click-driven 16:9 web presentations you can screen-record as cinematic videos |
 
 ---
 
@@ -35,11 +35,13 @@ A 5-stage TDD-flavored development loop (`/harness-zh:run`) plus a test-automati
 
 ### video-maker
 
-Turns a script or article into a click-driven 16:9 web presentation you can screen-record as a cinematic video ("dynamic PPT, but not PPT"). Each click advances one narration beat, every step owns the full 1920×1080 stage, and the progress chrome stays hidden so recordings come out clean. Bundles the **web-video-presentation** skill: a Vite + React + TypeScript scaffold, 24 themes, a provider-agnostic TTS audio pipeline (MiniMax + OpenAI + free no-key edge-tts built in), and hard collaboration checkpoints.
+Turns a script, article, or lesson into a click-driven 16:9 web presentation you can screen-record as a cinematic video ("dynamic PPT, but not PPT"). Each click advances one narration beat, every step owns the full 1920×1080 stage, and the progress chrome stays hidden so recordings come out clean. Bundles the **web-video-presentation** skill: a Vite + React + TypeScript scaffold, a `(chapter, step)` cursor model, 24 themes (including a `training-center` enablement-course style), a provider-agnostic TTS audio pipeline (MiniMax + OpenAI + free no-key edge-tts built in), and hard collaboration checkpoints.
 
+- **Genre-aware:** defaults to the **training-center** genre (structure-driven L0–L3 enablement / certification courses); switches to a commentary / entertainment register only when you ask. Output language (zh / en) is always confirmed up front.
+- **One-take recording:** once audio is synthesized, open `?auto=1` and the whole film auto-plays, advancing on each clip's end — screen-record it in a single pass with no clicking.
 - **Two ways to drive it:** ask in natural language (the bundled skill is model-invoked as `video-maker:web-video-presentation`), or use the commands below.
 - **Commands:** `/video-maker:plan`, `:scaffold`, `:chapter`, `:chapters`, `:audio`, `:record`, `:themes`, and the one-click `:make`
-- **Full docs:** [README](plugins/video-maker/skills/web-video-presentation/README.md) · [中文文档](plugins/video-maker/skills/web-video-presentation/README.zh-CN.md)
+- **Full docs:** [README](plugins/video-maker/skills/web-video-presentation/README.md)（中文）
 
 ---
 
