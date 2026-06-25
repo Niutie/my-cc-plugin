@@ -32,10 +32,19 @@ allowed-tools: Bash, Read
 
    不传参就是默认：`output/video.mp4`、1920×1080、30fps、系统 Chrome 无头。
 
-3. **汇报**：成片路径 + 时长 + 分辨率 + 多少步有口播。提示可调参数：
+3. **看自检结果**：脚本出片后会逐 step 抽帧自检。
+   - 打印 `✓ verified N steps — no blank scenes detected` → 干净，正常汇报。
+   - 打印 `⚠ … step(s) look BLANK` → **别直接说"做完了"**。这通常是渲染故障
+     （不是章节代码 bug，尤其当你用了 `--url` 复用旧 server 时）。先**换全新
+     server 重渲**（去掉 `--url`），看 `output/verify-frames/` 里存的问题帧确认，
+     复核 OK 再汇报。
+
+4. **汇报**：成片路径 + 时长 + 分辨率 + 多少步有口播 + 自检结论。提示可调参数：
    - `--out=<path>` 换输出路径；`--fps=60` 提帧率；`--crf=16` 提画质（更大）；
-   - `--headed` 看着浏览器跑（调试）；`--keep-temp` 留中间文件；
+   - `--headed` 看着浏览器跑（调试）；`--keep-temp` 留中间文件；`--no-verify` 跳过自检；
    - `--url=http://localhost:5174` 录一个**已在跑**的 dev server（跳过自动起服务）。
+     ⚠️ **优先用默认的全新 server**（不传 `--url`）—— 复用一个被 HMR 热更新过很多次
+     的长驻 dev server 偶发会把某一屏渲染成空白。
 
 > 录出来某步动画被切一半 = 该 step 动画比口播长（Auto / capture 都严格按
 > 音频时长推进，无"等动画跑完"兜底）→ 回章节代码：写更长口播 / 拆 step /

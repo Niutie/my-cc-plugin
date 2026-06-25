@@ -20,7 +20,7 @@ npm run record-video            # → output/video.mp4（1920×1080 mp4）
 ```
 
 **一条命令，从网页到成品 mp4** —— 不用开浏览器、不用屏幕录制软件、不用后期
-裁头尾对音轨。脚本（`scripts/record-video.mjs`）做四件事：
+裁头尾对音轨。脚本（`scripts/record-video.mjs`）做五件事：
 
 1. 起 dev server，用 **Playwright 无头驱动 `?capture=1`**（默认调**系统 Chrome**，
    零额外下载），录下 1920×1080 画面；
@@ -28,7 +28,19 @@ npm run record-video            # → output/video.mp4（1920×1080 mp4）
    排出一张**时刻表**，按表逐步推进页面；
 3. 把每步 mp3 按**同一张时刻表**拼回整条音轨（每段后垫 200ms，和运行时
    `useAudioPlayer` 完全一致；空 step 用字数估时的静音填充）；
-4. `ffmpeg` 自动裁掉黑色 pre-roll、合成视频 + 音轨 → `output/video.mp4`。
+4. `ffmpeg` 自动裁掉黑色 pre-roll、合成视频 + 音轨 → `output/video.mp4`；
+5. **出片后自检**：对**每个 step 的中点**抽一帧，发现空白 / 近乎纯色的画面就
+   报警，指出是第几章第几 step，并把问题帧存到 `output/verify-frames/` 供你
+   一眼核对（用 `--no-verify` 关掉）。
+
+> **为什么要这一步**：79 秒无人值守渲染里，偶发的"某一屏渲染成空白"靠肉眼
+> 看完整片才能发现。自检把这类静默故障在出片当场抓出来。
+
+> **优先用全新 server 出片**：默认（不带 `--url`）脚本自己起一个干净的 dev
+> server，是最稳的路径。**别**拿一个开了很久、被 HMR 热更新过很多次的 dev
+> server 去 `--url` 复用 —— 偶发会出现某一屏渲染成空白（已遇到过一次）。要更
+> 彻底就 `npm run build && npm run preview` 用生产构建出片。万一真撞上，第 5 步
+> 的自检会报警。
 
 > **为什么音画必然同步**：推进画面用的时刻表 = 拼音轨用的时刻表，是同一张。
 > 视频里每步的切换点和音轨里每段的边界落在同一时间轴上，**靠构造对齐**，
@@ -52,7 +64,8 @@ npm run record-video -- --fps=60              # 提帧率（默认 30）
 npm run record-video -- --crf=16              # 提画质，文件更大（默认 18，越小越好）
 npm run record-video -- --headed              # 看着浏览器跑（调试）
 npm run record-video -- --keep-temp           # 保留 .capture-tmp/ 中间文件
-npm run record-video -- --url=http://localhost:5174  # 录一个已在跑的 dev server
+npm run record-video -- --no-verify           # 跳过出片后的空白帧自检
+npm run record-video -- --url=http://localhost:5174  # 录一个已在跑的 dev server（不推荐复用旧 server，见下）
 ```
 
 > **某步动画被切一半？** capture 和 Auto 一样**严格按音频时长推进**（+200ms），

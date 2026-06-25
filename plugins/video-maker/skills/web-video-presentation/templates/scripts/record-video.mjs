@@ -24,15 +24,23 @@
 //   • a browser: uses your system Google Chrome by default (channel: chrome,
 //     zero download); falls back to Playwright's bundled Chromium if present.
 //
+// After muxing, it VERIFIES the output: it samples one frame at the midpoint
+// of every step and flags any that came out blank / near-uniform — the kind of
+// silent render glitch you'd otherwise only catch by watching all N minutes.
+// Flagged frames are saved next to the output for a quick eyeball.
+//
 // Usage:
-//   npm run record-video                       # start dev server, record, mux
+//   npm run record-video                       # start dev server, record, mux, verify
 //   npm run record-video -- --out=dist/talk.mp4
 //   npm run record-video -- --url=http://localhost:5174   # use a running server
 //   npm run record-video -- --headed           # show the browser (debug)
 //   npm run record-video -- --fps=30 --keep-temp
 //
 // Flags:
-//   --url=<url>      record an already-running dev server (skip auto-start)
+//   --url=<url>      record an already-running dev server (skip auto-start).
+//                    PREFER a fresh server (omit this) for the most reliable
+//                    render — a long-lived / hot-reloaded dev server can
+//                    occasionally serve a stale module and yield a blank scene.
 //   --out=<path>    output mp4 (default: output/video.mp4)
 //   --port=<n>      dev-server port to start / poll (default: 5174)
 //   --fps=<n>       output frame rate (default: 30)
@@ -41,9 +49,17 @@
 //   --crf=<n>       x264 quality, lower = better/larger (default: 18)
 //   --headed        run the browser headed (default: headless)
 //   --keep-temp     keep the intermediate .capture-tmp/ dir
+//   --no-verify     skip the post-render blank-frame check
 // ────────────────────────────────────────────────────────────────────
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,6 +83,7 @@ const TAIL_MS = Number(flag("tail", 700));
 const CRF = Number(flag("crf", 18));
 const HEADED = flag("headed", false) === true;
 const KEEP_TEMP = flag("keep-temp", false) === true;
+const NO_VERIFY = flag("no-verify", false) === true;
 
 const OUT = isAbsolute(OUT_ARG) ? OUT_ARG : resolve(process.cwd(), OUT_ARG);
 const TMP = join(ROOT, ".capture-tmp");
@@ -312,6 +329,45 @@ function detectContentStartSec(webm) {
   return null;
 }
 
+// ── post-render verification: catch blank / near-uniform scenes ──────────
+// The recorder owns the exact per-step timeline, so we sample ONE frame at the
+// midpoint of every step in the finished mp4 and look for scenes that came out
+// (near-)empty. Heuristic: a rendered scene compresses to a sizeable PNG; a
+// blank / faintly-ghosted frame compresses to almost nothing. We flag a step
+// when its frame is far below the deck's median (a single dead scene among
+// healthy ones — the common silent-glitch failure) or below an absolute floor
+// (an essentially uniform frame). It's a WARNING, not a hard failure: flagged
+// frames are saved next to the output so a human can confirm in one glance.
+function verifyOutput(videoPath, schedule) {
+  const verifyDir = join(TMP, "verify");
+  mkdirSync(verifyDir, { recursive: true });
+  const samples = [];
+  let cum = 0;
+  for (let i = 0; i < schedule.length; i++) {
+    const startMs = cum;
+    cum += schedule[i].holdMs;
+    const midSec = (startMs + schedule[i].holdMs / 2) / 1000;
+    const png = join(verifyDir, `step-${String(i).padStart(3, "0")}.png`);
+    sh(
+      "ffmpeg",
+      ["-v", "error", "-ss", String(midSec), "-i", videoPath,
+        "-frames:v", "1", "-y", png],
+      { allowFail: true },
+    );
+    let size = 0;
+    try { size = statSync(png).size; } catch { /* extraction failed */ }
+    samples.push({ ...schedule[i], i, midSec, png, size });
+  }
+  const sizes = samples.map((s) => s.size).filter((n) => n > 0).sort((a, b) => a - b);
+  const median = sizes.length ? sizes[Math.floor(sizes.length / 2)] : 0;
+  const FLOOR = 12_000; // ~12KB PNG at 1080p ≈ an essentially uniform frame
+  const RATIO = 0.4; // < 40% of the deck median = a suspiciously empty scene
+  const flagged = samples.filter(
+    (s) => s.size > 0 && (s.size < FLOOR || (median && s.size < RATIO * median)),
+  );
+  return { samples, median, flagged, verifyDir };
+}
+
 // ── main ──────────────────────────────────────────────────────────────
 async function main() {
   preflightFfmpeg();
@@ -319,6 +375,15 @@ async function main() {
   rmSync(TMP, { recursive: true, force: true });
   mkdirSync(TMP, { recursive: true });
 
+  if (URL_ARG) {
+    console.log(`▸ recording an existing server at ${URL_ARG}`);
+    console.log(
+      "  · tip: for the most reliable render, prefer a FRESH server (omit --url).\n" +
+        "    A long-lived / hot-reloaded dev server can occasionally serve a stale\n" +
+        "    module and produce a blank scene. The post-render check below will\n" +
+        "    flag it if it happens.",
+    );
+  }
   const server = URL_ARG ? null : await startDevServer();
   if (server) activeServer = server;
   const baseUrl = (URL_ARG || server.url).replace(/\/$/, "");
@@ -462,6 +527,26 @@ async function main() {
     OUT,
   ]);
 
+  // ── verify the finished video: sample each step, flag blank scenes ──
+  let verify = null;
+  if (!NO_VERIFY) {
+    console.log("▸ verifying frames …");
+    verify = verifyOutput(OUT, schedule);
+    if (verify.flagged.length) {
+      const keepDir = join(dirname(OUT), "verify-frames");
+      mkdirSync(keepDir, { recursive: true });
+      for (const f of verify.flagged) {
+        const dest = join(keepDir, `ch${f.ci}-step${f.si}-${f.chapterId}.png`);
+        try {
+          copyFileSync(f.png, dest);
+          f.savedTo = dest;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
   if (!KEEP_TEMP) rmSync(TMP, { recursive: true, force: true });
 
   console.log(
@@ -470,6 +555,33 @@ async function main() {
       `${audioCount}/${schedule.length} steps voiced` +
       (KEEP_TEMP ? `\n  (kept intermediates in ${TMP})` : ""),
   );
+
+  if (verify) {
+    if (verify.flagged.length === 0) {
+      console.log(
+        `  ✓ verified ${verify.samples.length} steps — no blank scenes detected`,
+      );
+    } else {
+      console.log(
+        `\n⚠ ${verify.flagged.length} step(s) look BLANK / near-empty — check these:`,
+      );
+      for (const f of verify.flagged) {
+        const txt = (f.text || "").slice(0, 50).replace(/\s+/g, " ");
+        const kb = (f.size / 1024).toFixed(0);
+        const medKb = (verify.median / 1024).toFixed(0);
+        console.log(
+          `    • ch ${f.ci} "${f.chapterId}" step ${f.si} @${f.midSec.toFixed(1)}s` +
+            ` — ${kb}KB vs ${medKb}KB median  "${txt}"` +
+            (f.savedTo ? `\n        frame: ${f.savedTo}` : ""),
+        );
+      }
+      console.log(
+        "\n  Likely a render glitch, not a code bug. Re-render against a FRESH\n" +
+          "  server (omit --url; or `npm run build && npm run preview`, then point\n" +
+          "  --url at the preview), and re-check. Inspect the saved frames above.",
+      );
+    }
+  }
 }
 
 main().catch((err) => {

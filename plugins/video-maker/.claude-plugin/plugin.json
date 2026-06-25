@@ -1,6 +1,6 @@
 {
   "name": "video-maker",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "Turn scripts, articles, lessons, product demos, and talks into click-driven 16:9 web presentations that render straight to a finished mp4. Bundles the web-video-presentation skill: a Vite + React + TypeScript scaffold, a (chapter, step) cursor model, hard collaboration checkpoints, 24 built-in themes (incl. a training-center enablement-course style), a provider-agnostic TTS audio pipeline (MiniMax + OpenAI + free no-key edge-tts built in), and a headless one-command auto-render (Playwright drives ?capture=1, ffmpeg rebuilds the audio track on the same schedule → 1920×1080 mp4, no manual screen recording).",
   "author": {
     "name": "zhenhua zhu"
