@@ -42,17 +42,19 @@ export function useStepper(
   chapters: ChapterDef[],
   navBlocked = false,
 ): StepperState {
-  // Captured ONCE at mount: was the page loaded with `?auto=1`? An auto-play
-  // load is an ephemeral recording session — it always starts from the top
-  // and never persists, so every refresh replays from the beginning and the
-  // manual (dev) cursor in localStorage is left untouched. Switching to auto
-  // later via the `M` key does NOT reset — only a fresh `?auto=1` load does.
-  // (Corollary: a session that LOADED in auto and is then switched to manual
-  // via `M` also won't persist for the rest of that session — intentional, so
-  // a recording session never overwrites the dev cursor.)
+  // Captured ONCE at mount: was the page loaded with `?auto=1` or `?capture=1`?
+  // Both are ephemeral recording sessions — they always start from the top and
+  // never persist, so every refresh / headless run replays from the beginning
+  // and the manual (dev) cursor in localStorage is left untouched. Switching to
+  // auto later via the `M` key does NOT reset — only a fresh `?auto=1` /
+  // `?capture=1` load does. (Corollary: a session that LOADED ephemerally and is
+  // then switched to manual via `M` also won't persist for the rest of that
+  // session — intentional, so a recording session never overwrites the dev
+  // cursor.)
   const [autoLoad] = useState(() => {
     if (typeof window === "undefined") return false;
-    return new URLSearchParams(window.location.search).get("auto") === "1";
+    const q = new URLSearchParams(window.location.search);
+    return q.get("auto") === "1" || q.get("capture") === "1";
   });
 
   const [cursor, setCursor] = useState<Cursor>(() => {

@@ -99,6 +99,9 @@ npm install >/dev/null 2>&1
 echo "▸ 安装 tsx（用于 extract-narrations 脚本）..."
 npm install --save-dev tsx >/dev/null 2>&1
 
+echo "▸ 安装 playwright（用于 record-video 一键出片；驱动系统 Chrome，不下载浏览器）..."
+npm install --save-dev playwright >/dev/null 2>&1
+
 echo "▸ 用演示骨架替换默认 boilerplate"
 
 # 干掉我们不要的 Vite 默认 boilerplate
@@ -129,9 +132,10 @@ cp "$TEMPLATES/src/styles/animations.css"   src/styles/animations.css
 cp "$TEMPLATES/src/styles/fonts.css"        src/styles/fonts.css
 
 cp "$TEMPLATES/src/hooks/useStageScale.ts"   src/hooks/useStageScale.ts
-cp "$TEMPLATES/src/hooks/useStepper.ts"      src/hooks/useStepper.ts
-cp "$TEMPLATES/src/hooks/useAudioPlayer.ts"  src/hooks/useAudioPlayer.ts
-cp "$TEMPLATES/src/hooks/useAutoMode.ts"     src/hooks/useAutoMode.ts
+cp "$TEMPLATES/src/hooks/useStepper.ts"        src/hooks/useStepper.ts
+cp "$TEMPLATES/src/hooks/useAudioPlayer.ts"    src/hooks/useAudioPlayer.ts
+cp "$TEMPLATES/src/hooks/useAutoMode.ts"       src/hooks/useAutoMode.ts
+cp "$TEMPLATES/src/hooks/useCaptureBridge.ts"  src/hooks/useCaptureBridge.ts
 
 cp "$TEMPLATES/src/components/Stage.tsx"          src/components/Stage.tsx
 cp "$TEMPLATES/src/components/MaskReveal.tsx"     src/components/MaskReveal.tsx
@@ -141,6 +145,8 @@ cp "$TEMPLATES/src/components/AutoStartGate.tsx"  src/components/AutoStartGate.t
 cp "$TEMPLATES/src/components/AutoStartGate.css"  src/components/AutoStartGate.css
 cp "$TEMPLATES/src/components/AutoToggle.tsx"     src/components/AutoToggle.tsx
 cp "$TEMPLATES/src/components/AutoToggle.css"     src/components/AutoToggle.css
+cp "$TEMPLATES/src/components/CaptureGate.tsx"    src/components/CaptureGate.tsx
+cp "$TEMPLATES/src/components/CaptureGate.css"    src/components/CaptureGate.css
 
 cp "$TEMPLATES/src/registry/types.ts"    src/registry/types.ts
 cp "$TEMPLATES/src/registry/chapters.ts" src/registry/chapters.ts
@@ -153,7 +159,8 @@ cp "$TEMPLATES/src/chapters/01-example/narrations.ts"   src/chapters/01-example/
 # pluggable TTS providers under tts-providers/).
 cp "$TEMPLATES/scripts/extract-narrations.ts"  scripts/extract-narrations.ts
 cp "$TEMPLATES/scripts/synthesize-audio.sh"    scripts/synthesize-audio.sh
-chmod +x scripts/synthesize-audio.sh
+cp "$TEMPLATES/scripts/record-video.mjs"       scripts/record-video.mjs
+chmod +x scripts/synthesize-audio.sh scripts/record-video.mjs
 
 mkdir -p scripts/tts-providers
 cp "$TEMPLATES/scripts/tts-providers/README.md"   scripts/tts-providers/README.md
@@ -169,6 +176,7 @@ const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
 p.scripts = Object.assign({}, p.scripts, {
   "extract-narrations": "tsx scripts/extract-narrations.ts",
   "synthesize-audio":   "bash scripts/synthesize-audio.sh",
+  "record-video":       "node scripts/record-video.mjs",
 });
 fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
 '
@@ -215,6 +223,14 @@ cat <<EOF
   • 半自动：URL 加 ?audio=1 — 音频跟 step 切，但你手动推进
   • 全自动录屏：URL 加 ?auto=1 — 按一次 SPACE 启动，整片自动播 + 推进
                 按 M 键随时切换三种模式。
+
+  • ★ 一键出片（无人值守）：合成音频后跑
+
+      npm run record-video        # → output/video.mp4（1920×1080 mp4）
+
+    无头驱动 ?capture=1、用系统 Chrome 录画面，再把每步 mp3 按同一时刻表
+    拼回音轨、ffmpeg 合成成片，音画天然同步。要 ffmpeg + ffprobe 在 PATH。
+    详见 RECORDING.md。
 
 音频合成（可选，录制前做）：
 

@@ -4,6 +4,13 @@ import { useStageScale } from "../hooks/useStageScale";
 interface Props {
   onAdvance(): void;
   children: ReactNode;
+  /**
+   * Headless-capture mode (?capture=1): drop the breathing margins so the
+   * stage scales to exactly 1 at a 1920×1080 viewport (full-bleed frame, no
+   * letterbox) and strip the shadow / radius via the `capture` class so the
+   * recorded frame is a clean 1920×1080 with no shell showing at the edges.
+   */
+  capture?: boolean;
 }
 
 /**
@@ -19,8 +26,8 @@ interface Props {
  * Surface colors come from the active theme's CSS custom properties
  * (var(--shell), var(--surface)) — see themes/<id>/tokens.css.
  */
-export function Stage({ onAdvance, children }: Props) {
-  const scale = useStageScale();
+export function Stage({ onAdvance, children, capture = false }: Props) {
+  const scale = useStageScale(1920, 1080, capture ? 0 : 80, capture ? 0 : 100);
   const fitterStyle: CSSProperties = {
     width: 1920 * scale,
     height: 1080 * scale,
@@ -29,7 +36,7 @@ export function Stage({ onAdvance, children }: Props) {
     transform: `scale(${scale})`,
   };
   return (
-    <div className="app-shell">
+    <div className={`app-shell${capture ? " capture" : ""}`}>
       <div className="stage-fitter" style={fitterStyle}>
         <div
           className="stage-frame"

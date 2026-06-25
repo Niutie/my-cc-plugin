@@ -171,6 +171,16 @@ body {
 /* every chapter root */
 .scene { position: absolute; inset: 0; z-index: 2; }
 
+/* Headless-capture mode (?capture=1, see useCaptureBridge): full-bleed
+ * 1920×1080 with no shell margin, no shadow, no radius — so the recorded
+ * frame is a clean edge-to-edge 1920×1080 with nothing of the shell showing. */
+.app-shell.capture { background: #000; }
+.app-shell.capture .stage-frame {
+  box-shadow: none;
+  border: none;
+  border-radius: 0;
+}
+
 /* ─────────────────────────────────────────────────────────────────────
  * 4. Type primitives — chapters compose with these instead of hard sizes.
  * ───────────────────────────────────────────────────────────────────── */

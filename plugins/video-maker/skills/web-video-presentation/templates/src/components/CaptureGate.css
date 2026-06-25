@@ -1,0 +1,6 @@
+.capture-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: #000;
+}

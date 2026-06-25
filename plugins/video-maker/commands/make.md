@@ -1,6 +1,6 @@
 ---
 description: 一键自动化 — 端到端串起 plan→scaffold→chapters→audio→record，保留 3 个硬节点（可用参数预答减少停顿）
-argument-hint: '[article 路径] [--lang=zh|en] [--theme=<id>] [--mode=A|B|C] [--audio=yes|no] [--assets=placeholder|mine] [--yolo]'
+argument-hint: '[article 路径] [--lang=zh|en] [--theme=<id>] [--mode=A|B|C] [--audio=yes|no] [--render=yes|no] [--assets=placeholder|mine] [--yolo]'
 allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 ---
 
@@ -23,6 +23,10 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 4. **Phase 2.3 = `/video-maker:chapters --mode=…`**：按模式做完第 2~N 章。
 5. **Checkpoint Audio**：`--audio=yes` → 跑 `/video-maker:audio`；`--audio=no` → 跳过；
    都没给 → **停下**问（硬节点）。
-6. **Phase 4 = `/video-maker:record`**：按有无音频给录屏路径。
+6. **Phase 4 = 出片**：
+   - **合成了音频** → 默认跑 `/video-maker:capture`（`npm run record-video`）**一键出成片 mp4**，
+     无人值守、音画天然同步。`--render=no` 则只走 `/video-maker:record` 给手动录屏路径、不自动出片。
+   - **没合成音频** → 走 `/video-maker:record`（Manual 手动录 / 或出静音估时版）。
+   - `--render=yes` 即使你想确认也直接出片；要 ffmpeg + ffprobe + 一个浏览器（默认系统 Chrome）。
 
 `--yolo` 仅跳过第 1 章验收（其余硬节点若已用参数预答则自然不停），是逃生口、默认不用。

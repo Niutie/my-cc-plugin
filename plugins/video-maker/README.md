@@ -18,6 +18,7 @@
 - 做企业培训 / 认证 / Partner 赋能课程视频（默认的**培训中心**体裁——用 L0–L3 给课程定位，再按粒度选章节结构）
 - 做“动态 PPT，但不要像 PPT”的演示体验
 - 在计划对齐后，可选合成口播音频
+- **一键导出成品 mp4**：合成音频后一条命令无头出片（`npm run record-video`），不用手动录屏 / 对轨
 
 这个插件的核心是**方法论 + 协作流程**。脚手架提供 token、舞台原语、主题和示例，但每个项目仍然应该根据主题重新选择视觉语言。
 
@@ -35,6 +36,7 @@
 - **动效优先**：每一步都需要一个移动的视觉锚点，静态正文是坏味道。
 - **主题 token**：视觉属性通过语义 token 驱动，换主题不只是换颜色。
 - **一镜到底自动播放**：合成音频后，`?auto=1` 全程自动播放、每段音频播完自动推进，全程不用点鼠标；每次加载都从头开始，录废了刷新页面即可重来。
+- **一键出片（无人值守）**：`npm run record-video`（或 `/video-maker:capture`）无头驱动 `?capture=1`、用系统 Chrome 录画面，再把每步 mp3 按**同一时刻表**拼回音轨、ffmpeg 合成 → `output/video.mp4`。推进画面和拼音轨用的是同一张时刻表，**音画靠构造对齐**，不用手动录屏 / 不用后期对轨。要 ffmpeg + ffprobe。
 - **可插拔 TTS**：provider-agnostic 音频 runner，**内置 3 个 provider**（MiniMax `mmx-cli` + OpenAI TTS via curl，均收费；外加 **edge-tts 免费 / 无 key**，不传音色时按语言自动挑自然男声——中文 Yunxi / 英文 Andrew）；往 `tts-providers/` 丢一个 `.sh` 就能换成 ElevenLabs / Azure / Google Cloud / macOS `say` / 任何自部署 TTS。
 - **硬 checkpoint**：在统一的「计划对齐」节点（稿子 + outline + 主题 + 素材 + 开发模式）停一次，第 1 章做完再停一次验收，音频合成前再停一次。
 
@@ -58,7 +60,7 @@ Phase 2   构建 Vite / React / TS 演示
 Checkpoint Audio  <- 硬节点。是否合成口播音频？
    |
 Phase 3   可选音频合成
-Phase 4   录屏与后期
+Phase 4   出片：① 一键出片 mp4（npm run record-video）/ ② 手动录屏 / ③ Manual + 后期
 ```
 
 这些 checkpoint 是插件契约的一部分：Agent 不应该从原文一路闷头做到成品。**script.md 和 outline.md 现在一次产出**，并在单一的 **Checkpoint Plan** 上统一对齐——用户在一个节点同时确认 5 件事（稿子、outline、主题、素材、开发模式），不再分成两道关。第 1 章永远在主线程做完并验收后才放量，先把设计语言锚定再扩展。
@@ -72,7 +74,7 @@ video-maker/                             # 插件
 ├── README.md                            # 本文件（插件文档）
 ├── .claude-plugin/
 │   └── plugin.json                      # 插件清单 —— 自动发现下面这个 skill
-├── commands/                            # 8 个斜杠命令（plan / scaffold / … / make）
+├── commands/                            # 9 个斜杠命令（plan / scaffold / … / capture / make）
 └── skills/
     └── web-video-presentation/          # 内置的 skill
         ├── SKILL.md
@@ -93,6 +95,7 @@ video-maker/                             # 插件
         │   ├── scripts/
         │   │   ├── extract-narrations.ts
         │   │   ├── synthesize-audio.sh       # provider-agnostic runner
+        │   │   ├── record-video.mjs          # 一键出片：无头驱动 ?capture=1 + ffmpeg → mp4
         │   │   └── tts-providers/            # 一个文件 = 一个 TTS 后端
         │   │       ├── README.md             # 三函数契约 + ElevenLabs / Azure / Google / say 的现成片段
         │   │       ├── minimax.sh            # 默认 provider（mmx-cli，收费）
@@ -133,7 +136,14 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/scripts/scaffold.sh" .
 bash "${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/scripts/scaffold.sh" --list-themes
 ```
 
-生成的 `presentation/` 是普通 Vite + React + TypeScript 项目。启动后用录屏工具录制 16:9 舞台即可。
+生成的 `presentation/` 是普通 Vite + React + TypeScript 项目。做完章节、合成音频后，一条命令出成片：
+
+```bash
+cd presentation
+npm run record-video        # → output/video.mp4（1920×1080，音画同步）
+```
+
+也可以启动后用录屏工具手动录制 16:9 舞台（见 RECORDING.md 的 ② / ③ 路径）。
 
 ---
 
@@ -147,4 +157,4 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/web-video-presentation/scripts/scaffold.sh" -
 - [EXAMPLES/](./skills/web-video-presentation/references/EXAMPLES/)：可选章节结构参考（钩子型 / 列举型 / 技术评测案例）
 - [AUDIO.md](./skills/web-video-presentation/references/AUDIO.md)：可选口播音频合成流程（provider-agnostic）
 - [tts-providers/README.md](./skills/web-video-presentation/templates/scripts/tts-providers/README.md)：TTS provider 三函数契约 + 内置 3 个 (minimax / openai / edge-tts 免费) + ElevenLabs / Azure / Google / macOS say 的现成代码片段
-- [RECORDING.md](./skills/web-video-presentation/references/RECORDING.md)：录屏（含 `?auto=1` 一镜到底路径）与后期注意事项
+- [RECORDING.md](./skills/web-video-presentation/references/RECORDING.md)：出片三路径——① 一键出片（`npm run record-video` 无头 → mp4）/ ② `?auto=1` 手动录屏 / ③ Manual + 后期
