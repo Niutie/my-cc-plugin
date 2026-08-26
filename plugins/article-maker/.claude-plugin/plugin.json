@@ -1,0 +1,21 @@
+{
+  "name": "article-maker",
+  "version": "0.1.0",
+  "description": "Turn any source — URL, PDF, DOCX, Markdown, plain text, screenshots, or pasted notes — into a beautiful, share-ready single-file HTML article that opens offline (with optional companion PDF). Bundles the article-maker skill: a Vite + React + TypeScript scaffold built on the reacticle component protocol (prose-first semantic components + a theme-token-constrained Raw layer), a source → plan → double-confirmation → build → review → repair harness with three hard collaboration checkpoints, 11 theme authoring profiles, article-type-driven information-retention defaults (longform ~100% … visual-essay ~40%), a 3:4 book-style cover, and an opt-in zero-npm headless HTML → PDF export.",
+  "author": {
+    "name": "zhenhua zhu"
+  },
+  "homepage": "https://github.com/Niutie/my-cc-plugin",
+  "repository": "https://github.com/Niutie/my-cc-plugin",
+  "keywords": [
+    "article",
+    "editorial",
+    "html",
+    "react",
+    "vite",
+    "typescript",
+    "reacticle",
+    "pdf",
+    "skill"
+  ]
+}

@@ -6,6 +6,12 @@
   "description": "Personal Claude Code plugin marketplace.",
   "plugins": [
     {
+      "name": "article-maker",
+      "source": "./plugins/article-maker",
+      "description": "Turn any source (URL, PDF, DOCX, Markdown, plain text, screenshots, pasted notes) into a beautiful, share-ready single-file HTML article that opens offline, with optional companion PDF (bundles the article-maker skill).",
+      "version": "0.1.0"
+    },
+    {
       "name": "harness-zh",
       "source": "./plugins/harness-zh",
       "description": "BMad-based sprint orchestration harness for solo-dev + AI workflows (zhenhua's flavor).",

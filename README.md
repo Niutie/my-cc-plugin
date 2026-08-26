@@ -1,9 +1,10 @@
 # my-cc-plugin
 
-Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niutie). Distributes two plugins:
+Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niutie). Distributes three plugins:
 
 | Plugin | Version | What it does |
 |---|---|---|
+| **[article-maker](plugins/article-maker/README.md)** | 0.1.0 | Turn any source (URL / PDF / DOCX / Markdown / text / screenshots) into a beautiful, share-ready single-file HTML article (optional PDF) |
 | **[harness-zh](plugins/harness-zh/README.md)** | 0.1.39 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 | **[video-maker](plugins/video-maker/README.md)** | 1.8.1 | Turn scripts / articles / lessons into click-driven 16:9 web presentations you can screen-record as cinematic videos |
 
@@ -15,6 +16,7 @@ Add the marketplace once, then install whichever plugin you want:
 
 ```
 /plugin marketplace add https://github.com/Niutie/my-cc-plugin.git
+/plugin install article-maker@my-cc-plugin
 /plugin install harness-zh@my-cc-plugin
 /plugin install video-maker@my-cc-plugin
 ```

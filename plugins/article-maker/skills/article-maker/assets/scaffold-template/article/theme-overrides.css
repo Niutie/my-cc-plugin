@@ -1,0 +1,18 @@
+/* ───────────────────────────────────────────────────────────────
+ * theme-overrides.css —— 项目级主题 token 覆盖（在 reacticle/styles.css 之后加载）。
+ *
+ * 用来微调某个 runtime 主题的 token（如把强调色换成与品牌 / 配套视频一致的颜色），
+ * 而不必 fork 整个主题。risk / warn 等语义色建议保持不变（红 = 正确的警示信号）。
+ *
+ * 两种用法：
+ *   • scaffold.sh --accent=<hex> 会自动在这里写入「强调色 + info」覆盖；没传则本文件为空（no-op）。
+ *   • 或手动加，例如把 vignelli 对齐 video-maker training-center 的 royal 蓝：
+ *       [data-theme="vignelli"] {
+ *         --ra-color-accent:          #2b3f9e;
+ *         --ra-color-accent-strong:   color-mix(in srgb, #2b3f9e 82%, #000);
+ *         --ra-color-accent-soft:     color-mix(in srgb, #2b3f9e 10%, #fff);
+ *         --ra-color-accent-contrast: #fff;
+ *         --ra-color-info:            #2b3f9e;
+ *         --ra-color-info-soft:       color-mix(in srgb, #2b3f9e 10%, #fff);
+ *       }
+ * ─────────────────────────────────────────────────────────────── */
