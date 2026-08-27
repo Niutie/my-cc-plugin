@@ -13,7 +13,8 @@ allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 1. **Checkpoint 3 · 必须停**：用 AskUserQuestion 问**交付决策**（无工具则编号列出、停下等答复）——
    选项：`通过 · 导出 HTML 交付` / `通过 · 同时导出 HTML + PDF` / `还有局部修复 · 我会列出具体修哪里` /
    `先停一停 · 我要再看看`。**不要静默走默认导出 HTML**。`--pdf=yes|no` 给了就当该决策已确认、直接采纳并说明。
-2. 构建主交付物：`npm run build` → `article/article.html`（自包含单页，CSS + JS 内联，断网可打开）。
+2. 构建主交付物：`npm run html` → `article/article.html`（自包含单页，CSS + JS 内联，断网可打开）。
+   （注：`npm run build` 只产出 `dist/index.html`；`npm run html` 会在 build 之后把它复制成交付物 `article/article.html`。）
 3. **仅当**用户选了"HTML + PDF"：
    `bash "${CLAUDE_PLUGIN_ROOT}/skills/article-maker/scripts/html-to-pdf.sh"`
    （探测系统 chromium-family 浏览器，注入 `@media print` 覆盖，headless 打印，零 npm 依赖）

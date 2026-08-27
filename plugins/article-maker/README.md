@@ -150,7 +150,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/skills/article-maker/scripts/scaffold.sh" --list-the
 
 ```bash
 cd my-article
-npm run build        # → article/article.html（CSS + JS 内联，断网可打开）
+npm run html         # → article/article.html（CSS + JS 内联，断网可打开）
+                     # （npm run build 只产出 dist/index.html；html 再复制成交付物 article/article.html）
 ```
 
 可选 PDF 导出（仅当 Checkpoint 3 选了 HTML + PDF）：
