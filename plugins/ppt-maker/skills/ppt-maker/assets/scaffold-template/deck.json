@@ -1,0 +1,233 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "title": "2026 上半年业务复盘",
+    "goal": "向管理层说明上半年增长来源、结构变化和下半年重点",
+    "audience": "管理层 / 业务负责人",
+    "owner": "增长团队",
+    "lang": "zh",
+    "theme": "swiss-ikb",
+    "seed": "h1-review-20260827-k3f",
+    "runId": "20260827T090000-k3f9m2x1"
+  },
+  "slides": [
+    {
+      "id": "s1",
+      "role": "cover",
+      "priority": "title",
+      "content": {
+        "presentation": {
+          "title": "2026 上半年业务复盘",
+          "titleShort": "上半年复盘",
+          "summary": "增长来源、结构变化与下半年重点",
+          "takeaway": "增长从获客转向留存，下半年重点押注复购"
+        },
+        "meta": { "kicker": "增长团队 · 2026 H1" }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "bespoke",
+          "designIntent": {
+            "objective": "一屏建立本次复盘的范围和结论方向",
+            "audience": "管理层",
+            "narrativeRole": "封面定调",
+            "emphasis": "时间范围与核心判断",
+            "rationale": "标题独占左上，结论压在底部，中间大面积留白建立开场停顿",
+            "compositionFamily": "hero"
+          },
+          "composition": {
+            "background": "surface",
+            "elements": [
+              {
+                "id": "kicker",
+                "type": "text",
+                "role": "kicker",
+                "grid": { "column": 1, "row": 1, "width": 6, "height": 1 },
+                "text": "增长团队 · 2026 H1",
+                "valign": "bottom"
+              },
+              {
+                "id": "title",
+                "type": "text",
+                "role": "title",
+                "grid": { "column": 1, "row": 2, "width": 9, "height": 2 },
+                "text": "2026 上半年业务复盘",
+                "valign": "top"
+              },
+              {
+                "id": "summary",
+                "type": "text",
+                "role": "subtitle",
+                "grid": { "column": 1, "row": 4, "width": 7, "height": 1 },
+                "text": "增长来源、结构变化与下半年重点",
+                "valign": "top"
+              },
+              {
+                "id": "rule",
+                "type": "shape",
+                "shape": "line",
+                "stroke": "accent",
+                "grid": { "column": 1, "row": 7, "width": 4, "height": 1 }
+              },
+              {
+                "id": "takeaway",
+                "type": "text",
+                "role": "body",
+                "grid": { "column": 1, "row": 8, "width": 8, "height": 1 },
+                "text": "增长从获客转向留存，下半年重点押注复购",
+                "valign": "middle"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "s2",
+      "role": "metrics",
+      "priority": "metrics",
+      "content": {
+        "presentation": {
+          "title": "上半年核心数字",
+          "titleShort": "核心数字",
+          "summary": "四个指标解释增长从哪来",
+          "takeaway": "新客贡献下滑，老客复购撑起了大部分增量",
+          "items": [
+            {
+              "id": "gmv",
+              "label": "GMV",
+              "value": 4.82,
+              "displayValue": "4.82",
+              "unit": "亿",
+              "detail": "同比 +31%，其中复购贡献 2.9 亿",
+              "required": true
+            },
+            {
+              "id": "repeat",
+              "label": "复购率",
+              "value": 38,
+              "displayValue": "38%",
+              "required": true
+            },
+            {
+              "id": "cac",
+              "label": "获客成本",
+              "value": 214,
+              "displayValue": "¥214",
+              "required": true
+            },
+            {
+              "id": "nps",
+              "label": "NPS",
+              "value": 46,
+              "displayValue": "46"
+            }
+          ]
+        },
+        "meta": { "kicker": "第一部分 · 结果" }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "metric-spotlight",
+          "props": { "secondaryCount": 3, "align": "left", "accentValue": true }
+        },
+        {
+          "id": "v2",
+          "kind": "archetype",
+          "archetype": "metric-spotlight",
+          "props": {
+            "secondaryCount": 0,
+            "align": "center",
+            "showKicker": false,
+            "accentValue": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "s3",
+      "role": "trend",
+      "priority": "items",
+      "content": {
+        "presentation": {
+          "title": "季度 GMV 构成",
+          "titleShort": "GMV 构成",
+          "summary": "新客与复购的此消彼长",
+          "takeaway": "Q2 起复购首次超过新客，结构性拐点已经出现",
+          "items": [
+            { "id": "q1", "label": "Q1", "value": 0.94, "required": true },
+            { "id": "q2", "label": "Q2", "value": 1.13, "required": true },
+            { "id": "q3", "label": "Q3", "value": 1.28, "required": true },
+            { "id": "q4", "label": "Q4", "value": 1.47, "required": true }
+          ]
+        },
+        "meta": { "kicker": "第二部分 · 结构" }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "bespoke",
+          "designIntent": {
+            "objective": "让读者一眼看出复购超过新客的时点",
+            "audience": "管理层",
+            "narrativeRole": "论证结构性变化",
+            "emphasis": "两条序列的交叉点",
+            "rationale": "图形占据整个右侧主视觉，标题和结论压在左列，避免退化成图表加卡片墙",
+            "compositionFamily": "chart-led"
+          },
+          "composition": {
+            "background": "surface",
+            "elements": [
+              {
+                "id": "kicker",
+                "type": "text",
+                "role": "kicker",
+                "grid": { "column": 1, "row": 1, "width": 4, "height": 1 },
+                "text": "第二部分 · 结构",
+                "valign": "bottom"
+              },
+              {
+                "id": "title",
+                "type": "text",
+                "role": "title",
+                "grid": { "column": 1, "row": 2, "width": 4, "height": 2 },
+                "text": "季度 GMV 构成",
+                "valign": "top"
+              },
+              {
+                "id": "takeaway",
+                "type": "text",
+                "role": "body",
+                "grid": { "column": 1, "row": 5, "width": 4, "height": 3 },
+                "text": "Q2 起复购首次超过新客，结构性拐点已经出现。下半年的资源应该跟着这条曲线走，而不是继续加码前端获客。",
+                "valign": "top"
+              },
+              {
+                "id": "chart",
+                "type": "chart",
+                "grid": { "column": 6, "row": 1, "width": 7, "height": 8 },
+                "chart": {
+                  "kind": "column",
+                  "categories": ["Q1", "Q2", "Q3", "Q4"],
+                  "unit": "亿",
+                  "showValues": true,
+                  "legend": true,
+                  "series": [
+                    { "name": "新客", "data": [0.62, 0.55, 0.51, 0.48] },
+                    { "name": "复购", "data": [0.32, 0.58, 0.77, 0.99] }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

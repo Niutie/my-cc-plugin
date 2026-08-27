@@ -1,0 +1,23 @@
+{
+  "name": "ppt-maker",
+  "version": "1.0.0",
+  "description": "Turn source material into an offline-openable web deck AND a genuinely editable .pptx. One deck.json source of truth compiles to a 12x8 composition DSL, then dual-renders — React for the browser, pptxgenjs for PowerPoint — off a single shared geometry engine at an exact 144 px/inch, with a verifier that unzips the .pptx and checks every box lands on the same EMU coordinate. 18 chart kinds (7 export as native PowerPoint charts with an editable data sheet, 11 as real vector shapes incl. custGeom sankey ribbons), 23 layout skeletons including SWOT / Porter / PEST / Business Model Canvas / BCG / Double Diamond / AARRR / Flywheel, 24 themes whose chart palettes are generated and validated for CVD separation and contrast, an in-browser console that edits text and typed controls straight back into deck.json, a deck validator that catches overflow and dropped required facts, and PDF export.",
+  "author": {
+    "name": "zhenhua zhu"
+  },
+  "homepage": "https://github.com/Niutie/my-cc-plugin",
+  "repository": "https://github.com/Niutie/my-cc-plugin",
+  "keywords": [
+    "ppt",
+    "pptx",
+    "presentation",
+    "deck",
+    "powerpoint",
+    "charts",
+    "dataviz",
+    "react",
+    "vite",
+    "typescript",
+    "skill"
+  ]
+}

@@ -1,0 +1,417 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "title": "Analysis models",
+    "lang": "zh",
+    "theme": "swiss-ikb"
+  },
+  "slides": [
+    {
+      "id": "m1",
+      "role": "matrix",
+      "content": {
+        "presentation": {
+          "title": "SWOT · 自动分派项目",
+          "items": [
+            {
+              "id": "s",
+              "label": "知识库已有 240 条标准答复",
+              "required": true,
+              "detail": "沉淀两年，覆盖八成常见问题"
+            },
+            {
+              "id": "w",
+              "label": "夜间无人值守",
+              "required": true,
+              "detail": "22:00 后平均响应 68 分钟"
+            },
+            {
+              "id": "o",
+              "label": "客服工单量年增 40%",
+              "required": true,
+              "detail": "规模化之后单位成本会下降"
+            },
+            {
+              "id": "t",
+              "label": "竞品已上线同类能力",
+              "required": true,
+              "detail": "窗口期大约两个季度"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "分析模型"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "model-swot",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "m2",
+      "role": "matrix",
+      "content": {
+        "presentation": {
+          "title": "PEST · 出海东南亚",
+          "items": [
+            {
+              "id": "p",
+              "label": "数据本地化要求趋严",
+              "required": true,
+              "detail": "印尼、越南均已立法"
+            },
+            {
+              "id": "e",
+              "label": "本币汇率波动加大",
+              "required": true,
+              "detail": "定价需按季度复核"
+            },
+            {
+              "id": "s",
+              "label": "移动端渗透率高",
+              "required": true,
+              "detail": "跳过 PC 世代直接用 App"
+            },
+            {
+              "id": "t",
+              "label": "本地支付接口碎片化",
+              "required": true,
+              "detail": "至少要接四家"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "分析模型"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "model-pest",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "m3",
+      "role": "matrix",
+      "content": {
+        "presentation": {
+          "title": "BCG · 产品线定位",
+          "items": [
+            {
+              "id": "a",
+              "label": "企业版",
+              "required": true,
+              "detail": "份额领先且仍在快速增长"
+            },
+            {
+              "id": "b",
+              "label": "行业解决方案",
+              "required": true,
+              "detail": "增长快但份额未定"
+            },
+            {
+              "id": "c",
+              "label": "专业版",
+              "required": true,
+              "detail": "现金来源，投入维持即可"
+            },
+            {
+              "id": "d",
+              "label": "个人版",
+              "required": true,
+              "detail": "增长与份额双低，考虑收缩"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "分析模型"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "model-bcg",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "m4",
+      "role": "matrix",
+      "content": {
+        "presentation": {
+          "title": "商业模式画布",
+          "items": [
+            {
+              "id": "p1",
+              "label": "三家区域集成商",
+              "required": true
+            },
+            {
+              "id": "p2",
+              "label": "模型训练与调优",
+              "required": true
+            },
+            {
+              "id": "p3",
+              "label": "标注数据与算力",
+              "required": true
+            },
+            {
+              "id": "p4",
+              "label": "把客服响应从小时级压到分钟级",
+              "required": true
+            },
+            {
+              "id": "p5",
+              "label": "专属客户成功",
+              "required": true
+            },
+            {
+              "id": "p6",
+              "label": "直销 + 集成商",
+              "required": true
+            },
+            {
+              "id": "p7",
+              "label": "500 人以上的服务型企业",
+              "required": true
+            },
+            {
+              "id": "p8",
+              "label": "算力与人力各占四成",
+              "required": true
+            },
+            {
+              "id": "p9",
+              "label": "按坐席年费 + 超量计费",
+              "required": true
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "分析模型"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "model-bmc",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "m5",
+      "role": "matrix",
+      "content": {
+        "presentation": {
+          "title": "波特五力 · 智能客服赛道",
+          "items": [
+            {
+              "id": "f1",
+              "label": "三家头部贴身竞争",
+              "required": true
+            },
+            {
+              "id": "f2",
+              "label": "大模型厂商随时下场",
+              "required": true
+            },
+            {
+              "id": "f3",
+              "label": "自建 + 开源方案",
+              "required": true
+            },
+            {
+              "id": "f4",
+              "label": "算力供应商集中度高",
+              "required": true
+            },
+            {
+              "id": "f5",
+              "label": "大客户压价能力强",
+              "required": true
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "分析模型"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "model-porter",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "m6",
+      "role": "matrix",
+      "content": {
+        "presentation": {
+          "title": "双钻 · 本次改造过程",
+          "items": [
+            {
+              "id": "d1",
+              "label": "走访 12 个坐席",
+              "required": true,
+              "detail": "跟班两周，记录真实卡点"
+            },
+            {
+              "id": "d2",
+              "label": "锁定两个指标",
+              "required": true,
+              "detail": "响应时长与一次解决率"
+            },
+            {
+              "id": "d3",
+              "label": "三套分派方案",
+              "required": true,
+              "detail": "分别做了两周灰度"
+            },
+            {
+              "id": "d4",
+              "label": "全量上线 + 培训",
+              "required": true,
+              "detail": "配套 240 条标准答复"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "分析模型"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "model-double-diamond",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "m7",
+      "role": "matrix",
+      "content": {
+        "presentation": {
+          "title": "AARRR · 上半年漏斗",
+          "items": [
+            {
+              "id": "a1",
+              "label": "官网与投放",
+              "required": true,
+              "value": 10000,
+              "displayValue": "10,000"
+            },
+            {
+              "id": "a2",
+              "label": "完成首次配置",
+              "required": true,
+              "value": 4200,
+              "displayValue": "4,200"
+            },
+            {
+              "id": "a3",
+              "label": "次月仍在用",
+              "required": true,
+              "value": 2600,
+              "displayValue": "2,600"
+            },
+            {
+              "id": "a4",
+              "label": "推荐给同行",
+              "required": true,
+              "value": 880,
+              "displayValue": "880"
+            },
+            {
+              "id": "a5",
+              "label": "转为付费",
+              "required": true,
+              "value": 410,
+              "displayValue": "410"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "分析模型"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "model-aarrr",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "m8",
+      "role": "matrix",
+      "content": {
+        "presentation": {
+          "title": "增长飞轮",
+          "items": [
+            {
+              "id": "w1",
+              "label": "更多坐席使用",
+              "required": true
+            },
+            {
+              "id": "w2",
+              "label": "沉淀更多标准答复",
+              "required": true
+            },
+            {
+              "id": "w3",
+              "label": "响应更快、解决率更高",
+              "required": true
+            },
+            {
+              "id": "w4",
+              "label": "续费与口碑推荐上升",
+              "required": true
+            }
+          ],
+          "summary": "服务质量",
+          "takeaway": "每转一圈，下一圈更省力"
+        },
+        "meta": {
+          "kicker": "分析模型"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "model-flywheel",
+          "props": {}
+        }
+      ]
+    }
+  ]
+}

@@ -18,6 +18,12 @@
       "version": "0.1.39"
     },
     {
+      "name": "ppt-maker",
+      "source": "./plugins/ppt-maker",
+      "description": "Web deck + genuinely editable .pptx from one deck.json source of truth, dual-rendered off a shared geometry engine with mechanical EMU verification. 18 charts, 23 layouts incl. 8 analysis frameworks, 24 validated theme palettes, in-browser console, PDF export.",
+      "version": "1.0.0"
+    },
+    {
       "name": "video-maker",
       "source": "./plugins/video-maker",
       "description": "Turn scripts and articles into click-driven 16:9 web presentations you can screen-record as cinematic videos (bundles the web-video-presentation skill).",

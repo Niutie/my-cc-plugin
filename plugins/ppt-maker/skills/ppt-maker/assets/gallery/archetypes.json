@@ -1,0 +1,686 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "title": "Archetype gallery",
+    "lang": "zh",
+    "theme": "swiss-ikb"
+  },
+  "slides": [
+    {
+      "id": "a1",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "2026 上半年业务复盘",
+          "summary": "增长来源、结构变化与下半年重点",
+          "takeaway": "增长从获客转向留存，下半年重点押注复购"
+        },
+        "meta": {
+          "kicker": "增长团队 · 2026 H1"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "cover-hero",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "a2",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "上半年业务复盘",
+          "summary": "增长来源与结构变化",
+          "takeaway": "从获客转向留存"
+        },
+        "meta": {
+          "kicker": "增长团队 · H1"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "cover-split",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "a3",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "复购第一次超过新客，这不是一个季度的波动，而是结构换挡",
+          "summary": "—— 增长周会，6 月 12 日"
+        },
+        "meta": {}
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "statement",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "a4",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "本次汇报的四件事",
+          "items": [
+            {
+              "id": "s1",
+              "label": "上半年结果",
+              "required": true,
+              "detail": "四个数字说清增长从哪来"
+            },
+            {
+              "id": "s2",
+              "label": "结构变化",
+              "required": true,
+              "detail": "新客与复购的此消彼长"
+            },
+            {
+              "id": "s3",
+              "label": "风险研判",
+              "required": true,
+              "detail": "三个可能打断趋势的变量"
+            },
+            {
+              "id": "s4",
+              "label": "下半年动作",
+              "required": true,
+              "detail": "资源怎么重新分配"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "目录"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "agenda-numbered",
+          "props": {
+            "visibleCount": 4
+          }
+        }
+      ]
+    },
+    {
+      "id": "a5",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "下半年，把资源押在复购上",
+          "takeaway": "三件事，本季度内启动",
+          "items": [
+            {
+              "id": "s1",
+              "label": "上半年结果",
+              "required": true,
+              "detail": "四个数字说清增长从哪来"
+            },
+            {
+              "id": "s2",
+              "label": "结构变化",
+              "required": true,
+              "detail": "新客与复购的此消彼长"
+            },
+            {
+              "id": "s3",
+              "label": "风险研判",
+              "required": true,
+              "detail": "三个可能打断趋势的变量"
+            }
+          ]
+        },
+        "meta": {}
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "closing",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "a6",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "上半年核心数字",
+          "summary": "四个指标解释增长从哪来",
+          "takeaway": "新客贡献下滑，老客复购撑起了增量",
+          "items": [
+            {
+              "id": "gmv",
+              "label": "GMV",
+              "required": true,
+              "value": 4.82,
+              "displayValue": "4.82",
+              "detail": "同比 +31%",
+              "unit": "亿"
+            },
+            {
+              "id": "rep",
+              "label": "复购率",
+              "required": true,
+              "value": 38,
+              "displayValue": "38%",
+              "detail": "连续三季上行"
+            },
+            {
+              "id": "cac",
+              "label": "获客成本",
+              "required": true,
+              "value": 214,
+              "displayValue": "¥214",
+              "detail": "同比 -12%"
+            },
+            {
+              "id": "nps",
+              "label": "NPS",
+              "required": true,
+              "value": 46,
+              "displayValue": "46",
+              "detail": "样本 2,140"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "第一部分 · 结果"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "metric-spotlight",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "a7",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "上半年核心数字",
+          "summary": "四个指标解释增长从哪来",
+          "takeaway": "新客贡献下滑，老客复购撑起了增量",
+          "items": [
+            {
+              "id": "gmv",
+              "label": "GMV",
+              "required": true,
+              "value": 4.82,
+              "displayValue": "4.82",
+              "detail": "同比 +31%",
+              "unit": "亿"
+            },
+            {
+              "id": "rep",
+              "label": "复购率",
+              "required": true,
+              "value": 38,
+              "displayValue": "38%",
+              "detail": "连续三季上行"
+            },
+            {
+              "id": "cac",
+              "label": "获客成本",
+              "required": true,
+              "value": 214,
+              "displayValue": "¥214",
+              "detail": "同比 -12%"
+            },
+            {
+              "id": "nps",
+              "label": "NPS",
+              "required": true,
+              "value": 46,
+              "displayValue": "46",
+              "detail": "样本 2,140"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "第一部分 · 结果"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "metric-wall",
+          "props": {
+            "visibleCount": 4
+          }
+        }
+      ]
+    },
+    {
+      "id": "a8",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "季度 GMV",
+          "takeaway": "Q2 起复购首次超过新客，结构性拐点已经出现。下半年的资源应该跟着这条曲线走，而不是继续加码前端获客。",
+          "items": [
+            {
+              "id": "q1",
+              "label": "Q1",
+              "required": true,
+              "value": 94,
+              "displayValue": "0.94"
+            },
+            {
+              "id": "q2",
+              "label": "Q2",
+              "required": true,
+              "value": 113,
+              "displayValue": "1.13"
+            },
+            {
+              "id": "q3",
+              "label": "Q3",
+              "required": true,
+              "value": 128,
+              "displayValue": "1.28"
+            },
+            {
+              "id": "q4",
+              "label": "Q4",
+              "required": true,
+              "value": 147,
+              "displayValue": "1.47"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "第二部分 · 结构"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "chart-led",
+          "props": {
+            "chartKind": "column"
+          }
+        }
+      ]
+    },
+    {
+      "id": "a9",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "季度 GMV 走势",
+          "takeaway": "四个季度连续上行，Q4 环比加速",
+          "items": [
+            {
+              "id": "q1",
+              "label": "Q1",
+              "required": true,
+              "value": 94,
+              "displayValue": "0.94"
+            },
+            {
+              "id": "q2",
+              "label": "Q2",
+              "required": true,
+              "value": 113,
+              "displayValue": "1.13"
+            },
+            {
+              "id": "q3",
+              "label": "Q3",
+              "required": true,
+              "value": 128,
+              "displayValue": "1.28"
+            },
+            {
+              "id": "q4",
+              "label": "Q4",
+              "required": true,
+              "value": 147,
+              "displayValue": "1.47"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "第二部分 · 结构"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "chart-full",
+          "props": {
+            "chartKind": "line"
+          }
+        }
+      ]
+    },
+    {
+      "id": "a10",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "改造前 vs 改造后",
+          "takeaway": "两项核心指标都在一个季度内反转",
+          "items": [
+            {
+              "id": "v1",
+              "label": "响应时长 42 分钟",
+              "required": true,
+              "detail": "人工分派，夜间无人值守"
+            },
+            {
+              "id": "v2",
+              "label": "一次解决率 58%",
+              "required": true,
+              "detail": "缺少知识沉淀"
+            },
+            {
+              "id": "v3",
+              "label": "响应时长 18 分钟",
+              "required": true,
+              "detail": "自动分派 + 值班轮换"
+            },
+            {
+              "id": "v4",
+              "label": "一次解决率 79%",
+              "required": true,
+              "detail": "沉淀了 240 条标准答复"
+            }
+          ]
+        },
+        "meta": {
+          "leftLabel": "改造前",
+          "rightLabel": "改造后",
+          "kicker": "第三部分 · 案例"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "comparison-split",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "a11",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "全年推进节奏",
+          "takeaway": "每个节点都有明确的验收口径",
+          "items": [
+            {
+              "id": "t1",
+              "label": "立项",
+              "required": true,
+              "displayValue": "1 月",
+              "detail": "确定范围与验收口径"
+            },
+            {
+              "id": "t2",
+              "label": "试点",
+              "required": true,
+              "displayValue": "3 月",
+              "detail": "两个区域先跑一轮"
+            },
+            {
+              "id": "t3",
+              "label": "推广",
+              "required": true,
+              "displayValue": "6 月",
+              "detail": "全量上线并配套培训"
+            },
+            {
+              "id": "t4",
+              "label": "复盘",
+              "required": true,
+              "displayValue": "9 月",
+              "detail": "按同一口径回看效果"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "第四部分 · 计划"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "timeline-steps",
+          "props": {
+            "visibleCount": 4
+          }
+        }
+      ]
+    },
+    {
+      "id": "a12",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "落地四步",
+          "takeaway": "前两步本季度必须完成",
+          "items": [
+            {
+              "id": "t1",
+              "label": "立项",
+              "required": true,
+              "displayValue": "1 月",
+              "detail": "确定范围与验收口径"
+            },
+            {
+              "id": "t2",
+              "label": "试点",
+              "required": true,
+              "displayValue": "3 月",
+              "detail": "两个区域先跑一轮"
+            },
+            {
+              "id": "t3",
+              "label": "推广",
+              "required": true,
+              "displayValue": "6 月",
+              "detail": "全量上线并配套培训"
+            },
+            {
+              "id": "t4",
+              "label": "复盘",
+              "required": true,
+              "displayValue": "9 月",
+              "detail": "按同一口径回看效果"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "第四部分 · 计划"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "process-flow",
+          "props": {
+            "visibleCount": 4
+          }
+        }
+      ]
+    },
+    {
+      "id": "a13",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "下半年动作优先级",
+          "items": [
+            {
+              "id": "q1",
+              "label": "高价值 · 易做",
+              "required": true,
+              "detail": "立刻投入，本季度就要见效"
+            },
+            {
+              "id": "q2",
+              "label": "高价值 · 难做",
+              "required": true,
+              "detail": "拆成阶段，先做可验证的一段"
+            },
+            {
+              "id": "q3",
+              "label": "低价值 · 易做",
+              "required": true,
+              "detail": "有余力再做，不占主线资源"
+            },
+            {
+              "id": "q4",
+              "label": "低价值 · 难做",
+              "required": true,
+              "detail": "明确不做，并告知相关方"
+            }
+          ]
+        },
+        "meta": {
+          "xAxis": "实施难度 →",
+          "kicker": "第四部分 · 计划"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "matrix-2x2",
+          "props": {}
+        }
+      ]
+    },
+    {
+      "id": "a14",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "三个必须回答的问题",
+          "takeaway": "回答不了就不该继续投入",
+          "items": [
+            {
+              "id": "s1",
+              "label": "上半年结果",
+              "required": true,
+              "detail": "四个数字说清增长从哪来"
+            },
+            {
+              "id": "s2",
+              "label": "结构变化",
+              "required": true,
+              "detail": "新客与复购的此消彼长"
+            },
+            {
+              "id": "s3",
+              "label": "风险研判",
+              "required": true,
+              "detail": "三个可能打断趋势的变量"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "第三部分 · 风险"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "list-cards",
+          "props": {
+            "visibleCount": 3,
+            "columns": 3
+          }
+        }
+      ]
+    },
+    {
+      "id": "a15",
+      "role": "statement",
+      "content": {
+        "presentation": {
+          "title": "华东区试点",
+          "summary": "两个月，两个指标",
+          "takeaway": "把自动分派和值班轮换一起上线之后，响应时长从 42 分钟压到 18 分钟，一次解决率从 58% 提到 79%。关键不是工具，是把 240 条标准答复沉淀了下来。",
+          "items": [
+            {
+              "id": "gmv",
+              "label": "GMV",
+              "required": true,
+              "value": 4.82,
+              "displayValue": "4.82",
+              "detail": "同比 +31%",
+              "unit": "亿"
+            },
+            {
+              "id": "rep",
+              "label": "复购率",
+              "required": true,
+              "value": 38,
+              "displayValue": "38%",
+              "detail": "连续三季上行"
+            }
+          ]
+        },
+        "meta": {
+          "kicker": "第三部分 · 案例"
+        }
+      },
+      "selectedVariant": "v1",
+      "variants": [
+        {
+          "id": "v1",
+          "kind": "archetype",
+          "archetype": "case-detail",
+          "props": {
+            "visibleCount": 2
+          }
+        }
+      ]
+    }
+  ]
+}
