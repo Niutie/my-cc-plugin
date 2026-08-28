@@ -9,6 +9,11 @@ npm run export:pptx -- --mode=comparison  # 每页展开全部方案（4N 页）
 npm run export:pdf                        # dist/deck.pdf
 ```
 
+`npm run dev` 时控制台里还有个**导出 PPTX** 按钮：它在 dev server 里跑上面
+那条同样的 `export:pptx`，写同一个 `dist/deck.pptx`，并把字节流回浏览器下载。
+先保存后导出，所以拿到的一定是屏幕上这份。它**不跑**几何校验，也没有
+comparison 模式 —— 见 [`CONSOLE.md`](CONSOLE.md)。
+
 ## 网页版
 
 `base: "./"`，所以构建产物直接双击 `index.html` 就能开，不需要服务器。

@@ -1,6 +1,6 @@
 # ppt-maker
 
-> **1.0 — 生成、编辑、校验、交付全通。**
+> **1.1 — 生成、编辑、校验、交付全通；控制台可直接导出 PPTX。**
 
 把素材做成**可离线打开的网页版 PPT**，并导出成**真·可编辑的 PPTX**。
 
@@ -46,6 +46,7 @@ deck.json ──compile──→ Composition ──┬─→ React        网页
 | 23 个版式骨架（15 通用 + 8 分析模型） | ✅ |
 | 24 套主题配色逐条通过 CVD / 对比度校验 | ✅ |
 | 浏览器内控制台（改字 + 控件 + 写回 deck.json） | ✅ |
+| 控制台内一键导出 PPTX（dev server 专有，先存再导） | ✅ |
 | deck 校验器（容量 / required 事实 / 节奏 / 图表自洽） | ✅ |
 | PDF 导出 | ✅ |
 | source → plan → build → review → deliver 流程 + 9 个命令 | ✅ |
@@ -57,7 +58,7 @@ bash skills/ppt-maker/scripts/scaffold.sh ./deck --theme=swiss-ikb
 bash skills/ppt-maker/scripts/scaffold.sh --list-themes
 
 cd deck
-npm run dev                 # → / ← 翻页，v 切换方案
+npm run dev                 # → / ← 翻页，C 开控制台（改字 / 切方案 / 导出）
 npm run export:pptx         # dist/deck.pptx
 npm run verify:geometry     # 校验两个渲染器坐标一致
 ```

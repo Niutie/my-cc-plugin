@@ -152,6 +152,7 @@ npm run export:pdf                       # dist/deck.pdf
 npm run build                            # dist-web/ 可离线打开的网页版
 ```
 
+改完想立刻拿到文件，控制台里有**导出 PPTX** 按钮，跑的是同一条命令。
 细节与边界见 [`references/EXPORT.md`](references/EXPORT.md)。
 
 ## 生成之后：控制台
@@ -162,6 +163,8 @@ npm run build                            # dist-web/ 可离线打开的网页版
 - 拖控件调数量 / 换对齐 / 开关模块
 - 切方案
 - 写回 `deck.json`，下次 `export:pptx` 直接带上
+- **导出 PPTX** 按钮：先保存再跑同一个 `export:pptx`，浏览器直接下载
+  （dev server 专有，不跑几何校验 —— 交付前仍要 `npm run check`）
 
 见 [`references/CONSOLE.md`](references/CONSOLE.md)。
 

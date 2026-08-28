@@ -104,7 +104,7 @@ cat <<EOF
 
 下一步：
   cd $TARGET
-  npm run dev                 # 网页版 PPT（→ / ← 翻页，v 切换方案）
+  npm run dev                 # 网页版 PPT（→ / ← 翻页，C 开控制台）
   npm run export:pptx         # 导出可编辑 .pptx 到 dist/deck.pptx
   npm run verify:geometry     # 校验网页与 .pptx 的坐标是否一致
 

@@ -24,11 +24,15 @@ export interface EditResult {
 
 export type SaveState = "clean" | "dirty" | "saving" | "saved" | "error";
 
+export type ExportState = "idle" | "running" | "done" | "error";
+
 export function useDeck(initial: Deck) {
   const [deck, setDeck] = useState<Deck>(initial);
   const [index, setIndex] = useState(0);
   const [save, setSave] = useState<SaveState>("clean");
   const [lastEdit, setLastEdit] = useState<string | null>(null);
+  const [exportState, setExportState] = useState<ExportState>("idle");
+  const [exportNote, setExportNote] = useState<string | null>(null);
 
   const slide = deck.slides[Math.min(index, deck.slides.length - 1)];
   const variant = useMemo(
@@ -104,7 +108,8 @@ export function useDeck(initial: Deck) {
     [slide, patchSlide],
   );
 
-  const persist = useCallback(async () => {
+  /** Returns whether deck.json on disk now matches what's on screen. */
+  const persist = useCallback(async (): Promise<boolean> => {
     setSave("saving");
     try {
       const response = await fetch("/__deck", {
@@ -117,10 +122,54 @@ export function useDeck(initial: Deck) {
       // Back to a neutral label after a beat; "saved" forever reads as
       // though nothing since has been touched.
       setTimeout(() => setSave((s) => (s === "saved" ? "clean" : s)), 1600);
+      return true;
     } catch {
       setSave("error");
+      return false;
     }
   }, [deck]);
+
+  /**
+   * Export a .pptx from the console.
+   *
+   * Saves first, always. The exporter reads deck.json off disk, so
+   * exporting while dirty would hand you a file that isn't the deck you
+   * are looking at — the one failure mode a console-side export button
+   * could introduce. Saving first removes the question entirely.
+   */
+  const exportPptx = useCallback(async (): Promise<void> => {
+    setExportState("running");
+    setExportNote(null);
+    if (save === "dirty" || save === "error") {
+      const saved = await persist();
+      if (!saved) {
+        setExportState("error");
+        setExportNote("改动没写回 deck.json，导出会漏掉它们 —— dev server 在跑吗？");
+        return;
+      }
+    }
+    try {
+      const response = await fetch("/__export", { method: "POST" });
+      if (!response.ok) throw new Error((await response.text()).trim());
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${filename(deck.meta.title)}.pptx`;
+      // In the document and revoked late: Safari ignores a detached
+      // anchor, and revoking straight after click() can kill the
+      // download mid-flight.
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      setExportState("done");
+      setTimeout(() => setExportState((s) => (s === "done" ? "idle" : s)), 4000);
+    } catch (error) {
+      setExportState("error");
+      setExportNote(String((error as Error)?.message ?? error));
+    }
+  }, [deck, save, persist]);
 
   return {
     deck,
@@ -134,5 +183,14 @@ export function useDeck(initial: Deck) {
     persist,
     save,
     lastEdit,
+    exportPptx,
+    exportState,
+    exportNote,
   };
+}
+
+/** Deck titles are prose — strip what a filesystem would choke on. */
+function filename(title: string): string {
+  const clean = title.replace(/[\\/:*?"<>|]+/g, " ").trim();
+  return clean.slice(0, 60) || "deck";
 }

@@ -6,9 +6,9 @@
  *   default      the deck, keyboard-driven
  *   console (c)  the editing panel, plus in-place text editing
  *
- * The console is dev-only in practice: it saves through a Vite
- * middleware that a built deck doesn't have. That is on purpose — a
- * deck you send someone is a finished artefact, not a shared editor.
+ * The console is dev-only in practice: it saves and exports through
+ * Vite middlewares that a built deck doesn't have. That is on purpose —
+ * a deck you send someone is a finished artefact, not a shared editor.
  * ───────────────────────────────────────────────────────────────────── */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -171,6 +171,9 @@ export default function App() {
           save={deckState.save}
           lastEdit={deckState.lastEdit}
           notice={notice}
+          onExport={() => void deckState.exportPptx()}
+          exportState={deckState.exportState}
+          exportNote={deckState.exportNote}
         />
       )}
     </>

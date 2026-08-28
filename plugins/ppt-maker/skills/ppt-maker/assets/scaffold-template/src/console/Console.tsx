@@ -11,7 +11,7 @@ import type { CSSProperties } from "react";
 import { ARCHETYPES } from "../archetypes";
 import type { ArchetypeControl } from "../archetypes/types";
 import type { Deck, Slide, Variant } from "../deck/types";
-import type { SaveState } from "./useDeck";
+import type { ExportState, SaveState } from "./useDeck";
 
 /** Shared with App so the stage can make room instead of hiding under it. */
 export const CONSOLE_WIDTH = 340;
@@ -54,6 +54,9 @@ export function Console({
   save,
   lastEdit,
   notice,
+  onExport,
+  exportState,
+  exportNote,
 }: {
   deck: Deck;
   slide: Slide;
@@ -66,6 +69,9 @@ export function Console({
   save: SaveState;
   lastEdit: string | null;
   notice: string | null;
+  onExport(): void;
+  exportState: ExportState;
+  exportNote: string | null;
 }) {
   const archetype =
     variant?.kind === "archetype" ? ARCHETYPES[variant.archetype] : undefined;
@@ -177,6 +183,53 @@ export function Console({
       </button>
       <p style={{ color: "#6d747e", margin: "10px 0 0", fontSize: 12 }}>
         保存后跑 <code>npm run check</code> 复核容量与坐标。
+      </p>
+
+      <div style={LABEL}>导出</div>
+      <button
+        onClick={onExport}
+        disabled={exportState === "running"}
+        style={{
+          // Blue is "this button does something"; a failed or in-flight
+          // export shouldn't wear the same coat as a ready one.
+          ...chip(exportState === "idle" || exportState === "done"),
+          width: "100%",
+          padding: "10px 12px",
+          cursor: exportState === "running" ? "wait" : "pointer",
+        }}
+      >
+        {
+          {
+            idle: save === "dirty" ? "保存并导出 PPTX" : "导出 PPTX",
+            running: "导出中…",
+            done: "已下载 ✓",
+            error: "导出失败",
+          }[exportState]
+        }
+      </button>
+      {exportNote && (
+        <p
+          style={{
+            margin: "8px 0 0",
+            color: "#f0a35e",
+            fontSize: 12,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          {exportNote}
+        </p>
+      )}
+      {/* Spaces around inline <code> are explicit: JSX drops the
+          whitespace that sits next to a line break. */}
+      <p style={{ color: "#6d747e", margin: "10px 0 0", fontSize: 12 }}>
+        跑的就是 <code>npm run export:pptx</code>，文件同时落在{" "}
+        <code>dist/deck.pptx</code>。
+      </p>
+      <p style={{ color: "#6d747e", margin: "6px 0 0", fontSize: 12 }}>
+        <strong style={{ color: "#8b929c" }}>不含几何校验</strong> —— 交付前仍要跑{" "}
+        <code>npm run check</code>。同一条命令加 <code>-- --mode=comparison</code>{" "}
+        可展开全部方案。
       </p>
     </div>
   );
