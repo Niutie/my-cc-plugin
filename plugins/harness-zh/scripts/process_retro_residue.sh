@@ -203,6 +203,20 @@ parse_block() {
         # （2026-05-05 codex review F1+F2 修复 — 此前用 [A-Z][0-9]+ 漏 C-bootstrap
         # 等 alphanumeric-dash code）；review 2026-06-10 #16 起经共享常量
         # $RAI_CODE_RE（deferred_work_schema_lib.sh）注入。
+        # v0.2.0 nested item (`    A1:` + child `status:`) — valid YAML form
+        local rai_nested_re="^[[:space:]]+(${RAI_CODE_RE}):[[:space:]]*(#.*)?\$"
+        if [[ "$line" =~ $rai_nested_re ]]; then
+            CODES+=("${BASH_REMATCH[1]}")
+            STATUSES+=("")
+            CHORE_SPECS+=("")
+            prev_code="${BASH_REMATCH[1]}"
+            continue
+        fi
+        if [[ -n "$prev_code" ]] && [[ "$line" =~ ^[[:space:]]+status:[[:space:]]+[\'\"]?([a-zA-Z-]+) ]]; then
+            local sidx=$((${#STATUSES[@]} - 1))
+            [[ -z "${STATUSES[$sidx]}" ]] && STATUSES[$sidx]="${BASH_REMATCH[1]}"
+            continue
+        fi
         local rai_item_re="^[[:space:]]+(${RAI_CODE_RE}):[[:space:]]+([a-zA-Z-]+)([[:space:]]+#.*)?\$"
         if [[ "$line" =~ $rai_item_re ]]; then
             CODES+=("${BASH_REMATCH[1]}")

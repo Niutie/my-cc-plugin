@@ -121,7 +121,8 @@ BMad 6.11 把 `bmad-create-story` / `bmad-dev-story` / `bmad-quick-dev` 合并�
 - **实现子 agent 拿不到 dispatch prompt**（bmad-build-auto 规定 spec 是唯一事实来源），harness 的实现清单通过 spec frontmatter `context:` 挂载 `bmad-build-implement-suffix.md`，再由它让实现子 agent 拉取 `harness-prompt-suffix.py implement`。
 - **状态源**：`harness-state.py` 以 tag（start / built / followup-start / followup / done）+ spec frontmatter status + `story(<KEY>): sync sprint status & deferred ledger` commit 判断续作点；`--in-flight` 取代 `find-by-status review` 作为 `--continue` 的目标来源。
 - **retro**：`bmad-retrospective -H <epic>`；retro 文档 frontmatter `verdict` 由 stage 6 commit 读出（`RETRO_VERDICT=`），`rejected` 时 all 模式不进下一个 epic。BMad 原生 `action_items` 与 harness `retro_action_items` 按 id `epic-<N>-retro-<CODE>` 对齐，retro-fulfill 两本账一起翻。
-- **pre-commit gate ①** 触发从写死的 `[4-6]-*.md` 改成任意 epic 的新 story spec（`spec-<N>-<M>-*.md` / `<N>-<M>-*.md`）。
+- **pre-commit gate ①** 触发从写死的 `[4-6]-*.md` 改成任意 epic 的新 story spec（`spec-<N>-<M>-*.md` / `<N>-<M>-*.md`）；是否拦截由 `retro_gate: warn | block` 决定，默认 warn。
+- **retro_action_items 写法**改为合法 YAML 嵌套映射（`CODE:` + `status:` 子键），BMad 6.12 原生脚本整文件按 YAML 解析；旧标量写法由 `sprint-status.py migrate-retro-items` 迁移，读取器两种都认。
 - **旧流水线 story**：`harness-state.py` 报 `pipeline: legacy` + `legacy-stage*` code，处理见 run.md §1.L。
 
 ### 〇.6 0.1.28-0.1.38 机制演进要点（本节按 working tree 实况核对）

@@ -94,6 +94,28 @@ awk -v rai_code_re="$RAI_CODE_RE" '
     next
   }
 
+  # v0.2.0 nested item (valid YAML): `    A1:` on its own line, status in a
+  # child `status:` key. Must precede the scalar rule (`    A1:  # c` would
+  # otherwise read "#" as the status).
+  in_block && $0 ~ ("^[[:space:]]+" rai_code_re ":[[:space:]]*(#.*)?$") {
+    flush_item()
+    code = $1
+    sub(":$", "", code)
+    current_code = code
+    current_status = ""
+    next
+  }
+
+  in_block && /^[[:space:]]+status:[[:space:]]/ {
+    if (current_code != "" && current_status == "") {
+      st = $2
+      sub(/\r$/, "", st)
+      gsub(/["'"'"']/, "", st)
+      current_status = st
+    }
+    next
+  }
+
   in_block && $0 ~ ("^[[:space:]]+" rai_code_re ":[[:space:]]") {
     flush_item()
     code = $1

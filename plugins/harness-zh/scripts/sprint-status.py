@@ -47,6 +47,12 @@
           harness `retro_action_items` 的同时用它同步原生账（id 约定
           `epic-<N>-retro-<CODE>`，见 bmad-retrospective-suffix.md）。
 
+    python3 .claude/harness/scripts/sprint-status.py migrate-retro-items [--check]
+        → 把 retro_action_items 里 ≤ 0.1.39 的标量写法（`A1: pending` + 过缩进子键，
+          不是合法 YAML）改写为嵌套映射（`A1:` + `status: pending`）。`--check` 只报告：
+          退出码 0 = 无需迁移，3 = 需要迁移（stdout 打印条目数）。BMad 6.12 的原生脚本
+          整文件按 YAML 解析，旧写法会让它们直接失败。
+
 终态：epic-all-done 把 `done` 与 `wont-do`（项目自定义的放弃态）都视为完成。
 
 故意手写 yaml 解析（避免引入 PyYAML 依赖）。兼容 development_status 下两种布局：
@@ -331,6 +337,20 @@ def cmd_epic_retro_status(epic_num: str) -> int:
     return 1
 
 
+def cmd_migrate_retro_items(check_only: bool) -> int:
+    import harness_spec  # sourceable lib next to this script
+    if not SPRINT_FILE.exists():
+        sys.exit(f"missing {SPRINT_FILE}")
+    text = SPRINT_FILE.read_text(encoding="utf-8")
+    new_text, n = harness_spec.migrate_retro_items_text(text)
+    print(n)
+    if check_only:
+        return 3 if n else 0
+    if n:
+        _atomic_write(SPRINT_FILE, new_text)
+    return 0
+
+
 def cmd_epic_stories(epic_num: str) -> int:
     """每行 `<key>\t<status>`，该 epic 的全部 story（yaml 顺序）。"""
     prefix = f"{epic_num}-"
@@ -384,6 +404,10 @@ def main(argv: list[str]) -> int:
         return cmd_find_by_status(argv[2])
     if cmd == "next-in-epic" and len(argv) == 3:
         return cmd_next_in_epic(argv[2])
+    if cmd == "migrate-retro-items" and len(argv) in (2, 3):
+        if len(argv) == 3 and argv[2] != "--check":
+            sys.exit(__doc__)
+        return cmd_migrate_retro_items(len(argv) == 3)
     if cmd == "epic-stories" and len(argv) == 3:
         return cmd_epic_stories(argv[2])
     if cmd == "action-status" and len(argv) in (3, 4):

@@ -71,9 +71,19 @@ unified_agent_gateway 升到 BMad 6.12.4（manifest `installShims: false`）后�
 - init / update / codex-catchup / run-test / architecture / README / deferred-work schema（新增 `build-of` / `build-auto-of` source）同步；BMad 命令名更新为 `bmad-prd` / `bmad-architecture`。
 - `release_check.sh`：顶部表读根 README，Versioning 表读插件 README。
 
+**⑦ codex 对抗式 review 修订（3 条）**
+
+- **retro_action_items 改为合法 YAML**（high）：≤ 0.1.39 的 seeder 写 `A1: pending` + 过缩进的 `category:` / `chore_spec:`，不是合法 YAML。以前只有 harness 自己的 awk 解析它，0.2.0 开始调 BMad 6.12 原生 `sprint_status.py`（整文件 YAML 解析）后会直接失败。改为嵌套写法（`A1:` + `status: pending`），新增 `harness_spec.migrate_retro_items_text`、`sprint-status.py migrate-retro-items [--check]`、`harness-commit.py retro-migrate` stage；seeder / chore_spec 填充先迁移再写，chore_spec 插在条目最后一个子键之后；4 个 bash 读取器和 `_lookup_chore_spec_from_yaml` 两种写法都认。顺带发现旧 checker 完全看不见嵌套写法的条目（gateway epic-54 起的 48 条 harness 项和 20 条 dev 项从未进过 gate）。
+- **retro_gate 开关**：读取器修好后 gateway 冒出 20 条未兑现 dev 项，加上 gate ① 扩到任意 epic，升级当天所有新 story spec 的 commit 都会被拒。新增 `harness-project-config.yaml` 顶层 `retro_gate: warn | block`，默认 `warn`（只提示）；`block` 才拦 commit、§0.A.0 才先跑兑现循环。
+- **build-verify 检查嵌套 artifact**（medium）：区间里 `test_artifacts/` 下别的 story 的文件报 `CROSS_STORY=`，artifacts 目录下其它嵌套路径报 `UNEXPECTED_ARTIFACT=`，与 staging 流水线同规则。
+- **build-sync 中断后仍可续作**（medium）：deferred 导入挪到 sprint-status 翻 done 之前；`--in-flight` 只在已提交的 sprint-status 为 done / wont-do **且**没有 harness 收口 commit 时才排除，未提交的 done 和已提交未打 tag 的 sync 都还能被 `--continue` 找到。
+- 新增回归 C1-C4；orchestration_observations_test 的 seeder 断言改为嵌套写法。迁移结果用 PyYAML 校验（本机无 ruamel.yaml，未用 BMad 原生解析器实测）。
+
 ### 后续注意
 
 - 升级后在项目里跑 `/harness-zh:update`，manifest purge 会删掉两个改名前的 suffix 文件。
+- 第一次 `/harness-zh:run` 会在 §0.A 1.5 检测旧写法并迁移 retro_action_items（单独一个 `chore(sprint-status)` commit）。想手动先做：`python3 .claude/harness/scripts/sprint-status.py migrate-retro-items`。
+- 想恢复 retro 行动项硬拦截：在 `harness-project-config.yaml` 加 `retro_gate: 'block'`（模板新字段，update 不会自动补）。
 - 跑之前先装 uv，再跑 `bash .claude/harness/scripts/check_bmad_runtime.sh` 确认 `STATUS=ok`。
 - 新流水线尚未在真实项目上整轮跑过；第一轮建议 `/harness-zh:run --story`，观察 B1 的 spec 命名与 build-verify 结果。
 - BMad 原生 `deferred-work.md` 写法（bmad-build 交互版 / bmad-code-review）仍不进 C11 注入，只有 FU 格式的条目会被注入。

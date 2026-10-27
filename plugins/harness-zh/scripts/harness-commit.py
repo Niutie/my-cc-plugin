@@ -844,6 +844,21 @@ STAGES = {
         "validate_review":  False,
         "suggest_tag":      "harness/{key}/done",
     },
+    # One-shot (v0.2.0): commits `sprint-status.py migrate-retro-items` — the
+    # retro_action_items scalar → nested-mapping rewrite. Only sprint-status.yaml.
+    "retro-migrate": {
+        "story_md":         False,
+        "story_json":       [],
+        "story_codex":      False,
+        "global_files":     ["sprint-status.yaml"],
+        "epic_retro":       False,
+        "project_code":     False,
+        "commit_msg":       "chore(sprint-status): migrate retro_action_items to nested mappings",
+        "skip_if_empty":    True,
+        "validate_dev":     False,
+        "validate_review":  False,
+        "suggest_tag":      None,
+    },
     "1": {
         "story_md":         True,
         "story_json":       [],
@@ -1603,6 +1618,11 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
     # footgun is an acknowledged real scenario (issue #6).
     if lines and not lines[-1].endswith("\n"):
         lines[-1] += "\n"
+    # v0.2.0: normalize legacy scalar-form items first so the file stays valid
+    # YAML after this write (the conversion rides along in this commit).
+    _migrated, _n = harness_spec.migrate_retro_items_text("".join(lines))
+    if _n:
+        lines = _migrated.splitlines(keepends=True)
 
     rai_marker = "retro_action_items:"
     block_marker_prefix = f"  epic-{epic}-retro:"
@@ -1654,6 +1674,8 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
 
     new_items = [it for it in items if it[0] not in existing_codes]
     if not new_items:
+        if _n:
+            _atomic_write_file(sprint_status_path, "".join(lines))
         return []  # idempotent
 
     insert_lines = []
@@ -1661,15 +1683,14 @@ def _seed_retro_action_items(epic, retro_md_path, sprint_status_path):
         # Create new subblock at end of retro_action_items section
         insert_lines.append(f"  epic-{epic}-retro:\n")
     for code, title, category in new_items:
+        # v0.2.0: valid nested mapping (status as its own key). The old
+        # `CODE: pending` + over-indented `category:` shape is not YAML and
+        # breaks BMad 6.12's native sprint-status parsers — see
+        # harness_spec.migrate_retro_items_text.
         comment = f"      # {title}" if title else ""
-        if comment:
-            insert_lines.append(f"    {code}: pending{comment}\n")
-        else:
-            insert_lines.append(f"    {code}: pending\n")
+        insert_lines.append(f"    {code}:\n")
+        insert_lines.append(f"      status: pending{comment}\n")
         if category:
-            # Finding #29: over-indented sub-field, same non-standard shape as
-            # the stage 6-5 `chore_spec:` fill (see check_retro_action_items.sh
-            # "Format note" header comment).
             insert_lines.append(f"      category: {category}\n")
 
     if block_idx is not None:
@@ -1732,6 +1753,10 @@ def _fill_chore_spec_field(epic, sprint_status_path, artifacts_dir):
     # `      chore_spec: ...` line onto the last physical line.
     if lines and not lines[-1].endswith("\n"):
         lines[-1] += "\n"
+    # v0.2.0: normalize legacy scalar-form items first (see _seed_retro_action_items).
+    _migrated, _n_migrated = harness_spec.migrate_retro_items_text("".join(lines))
+    if _n_migrated:
+        lines = _migrated.splitlines(keepends=True)
 
     block_marker_prefix = f"  epic-{epic}-retro:"
     rai_marker = "retro_action_items:"
@@ -1784,10 +1809,19 @@ def _fill_chore_spec_field(epic, sprint_status_path, artifacts_dir):
                     continue
                 break
             if not has_chore_spec:
-                codes_needing_fill.append((i + 1, code))
+                # after the item's last child (status / category), so the
+                # nested mapping keeps status first — grep_prev_retro_action_items.sh
+                # emits a row when it meets chore_spec. Trailing blank /
+                # comment lines stay below the inserted field.
+                k = j
+                while k > i + 1 and (lines[k - 1].strip() == "" or lines[k - 1].lstrip().startswith("#")):
+                    k -= 1
+                codes_needing_fill.append((k, code))
         i += 1
 
     if not codes_needing_fill:
+        if _n_migrated:
+            _atomic_write_file(sprint_status_path, "".join(lines))
         return []
 
     # 2) Code-first lookup: for each code, glob chore-retro-c<epic>-<code>-*.md.
@@ -1818,6 +1852,8 @@ def _fill_chore_spec_field(epic, sprint_status_path, artifacts_dir):
         inserts.append((insert_idx, f"      chore_spec: '{fname}'\n", code, fname))
 
     if not inserts:
+        if _n_migrated:
+            _atomic_write_file(sprint_status_path, "".join(lines))
         return []
 
     # Apply inserts in reverse-order to preserve indices
@@ -2210,7 +2246,7 @@ def _lookup_chore_spec_from_yaml(epic, code):
     rai_seen = False
     in_block = False
     in_entry = False
-    code_re = re.compile(r"^    ([A-Za-z][A-Za-z0-9-]*):\s")
+    code_re = re.compile(r"^    ([A-Za-z][A-Za-z0-9-]*):(?:\s|$)")   # scalar or nested (v0.2.0) item
     chore_spec_re = re.compile(r"^      chore_spec:\s*['\"]?([^'\"\n]+?)['\"]?\s*$")
     for line in lines:
         stripped_nl = line.rstrip("\n")
@@ -2689,6 +2725,21 @@ def run_build_verify(key, base=None):
         if is_out_of_scope_bmad_output(p) and p not in planning_allowlist:
             halts.append(f"OUT_OF_SCOPE_BMAD={p}")
             continue
+        # Nested paths under the artifacts dir: cross_story_ok only judges direct
+        # children, so apply the same two rules the staging pipeline uses —
+        # test_artifacts/ files must carry this story's key/epic (F1), anything
+        # else nested is an unexpected artifact (review 2026-06-10 #32).
+        if p.startswith(ARTIFACTS_DIR) and not ARTIFACT_RE.match(p):
+            tm = TEST_ARTIFACT_RE.match(p)
+            if tm:
+                verdict, _tag = classify_test_artifact(tm.group(1), key, harness_spec.epic_of_key(key))
+                if verdict == "wrong_key":
+                    halts.append(f"CROSS_STORY={p}")
+                elif verdict != "ok":
+                    halts.append(f"UNEXPECTED_ARTIFACT={p}")
+            else:
+                halts.append(f"UNEXPECTED_ARTIFACT={p}")
+            continue
         if not cross_story_ok(p, key, harness_spec.epic_of_key(key), cross_allowlist):
             halts.append(f"CROSS_STORY={p}")
 
@@ -2869,6 +2920,25 @@ def main():
         # a second, unreachable simulation branch used to live here — it would
         # have written `_simulated-epic-N-retro.md` into the REAL artifacts
         # dir had anyone resurrected it. Removed as dead code.
+        # build-sync: import spec frontmatter `deferred:` items as schema v1 FU
+        # bullets (bmad-build-auto never writes deferred-work.md itself).
+        # Runs BEFORE the status flip: a failed import must not leave the story
+        # marked done in an uncommitted sprint-status.yaml.
+        if args.stage == "build-sync":
+            spec_md = harness_spec.story_md_path(key, ARTIFACTS_DIR)
+            if os.path.exists(spec_md):
+                try:
+                    imported = harness_spec.import_spec_deferred(
+                        key, spec_md, f"{ARTIFACTS_DIR}deferred-work.md",
+                        _today_iso(),
+                    )
+                    for fid in imported:
+                        auto_sync_log.append(("import-deferred", fid, "pending"))
+                except RuntimeError as e:
+                    emit("STATUS=halt")
+                    emit(f"REASON=deferred import failed (build-sync): {e}")
+                    sys.exit(1)
+
         try:
             applied = _sync_sprint_status_for_stage(args.stage, key, epic)
             for k, v in applied:
@@ -2905,23 +2975,6 @@ def main():
                 emit("STATUS=halt")
                 emit(f"REASON=chore_spec auto-fill failed (stage 6-5): {e}")
                 sys.exit(1)
-
-        # build-sync: import spec frontmatter `deferred:` items as schema v1 FU
-        # bullets (bmad-build-auto never writes deferred-work.md itself).
-        if args.stage == "build-sync":
-            spec_md = harness_spec.story_md_path(key, ARTIFACTS_DIR)
-            if os.path.exists(spec_md):
-                try:
-                    imported = harness_spec.import_spec_deferred(
-                        key, spec_md, f"{ARTIFACTS_DIR}deferred-work.md",
-                        _today_iso(),
-                    )
-                    for fid in imported:
-                        auto_sync_log.append(("import-deferred", fid, "pending"))
-                except RuntimeError as e:
-                    emit("STATUS=halt")
-                    emit(f"REASON=deferred import failed (build-sync): {e}")
-                    sys.exit(1)
 
         # Re-fetch porcelain to reflect sprint-status.yaml mutations
         if auto_sync_log:

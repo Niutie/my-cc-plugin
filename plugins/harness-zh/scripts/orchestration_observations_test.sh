@@ -250,8 +250,9 @@ if [[ $RC -eq 0 ]] && grep -q "SEEDED1 5" <<< "$OUT" && \
    grep -q "CATS \['dev', 'harness', None, None, None\]" <<< "$OUT" && \
    grep -q "SEEDED2 0" <<< "$OUT" && \
    [[ "$COUNT" -eq 5 ]] && [[ "$CAT_COUNT" -eq 2 ]] && \
-   grep -A1 "    D1: pending" "${SS}" | grep -q "^      category: dev$" && \
-   grep -A1 "    D2: pending" "${SS}" | grep -q "^      category: harness$"; then
+   grep -A2 "^    D1:$" "${SS}" | grep -q "^      status: pending" && \
+   grep -A2 "^    D1:$" "${SS}" | grep -q "^      category: dev$" && \
+   grep -A2 "^    D2:$" "${SS}" | grep -q "^      category: harness$"; then
     pass "T1.f3 — stage 6 seed 5 D items + category subkeys (#29) + idempotent rerun = 0"
 else
     fail "T1.f3 — seed creation+category+idempotent (rc=$RC count=$COUNT cat_count=$CAT_COUNT out=$OUT)"
@@ -303,11 +304,11 @@ RC=$?
 # Check: D1 unchanged (pending), D2 unchanged (done + chore_spec preserved), D3/D4/D5 added (pending)
 if [[ $RC -eq 0 ]] && \
    grep -q "SEEDED \['D3', 'D4', 'D5'\]" <<< "$OUT" && \
-   grep -q "    D1: pending" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" && \
-   grep -q "    D2: done" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" && \
+   grep -A1 "^    D1:$" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" | grep -q "^      status: pending" && \
+   grep -A1 "^    D2:$" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" | grep -q "^      status: done" && \
    grep -q "chore_spec: 'chore-retro-c4-D2-already-here.md'" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" && \
-   grep -q "    D3: pending" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" && \
-   grep -q "    D5: pending" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"; then
+   grep -A1 "^    D3:$" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" | grep -q "^      status: pending" && \
+   grep -A1 "^    D5:$" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" | grep -q "^      status: pending"; then
     pass "T1.f4 — partial seed (D1/D2 preserved, D3..D5 added)"
 else
     fail "T1.f4 — partial seed (rc=$RC out=$OUT)"
@@ -787,7 +788,8 @@ except ImportError:
 d = yaml.safe_load(open('${SS}'))
 rai = d.get('retro_action_items') or {}
 blk = rai.get('epic-54-retro') or {}
-print('OK' if set(blk) == {'BB1','BB2','BB3'} and all(v=='pending' for v in blk.values()) else 'BAD '+repr(rai))
+# v0.2.0: nested mapping form (`BB1: {status: pending}`)
+print('OK' if set(blk) == {'BB1','BB2','BB3'} and all(isinstance(v, dict) and v.get('status')=='pending' for v in blk.values()) else 'BAD '+repr(rai))
 " 2>/dev/null)
 if [[ $RC -eq 0 ]] && \
    grep -q "SEEDED1 \['BB1', 'BB2', 'BB3'\]" <<< "$OUT" && \

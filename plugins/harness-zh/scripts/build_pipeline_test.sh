@@ -462,7 +462,8 @@ if [ "$c_a" = followup ] && [ "$c_b" = followup-verify ]; then pass "N4 follow-u
 
 # N5 — in-flight excludes stories already done in sprint-status; EPIC_WONT_DO emitted
 dir="$(seed_repo)"
-(cd "$dir" && git tag harness/9-2-bar/start && python3 "$SS" set 9-1-foo done >/dev/null 2>&1 && python3 "$SS" set 9-2-bar wont-do >/dev/null 2>&1)
+(cd "$dir" && git tag harness/9-2-bar/start && python3 "$SS" set 9-1-foo done >/dev/null 2>&1 && python3 "$SS" set 9-2-bar wont-do >/dev/null 2>&1 \
+   && git add -A && git commit -q -m "closed outside harness")
 inf="$(cd "$dir" && python3 "$HS" --in-flight 2>/dev/null)"
 printf -- '---\nepic: 9\nverdict: rejected\n---\n# retro\n' > "$dir/$ART/epic-9-retro-2026-10-27.md"
 (cd "$dir" && git add -A && git commit -q -m retro)
@@ -476,6 +477,114 @@ fi
 
 # N6 — gate ① regex covers letter-suffixed story numbers
 echo "$ART/spec-124-4b-foo.md" | grep -qE "$TRIG" && pass "N6 gate ① letter suffix" || fail "N6" "regex=$TRIG"
+
+# ============================================================================
+# Codex adversarial review regressions (2026-10-27)
+# ============================================================================
+
+# C1 — retro_action_items: legacy scalar shape is invalid YAML; migrate → valid,
+#      readers agree on both shapes, chore_spec fill writes after status
+d="$(mktemp -d -t rai.XXXXXX)"
+mkdir -p "$d/.claude/harness/scripts" "$d/$ART"
+for f in sprint-status.py harness_config.py harness_spec.py grep_pending_dev_retro_items.sh \
+         read_harness_config.sh deferred_work_schema_lib.sh harness-commit.py; do cp "$SCRIPT_DIR/$f" "$d/.claude/harness/scripts/"; done
+printf '%s\n' 'development_status:' '  8-1-a: done' 'retro_action_items:' '  epic-8-retro:' \
+    '    H1: pending      # legacy scalar' '      category: dev' \
+    '    H2: pending' '      category: harness' \
+    '    H3:' '      status: pending  # already nested' '      category: dev' > "$d/$ART/sprint-status.yaml"
+legacy_ok="$(python3 -c "import yaml; yaml.safe_load(open('$d/$ART/sprint-status.yaml')); print('valid')" 2>/dev/null || echo invalid)"
+before="$(cd "$d" && bash .claude/harness/scripts/grep_pending_dev_retro_items.sh 2>/dev/null | grep '^_PENDING_DEV_')"
+chk="$(cd "$d" && python3 .claude/harness/scripts/sprint-status.py migrate-retro-items --check; echo "rc=$?")"
+(cd "$d" && python3 .claude/harness/scripts/sprint-status.py migrate-retro-items >/dev/null)
+after_ok="$(python3 -c "import yaml; d=yaml.safe_load(open('$d/$ART/sprint-status.yaml')); print(d['retro_action_items']['epic-8-retro']['H1'])" 2>&1)"
+after="$(cd "$d" && bash .claude/harness/scripts/grep_pending_dev_retro_items.sh 2>/dev/null | grep '^_PENDING_DEV_')"
+chk2="$(cd "$d" && python3 .claude/harness/scripts/sprint-status.py migrate-retro-items --check; echo "rc=$?")"
+touch "$d/$ART/chore-retro-c8-H1-fix-thing.md"
+(cd "$d" && python3 -c "
+import importlib.util, sys
+sys.path.insert(0, '.claude/harness/scripts')
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m._fill_chore_spec_field('8', '$ART/sprint-status.yaml', '$ART')
+" 2>/dev/null)
+first_child="$(awk '/^    H1:/{getline; sub(/^ +/, ""); split($0, a, ":"); print a[1]; exit}' "$d/$ART/sprint-status.yaml")"
+fill_ok="$(python3 -c "import yaml; d=yaml.safe_load(open('$d/$ART/sprint-status.yaml')); print(d['retro_action_items']['epic-8-retro']['H1'].get('chore_spec'))" 2>&1)"
+rm -rf "$d"
+if [ "$legacy_ok" = invalid ] && [ "$chk" = $'2\nrc=3' ] && [ "$chk2" = $'0\nrc=0' ] \
+   && [ "$after_ok" = "{'status': 'pending', 'category': 'dev'}" ] \
+   && [ "$before" = "_PENDING_DEV_:2" ] && [ "$after" = "_PENDING_DEV_:2" ] \
+   && [ "$fill_ok" = chore-retro-c8-H1-fix-thing.md ] && [ "$first_child" = status ]; then
+    pass "C1 retro_action_items migration + dual-shape readers + nested writers"
+else
+    fail "C1" "legacy=$legacy_ok chk=$chk chk2=$chk2 after=$after_ok before=$before after=$after fill=$fill_ok first=$first_child"
+fi
+
+# C2 — build-verify: nested artifacts are ownership-checked
+dir="$(seed_repo)"
+(
+    cd "$dir" || exit 1
+    write_spec "$dir" done '' ''
+    mkdir -p "$ART/test_artifacts" "$ART/notes"
+    echo '{}' > "$ART/test_artifacts/9-2-bar-test-result.json"
+    echo x > "$ART/notes/spec-9-2-bar.md"
+    echo '{}' > "$ART/test_artifacts/9-1-foo-test-result.json"
+    echo y >> src/a.py
+    git add -A; git commit -q -m feat
+)
+ex=0; out="$(cd "$dir" && python3 "$HC" build-verify 9-1-foo 2>&1)" || ex=$?
+rm -rf "$dir"
+if [ "$ex" = 1 ] && printf '%s' "$out" | grep -qx "CROSS_STORY=$ART/test_artifacts/9-2-bar-test-result.json" \
+   && printf '%s' "$out" | grep -qx "UNEXPECTED_ARTIFACT=$ART/notes/spec-9-2-bar.md" \
+   && ! printf '%s' "$out" | grep -q "test_artifacts/9-1-foo-test-result.json"; then
+    pass "C2 nested artifact isolation in build-verify"
+else
+    fail "C2" "exit=$ex out=$out"
+fi
+
+# C3 — build-sync: failed deferred import leaves sprint-status untouched; an
+#      uncommitted done / committed-but-untagged sync stays in flight
+dir="$(seed_repo)"
+(cd "$dir" || exit 1; write_spec "$dir" done $'deferred:\n  - summary: x' ''; echo y >> src/a.py; git rm -q "$ART/deferred-work.md"; git add -A; git commit -q -m feat)
+ex=0; out="$(cd "$dir" && python3 "$HC" build-sync 9-1-foo 2>&1)" || ex=$?
+st="$(cd "$dir" && python3 "$SS" status 9-1-foo 2>/dev/null)"
+inf1="$(cd "$dir" && python3 "$HS" --in-flight 2>/dev/null)"
+(cd "$dir" && python3 "$SS" set 9-1-foo done >/dev/null 2>&1)
+inf2="$(cd "$dir" && python3 "$HS" --in-flight 2>/dev/null)"
+(cd "$dir" && git add -A && git commit -q -m "story(9-1-foo): sync sprint status & deferred ledger")
+inf3="$(cd "$dir" && python3 "$HS" --in-flight 2>/dev/null)"
+c3="$(code_of "$dir" 9-1-foo)"
+rm -rf "$dir"
+if [ "$ex" = 1 ] && printf '%s' "$out" | grep -q "REASON=deferred import failed" && [ "$st" = backlog ] \
+   && [ "$inf1" = 9-1-foo ] && [ "$inf2" = 9-1-foo ] && [ "$inf3" = 9-1-foo ] && [ "$c3" = tag-only ]; then
+    pass "C3 build-sync interruption stays discoverable"
+else
+    fail "C3" "exit=$ex status=$st inf=[$inf1|$inf2|$inf3] code=$c3 out=$out"
+fi
+
+# C4 — pre-commit gate ①: retro_gate warn (default) lets the commit through, block rejects
+gate_case() {  # $1 = retro_gate value ('' = unset); echoes hook rc
+    local g; g="$(mktemp -d -t gate.XXXXXX)"
+    (
+        cd "$g" || exit 1
+        git init -q; git config user.email t@t.t; git config user.name t; git config commit.gpgsign false
+        mkdir -p .claude/harness/scripts "$ART"
+        for f in check_retro_action_items.sh read_harness_config.sh deferred_work_schema_lib.sh harness_config.py; do cp "$SCRIPT_DIR/$f" .claude/harness/scripts/; done
+        [ -n "$1" ] && printf "retro_gate: '%s'\n" "$1" > .claude/harness/harness-project-config.yaml
+        printf '%s\n' 'development_status:' '  9-1-foo: backlog' 'retro_action_items:' '  epic-8-retro:' \
+            '    H1:' '      status: pending' '      category: dev' > "$ART/sprint-status.yaml"
+        git add -A; git commit -q -m seed
+        echo x > "$ART/spec-9-1-foo.md"; git add -A
+        rc=0; bash "$SCRIPT_DIR/../git-hooks/pre-commit" >/dev/null 2>&1 || rc=$?
+        echo "$rc"
+    )
+    rm -rf "$g"
+}
+r_unset="$(gate_case '')"; r_warn="$(gate_case warn)"; r_block="$(gate_case block)"
+if [ "$r_unset" = 0 ] && [ "$r_warn" = 0 ] && [ "$r_block" = 1 ]; then
+    pass "C4 retro_gate warn/block"
+else
+    fail "C4" "unset=$r_unset warn=$r_warn block=$r_block"
+fi
 
 echo ""
 echo "build_pipeline_test: failed=$failed"

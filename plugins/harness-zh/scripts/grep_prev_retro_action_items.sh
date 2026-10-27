@@ -125,6 +125,22 @@ while IFS= read -r line; do
     # review 2026-06-10 #17：code 文法 / status 枚举改用共享常量 —— 旧正则
     # `[A-Z][0-9a-z-]*` 漏 mixed-case code（AA1 / A-1-Y2，F1+F2 统一文法），
     # 5 值枚举漏 migrated-upstream，两者都导致整行从继承表静默消失。
+    # v0.2.0 nested item: `    A1:` + child `      status: pending  # comment`
+    rai_nested_re="^[[:space:]]+(${RAI_CODE_RE}):[[:space:]]*(#.*)?\$"
+    if [[ "$line" =~ $rai_nested_re ]]; then
+        flush_row "(no spec)"
+        pending_code="${BASH_REMATCH[1]}"
+        pending_status=""
+        pending_comment=""
+        continue
+    fi
+    rai_status_re="^[[:space:]]+status:[[:space:]]+${RAI_STATUS_ENUM_RE}([[:space:]]*#[[:space:]]*(.*))?[[:space:]]*\$"
+    if [ -n "$pending_code" ] && [ -z "$pending_status" ] && [[ "$line" =~ $rai_status_re ]]; then
+        pending_status="${BASH_REMATCH[1]}"
+        pending_comment="${BASH_REMATCH[3]:-}"
+        continue
+    fi
+
     rai_item_re="^[[:space:]]+(${RAI_CODE_RE}):[[:space:]]+${RAI_STATUS_ENUM_RE}([[:space:]]*#[[:space:]]*(.*))?[[:space:]]*\$"
     if [[ "$line" =~ $rai_item_re ]]; then
         flush_row "(no spec)"

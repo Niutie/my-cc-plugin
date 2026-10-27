@@ -286,7 +286,8 @@ context:
 ```yaml
 retro_action_items:
   epic-1-retro:
-    A1: pending
+    A1:
+      status: pending
       chore_spec: 'chore-retro-c1-A1-end-to-end-smoke.md'
 ```
 

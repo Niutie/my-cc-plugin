@@ -187,7 +187,7 @@ sprint-status.yaml**（不再分流到外部文件）。
 
 `category` 子键决定 pre-commit gate 行为：
 
-- `category: dev` — 阻后续 epic spec 创建（pre-commit gate ①，强约束）
+- `category: dev` — `retro_gate: block` 时阻后续 story spec 创建（pre-commit gate ①）；默认 `warn` 只提示
 - `category: harness` — stderr WARN，不阻 commit；hint 用户用 `/harness-zh:report-issue` 提 issue
 - 缺 category（NOCAT）— 视同 harness：stderr WARN，不阻 commit
 
@@ -210,10 +210,14 @@ agent **不要手工编辑** sprint-status.yaml 的该块。落盘形态：
 ```yaml
 retro_action_items:
   epic-N-retro:
-    <CODE>: <status>          # 一句话描述（inline comment，seeder 写）
+    <CODE>:
+      status: <status>           # 一句话描述（inline comment，seeder 写）
       category: dev | harness    # seeder 从 md **Category** 声明解析；缺省不写此键
       chore_spec: '<filename>'   # optional；stage ⑥.5 residue 流程补（仅 dev 类一般用）
 ```
+
+（v0.2.0 起是合法 YAML 的嵌套写法；≤ 0.1.39 写的 `<CODE>: <status>` + 过缩进子键会让
+BMad 6.12 的 `sprint_status.py` 解析失败，`sprint-status.py migrate-retro-items` 可一次性转换。）
 
 ### category: dev — 项目自身改动
 

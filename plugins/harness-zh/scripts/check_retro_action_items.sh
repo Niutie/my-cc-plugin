@@ -26,18 +26,22 @@
 # v2 (2026-05-05): category 分流 — dev 计 exit / harness WARN 不计；扩展 item
 # code regex 容纳 C-bootstrap / C-cond-triggers 等 alphanumeric-dash code。
 #
-# Format note (codex-review 2026-05-09 medium #3): the retro_action_items
-# block uses a NON-STANDARD YAML shape:
+# Format note: ≤ 0.1.39 wrote retro_action_items in a NON-STANDARD shape
 #
 #     retro_action_items:
 #       epic-N-retro:
 #         A1: pending           # ← scalar value
 #           category: dev       # ← over-indented sub-field; not valid YAML
 #
-# Standard YAML parsers (PyYAML, etc.) reject this. We use an awk state
-# machine instead (lines 60-120 below); future tooling MUST follow suit
-# unless the format is migrated to nested-mapping form (out of scope for
-# v0.1.x — would break gate ① regression tests and process_retro_residue).
+# v0.2.0 writes (and `sprint-status.py migrate-retro-items` converts to) the
+# valid nested mapping, because BMad 6.12's own scripts parse the whole file
+# with a real YAML parser:
+#
+#         A1:
+#           status: pending     # title
+#           category: dev
+#
+# This awk state machine accepts both shapes.
 
 set -euo pipefail
 
@@ -116,6 +120,28 @@ result="$(awk -v rai_code_re="$RAI_CODE_RE" -v rai_status_re="$RAI_STATUS_ENUM_R
     flush_item()
     match($0, /[a-z0-9-]+-retro/)
     current_epic = substr($0, RSTART, RLENGTH)
+    next
+  }
+
+  # v0.2.0 nested item (valid YAML): `    A1:` on its own line, status in a
+  # child `status:` key. Must precede the scalar rule (`    A1:  # c` would
+  # otherwise read "#" as the status).
+  in_block && $0 ~ ("^[[:space:]]+" rai_code_re ":[[:space:]]*(#.*)?$") {
+    flush_item()
+    code = $1
+    sub(":$", "", code)
+    current_code = code
+    current_status = ""
+    next
+  }
+
+  in_block && /^[[:space:]]+status:[[:space:]]/ {
+    if (current_code != "" && current_status == "") {
+      st = $2
+      sub(/\r$/, "", st)
+      gsub(/["'"'"']/, "", st)
+      current_status = st
+    }
     next
   }
 

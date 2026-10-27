@@ -203,6 +203,10 @@ echo "HOOKS_EXIT=$HOOKS_EXIT"
      确认 STATUS=ok（新流水线要求 BMad ≥ 6.11 + uv）；被 purge 的
      bmad-create-story-suffix.md / bmad-dev-story-suffix.md 已改名为
      bmad-build-auto-suffix.md / bmad-build-implement-suffix.md
+  ⑤ 0.2.0 起 sprint-status.yaml 的 retro_action_items 用合法 YAML 嵌套写法；旧写法
+     首次 /harness-zh:run 会自动迁移，也可先手动：
+       python3 .claude/harness/scripts/sprint-status.py migrate-retro-items
+     yaml 模板新增 retro_gate（warn | block，默认 warn），需要硬拦截时手工加上
 ```
 
 把 TaskCreate 任务标 `completed`，退出码 0。

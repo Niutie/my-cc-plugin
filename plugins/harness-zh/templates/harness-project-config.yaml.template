@@ -36,6 +36,12 @@ artifacts_root: ''
 # 切换路径：编辑本字段，或跑 /harness-zh:upgrade-deferred-work 走交互升级流程。
 deferred_work_mode: 'strict'
 
+# retro 行动项门（pre-commit gate ① + /harness-zh:run §0.A.0）
+#   warn  — 默认；有未兑现的 category: dev retro 项时只打印提示，不拦 commit，
+#           /harness-zh:run 也只提示、不先跑兑现循环
+#   block — 拒绝新 story spec 的 commit，/harness-zh:run 起跑前先兑现这些项
+retro_gate: 'warn'
+
 # ============================================================================
 # extra — 项目特定扩展字段（任何 harness 文档 / 评估脚本可引用 ${key}）
 # ============================================================================

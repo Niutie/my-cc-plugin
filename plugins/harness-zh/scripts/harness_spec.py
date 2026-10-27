@@ -501,3 +501,69 @@ def import_spec_deferred(key: str, spec_path: str, deferred_work_path: str, toda
         with open(deferred_work_path, "a", encoding="utf-8") as f:
             f.write(addition)
     return [fid for fid, _ in new]
+
+
+# ---------------------------------------------------------------------------
+# retro_action_items shape migration (v0.2.0)
+# ---------------------------------------------------------------------------
+#
+# ≤ 0.1.39 wrote items as a scalar with over-indented children:
+#
+#     retro_action_items:
+#       epic-9-retro:
+#         I1: pending      # title
+#           category: dev          ← not valid YAML once a child exists
+#
+# Harness's own awk/regex readers tolerated it, but BMad 6.12's native
+# scripts (bmad-retrospective sprint_status.py, bmad-sprint-planning
+# sprint_plan.py) load the whole sprint-status.yaml with a real YAML parser
+# and fail on it. The valid nested form keeps every child where it was and
+# moves the status into its own key:
+#
+#         I1:
+#           status: pending      # title
+#           category: dev
+#
+# Readers accept both forms; writers emit only the nested one.
+
+_RAI_EPIC_BLOCK_RE = re.compile(r"^(\s+)[a-z0-9-]+-retro:\s*(#.*)?$")
+_RAI_SCALAR_ITEM_RE = re.compile(r"^(\s+)([A-Z][A-Za-z0-9-]*):[ \t]+(['\"]?[A-Za-z-]+['\"]?)([ \t]*#.*)?$")
+
+
+def migrate_retro_items_text(text: str) -> tuple[str, int]:
+    """Rewrite scalar-form retro items to nested mappings. Returns
+    (new_text, converted_count); text is returned unchanged when count is 0."""
+    lines = text.splitlines(keepends=True)
+    out = []
+    in_rai = False
+    epic_indent = None
+    converted = 0
+    for line in lines:
+        body = line.rstrip("\r\n")
+        eol = line[len(body):]
+        if not in_rai:
+            out.append(line)
+            if body == "retro_action_items:" or body.startswith("retro_action_items: ") \
+                    or body.startswith("retro_action_items:#"):
+                in_rai = True
+            continue
+        if body and not body[0].isspace() and not body.lstrip().startswith("#"):
+            in_rai = False
+            epic_indent = None
+            out.append(line)
+            continue
+        m = _RAI_EPIC_BLOCK_RE.match(body)
+        if m:
+            epic_indent = len(m.group(1))
+            out.append(line)
+            continue
+        m = _RAI_SCALAR_ITEM_RE.match(body)
+        if m and epic_indent is not None and len(m.group(1)) > epic_indent:
+            ind, code, status, comment = m.group(1), m.group(2), m.group(3), m.group(4) or ""
+            nl = eol or "\n"
+            out.append(f"{ind}{code}:{nl}")
+            out.append(f"{ind}  status: {status}{comment}{eol}")
+            converted += 1
+            continue
+        out.append(line)
+    return ("".join(out), converted) if converted else (text, 0)

@@ -1029,6 +1029,7 @@ def list_in_flight():
     if r.returncode != 0:
         return []
     refs = r.stdout.split()
+    subjects = _load_commit_subjects()
     done = {ref[len("harness/"):-len("/done")] for ref in refs if ref.endswith("/done")}
     out = []
     for ref in refs:
@@ -1036,12 +1037,59 @@ def list_in_flight():
             k = ref[len("harness/"):-len("/start")]
             if k in done or k in out:
                 continue
-            # finished or dropped outside the harness (manual close, wont-do):
-            # an abandoned start tag must not keep the story "in flight" forever
-            if read_sprint_status(k) in ("done", "wont-do"):
+            # Finished or dropped OUTSIDE the harness (manual close, wont-do):
+            # an abandoned start tag must not keep the story "in flight"
+            # forever. Judge by the COMMITTED sprint-status and require that
+            # no harness close-out commit exists — build-sync flips the
+            # worktree copy to done before it commits, and after its commit
+            # the done tag may still be missing; both are unfinished harness
+            # runs that --continue must still find (codex review 2026-10-27).
+            if committed_story_status(k) in ("done", "wont-do") and not _harness_closed(k, subjects):
                 continue
             out.append(k)
     return out
+
+
+def committed_story_status(key):
+    """Status of `key` in HEAD's sprint-status.yaml (single-line or block
+    form), or None. Ignores uncommitted worktree edits on purpose."""
+    rel = f"{ARTIFACTS_DIR}sprint-status.yaml"
+    r = run(["git", "show", f"HEAD:{rel}"])
+    if r.returncode != 0:
+        return None
+    in_block = False
+    pending = False
+    for line in r.stdout.splitlines():
+        if line.startswith("development_status:"):
+            in_block = True
+            continue
+        if not in_block:
+            continue
+        if line and not line[0].isspace() and not line.lstrip().startswith("#"):
+            break
+        if pending:
+            m = re.match(r"^\s+status:\s*['\"]?([^\s#'\"]+)", line)
+            if m:
+                return m.group(1)
+            if re.match(r"^\s+\S", line) and not line.startswith("    "):
+                return None
+            continue
+        m = re.match(rf"^\s+{re.escape(key)}:\s*(.*)$", line)
+        if m:
+            val = m.group(1).split("#", 1)[0].strip().strip("'\"")
+            if val:
+                return val
+            pending = True
+    return None
+
+
+def _harness_closed(key, subjects):
+    """True when a harness close-out commit for `key` exists (new build-sync
+    or legacy stage 5)."""
+    if subjects is None:
+        return False
+    return (STAGE_SUBJECTS["sync_committed"].format(key=key) in subjects
+            or STAGE_SUBJECTS["stage5_committed"].format(key=key) in subjects)
 
 
 def main():

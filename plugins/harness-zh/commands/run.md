@@ -89,6 +89,7 @@ allowed-tools: Bash, Read, Edit, Write, Agent, Task, AskUserQuestion
    ```
    `STATUS=fail` → halt，把每行 `REMEDIATION=` 原样给用户（典型：没装 `uv`；BMad 低于 6.11；嵌套子 agent 被关）。`STATUS=ok` → 记下 `CODEX_IN_BUILD=`（非 `none` 表示 codex 已作为 review layer 挂进 bmad-build-auto，B2 外部 codex 不跑）。
 1. `python3 .claude/harness/scripts/sprint-status.py count` — 输出 `<剩余>/<总数>`；文件缺失 → halt，提示先跑 `bmad-sprint-planning`。
+1.5. **retro_action_items 写法检查**（v0.2.0）：`python3 .claude/harness/scripts/sprint-status.py migrate-retro-items --check`。退出码 3 = 还有 ≤ 0.1.39 的标量写法（`A1: pending` + 过缩进子键，不是合法 YAML；BMad 6.12 的 retro / sprint-planning 脚本整文件按 YAML 解析，会直接失败）→ 工作区干净时跑 `python3 .claude/harness/scripts/sprint-status.py migrate-retro-items`，再 `python3 .claude/harness/scripts/harness-commit.py retro-migrate -` 按 §−1.d commit（位参 key 用 `-` 占位）。工作区不干净时先按第 2 步处理，迁移留到下次启动。
 2. `git status --porcelain` — **必须为空**（bmad-build-auto 在脏工作区上直接 HALT）。不为空时：
    - `python3 .claude/harness/scripts/harness-state.py --in-flight` 恰好 1 行 → 作为 `<KEY>` 自动切 §0.B，并告诉用户一行："worktree 不干净 + 检测到 harness 在跑的 `<KEY>` → 自动切续作"。
    - 多行 → halt，把列表给用户，请用 `--story <key>` 指定要续作的那条（无法从脏工作区判断改动属于哪条）。
@@ -99,7 +100,11 @@ allowed-tools: Bash, Read, Edit, Write, Agent, Task, AskUserQuestion
 
 ### 0.A.0 retro DEV items 兑现前置 gate（issue #3；v0.2.0 起对任意 epic 生效）
 
-**动机**：pre-commit gate ① 在有未兑现 `category: dev` retro action item 时拒绝新 story spec 的 commit。bmad-build-auto 在**最后**才 commit，被 hook 拦下时整条 story 的 token 已经花完，而且它会 HALT `finalization left repository dirty`。所以在 dispatch B1 **之前**把这些 dev 项清掉；清不掉就不 dispatch。
+**动机**：`retro_gate: block` 时，pre-commit gate ① 在有未兑现 `category: dev` retro action item 时拒绝新 story spec 的 commit。bmad-build-auto 在**最后**才 commit，被 hook 拦下时整条 story 的 token 已经花完，而且它会 HALT `finalization left repository dirty`。所以在 dispatch B1 **之前**把这些 dev 项清掉；清不掉就不 dispatch。
+
+**先读模式**：`python3 .claude/harness/scripts/harness_config.py --get retro_gate --default warn --quiet`。
+- `warn`（默认）→ hook 不拦，本节只跑下面的「检测」，把 `_PENDING_DEV_` / `_WITH_SPEC_` / `_NO_SPEC_` 三个数告诉用户一行（"有 N 条未兑现 dev retro 项，retro_gate=warn 不阻塞；想先兑现就把 retro_gate 设为 block 重跑"），然后进 §1，**不跑兑现循环、不 halt**。
+- `block` → 按本节全部步骤执行。
 
 本步在 §0.A 末尾、进入 §1 之前执行，每次跨 epic 进入新 epic 的第一条 story 前也再执行一次（见 §2）。
 
@@ -118,7 +123,7 @@ stdout 每个待兑现 dev 项一行 `ITEM<TAB><epic-N-retro><TAB><CODE><TAB><st
 
 1. **实现**：spawn 一个 fresh general-purpose subagent，prompt = `$SPEC` 全文 + "按本 chore spec 的 Tasks & Acceptance 段实现项目代码；这是一次性 chore 兑现，**不走** bmad-build-auto / codex / review 循环；完成后在 spec 的 Tasks checkbox 打勾。只动 spec 描述范围内的项目代码，不碰其它 story 的 artifacts；spec frontmatter 若声明了 `planning_artifacts:` 白名单（issue #9），按 spec 要求回写那些文件也在范围内。不要做任何 git 操作。" + `python3 .claude/harness/scripts/harness-prompt-suffix.py chore` 的 stdout。
 2. **翻状态**（两本账都翻）：
-   - 用 Edit 把 `sprint-status.yaml` 里 `retro_action_items.epic-${EPIC}-retro.${CODE}` 的 status 翻成 `done`（只动这一行）。
+   - 用 Edit 把 `sprint-status.yaml` 里 `retro_action_items.epic-${EPIC}-retro.${CODE}` 的 status 翻成 `done`（只动这一行：嵌套写法是该条目下的 `status:` 子键，旧标量写法是 `${CODE}: <status>` 那一行）。
    - 原生 `action_items`：先查有没有这一项 `python3 .claude/harness/scripts/sprint-status.py action-status epic-${EPIC}-retro-${CODE}`（退出码 1 = 没有，旧 retro 或当时缺 uv，跳过）。有的话用上游脚本翻（BMad 规定这是唯一支持的改法）：
      ```bash
      uv run --no-cache .claude/skills/bmad-retrospective/scripts/sprint_status.py update \
@@ -549,7 +554,7 @@ prompt 核心：
 3. agent 返回多个 `=== FILE: chore-retro-c${EPIC}-<code>-<slug>.md ===` / `=== END FILE ===` 块 + 一个 `=== MANIFEST === / <code>: <dev|harness> / === END MANIFEST ===` 块 + ≤ 200 字总结（详 [`.claude/harness/architecture.md`](../harness/architecture.md) §六 Q4）。
 4. 逐个 FILE block 用 Write 写到 `_bmad-output/implementation-artifacts/<filename>`。
 5. 解析 MANIFEST：缺失 / 行数不一致 / 取值非法的项一律默认 `harness`，输出一行 `MANIFEST_FALLBACK=<reason>`，**不** halt。
-6. 用 Edit 在 `retro_action_items.epic-${EPIC}-retro.<code>` 下追加 `chore_spec: '<filename>'` 与 `category: <dev|harness>`。**不**加 `chore-retro-cN-residue:` 段，**不**动 `development_status:`。
+6. 用 Edit 在 `retro_action_items.epic-${EPIC}-retro.<code>` 条目下、与 `status:` 同一缩进追加 `chore_spec: '<filename>'` 与 `category: <dev|harness>`（已有 `category:` 就改值，不要重复）。条目还是旧的标量写法（`<code>: pending`）时先跑 `sprint-status.py migrate-retro-items` 再改。**不**加 `chore-retro-cN-residue:` 段，**不**动 `development_status:`。
 7. **sanity check**：
    - `grep -E "chore-retro-c[0-9]+-residue:" .../sprint-status.yaml` 必须为空
    - `git diff sprint-status.yaml` 只触及 retro_action_items 子段
@@ -654,7 +659,7 @@ SKIPPED_COUNT 必须用 Bash 实跑，> 0 时必须完整打印通知框。每�
 | B0 工作区不干净 | halt |
 | `harness-commit.py` 退出码 1 | halt，贴脚本完整 stdout（`BLACKLIST=` / `CROSS_STORY=` / `UNEXPECTED_ARTIFACT=` / `FORBIDDEN=` / `UNSTAGED=` 等） |
 | 预期产物缺失或为空（各阶段"验收"项） | halt。⑥ 瞬态 infra 错误 + 干净工作区允许重试一次（见阶段 ⑥） |
-| §0.A.0 仍有 `_NO_SPEC_` dev retro 项 | halt，不 dispatch B1 |
+| `retro_gate: block` 且 §0.A.0 仍有 `_NO_SPEC_` dev retro 项 | halt，不 dispatch B1 |
 | §0.A 工作区不干净且没有 in-flight story | halt |
 | 子 agent 返回缺 `git status --porcelain` 自报段 | 不 halt，主 agent 自己跑一次交叉核对；发现子 agent 改了它没声称改过的文件 → halt |
 | `RETRO_VERDICT=rejected` 且 `EPIC_WONT_DO=none` 且 `LOOP_SCOPE=all` | halt，不进下一个 epic |
