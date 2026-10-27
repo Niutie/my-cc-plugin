@@ -431,8 +431,8 @@ echo "HOOKS_EXIT=$HOOKS_EXIT"
 
 v0.1.28 起 codex 是**可选**依赖（plugin.json 不再声明硬 dep）。在 init 当下跑一次 cheap probe（不调 codex，不烧 quota），让 solo-dev 第一时间知道：
 
-- `/harness-zh:run` stage 3+4 现在能不能跑（codex 已装 → 正常对抗式 review；codex 缺 → 自动 skip 留 marker，之后 `/harness-zh:codex-catchup` 补跑）
-- 不可用时 surfacing 具体的安装命令（避免用户跑了几条 story 才发现 stage 3+4 全 skip）
+- `/harness-zh:run` 的外部 codex review（B2）现在能不能跑（codex 已装 → 正常对抗式 review；codex 缺 → 自动 skip 留 marker，之后 `/harness-zh:codex-catchup` 补跑）。项目已在 `_bmad/custom/bmad-build-auto.toml` 把 codex 挂成 review layer 时，B2 不跑，codex 在 bmad-build-auto 内部执行，本探测仍然有用（那一层同样依赖 codex-in-cc）
+- 不可用时 surfacing 具体的安装命令（避免用户跑了几条 story 才发现 codex review 全 skip）
 
 ```bash
 CODEX_JSON="$(bash .claude/harness/scripts/check_codex_availability.sh)"
@@ -446,11 +446,22 @@ printf 'CODEX_JSON=%s\n' "$CODEX_JSON"
 
 | `CODEX_AVAILABLE` | `CODEX_REASON` | `$CODEX_RESULT` |
 |---|---|---|
-| `True` | `ok` | `available — /harness-zh:run stage 3+4 will run normally` |
-| `False` | `not_installed` | `not installed — stage 3+4 will auto-skip + leave marker; install: /plugin marketplace add openai/codex-plugin-cc && /plugin install codex@openai-codex; then /harness-zh:codex-catchup to replay markers` |
+| `True` | `ok` | `available — codex review will run normally` |
+| `False` | `not_installed` | `not installed — codex review will auto-skip + leave marker; install: /plugin marketplace add openai/codex-plugin-cc && /plugin install codex@openai-codex; then /harness-zh:codex-catchup to replay markers` |
 | 其它 | — | `unknown — codex probe returned unexpected JSON; see ${CODEX_JSON} verbatim` |
 
 **绝不 halt**：codex 是 optional dependency，缺席是合法状态。本节只填 `$CODEX_RESULT` 供 §A.6 引用，不做任何修复动作、不交互、不改文件。
+
+### A.4.e BMad 运行条件探测（advisory — v0.2.0+；不阻 init）
+
+harness-zh 0.2.0 起每条 story 由 `bmad-build-auto`（BMad ≥ 6.11）跑完，它依赖 `uv`、`_bmad/scripts/render_skill.py` 和嵌套子 agent。`/harness-zh:run` 启动时会硬检查同一组条件；init 这里先跑一次，让 solo-dev 在开跑前就知道缺什么：
+
+```bash
+BMAD_RT_OUT="$(bash .claude/harness/scripts/check_bmad_runtime.sh 2>&1)"
+echo "$BMAD_RT_OUT"
+```
+
+按 `STATUS=` 绑定 `$BMAD_RUNTIME_RESULT`（§A.6 引用）：`ok` → `ready (BMad <BMAD_VERSION>, codex in build: <CODEX_IN_BUILD>)`；`fail` → `NOT ready — <每行 REMEDIATION= 原文>`。项目还没装 BMad 时这里必然 fail，属正常，§A.7 会引导安装。**不 halt、不修复、不改文件。**
 
 ### A.5 BMad artifacts 检测 → 流程分叉
 
@@ -484,16 +495,16 @@ printf '%s\n' "$HELPER_GUIDANCE"
 
 | # | 概念产物 | 必需性 | 接受的形式 |
 |---|---|---|---|
-| 1 | prd | **必需** | 单文件 `prd.md`（默认）**或** sharded 目录 `prd/`（跑过 `/bmad-shard-doc`） |
-| 2 | architecture | **必需** | 单文件 `architecture.md`（默认）**或** sharded 目录 `architecture/`（跑过 `/bmad-shard-doc`） |
+| 1 | prd | **必需** | 单文件 `prd.md`（默认）**或** sharded 目录 `prd/`（旧版 BMad `bmad-shard-doc` 的产物） |
+| 2 | architecture | **必需** | 单文件 `architecture.md`（默认）**或** sharded 目录 `architecture/`（同上） |
 | 3 | sprint-status | **必需** | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） |
 | 4 | product-brief | **可选**（缺则 §2 字段 1/15 用 prd.md 兜底；进 optional_missing 数组） | `product-brief*.md`（glob — 上游会带项目名后缀） |
 
-> **重要：单文件 vs sharded 是 BMad 上游的两种合法布局**。BMad 默认产单文件 `prd.md` / `architecture.md`；用户跑 `/bmad-shard-doc` 后切到 sharded。harness-zh 对二者无偏好，二者都是一等公民。
+> **重要：单文件 vs sharded 两种布局都认**。BMad 默认产单文件 `prd.md` / `architecture.md`；旧版 BMad 的 `bmad-shard-doc` 会切成 sharded 目录（6.11+ 已移除该 skill，但已切好的项目照常识别）。harness-zh 对二者无偏好。
 >
 > **绝对不要**自己用 `[ -f architecture/tech-stack.md ]` 这种针对单一形式的检查 —— helper 脚本已封装 dual-form 探测，调它即可。
 
-> **BMad 命令两形式说明**：装好后大多数命令同时有 `/bmad-<name>` (skill 直射) 与 `/bmad:<name>` (workflow 别名) 两种形式，功能等价。本指南用 hyphen 形式（更直接对应 `.claude/skills/bmad-<name>/`）；若环境里 hyphen 没识别，换冒号即可。少数较新/meta 命令（`/bmad:research`、`/bmad:tech-spec`）只有冒号形式。
+> **BMad 命令名（6.11+）**：skill 安装在 `.claude/skills/bmad-<name>/`，用 `/bmad-<name>` 调用。6.11 起一批旧 ID 改名：`bmad-create-prd` → `bmad-prd`，`bmad-create-architecture` → `bmad-architecture`，`bmad-create-story` / `bmad-dev-story` / `bmad-quick-dev` → `bmad-build`（交互）/ `bmad-build-auto`（无人值守）。旧 ID 只有在安装时勾选 v6 shims（manifest `installShims: true`）才存在。
 
 ### A.6 资产部署统计（不论 BMad ready 与否都打印）
 
@@ -506,6 +517,7 @@ printf '%s\n' "$HELPER_GUIDANCE"
   - harness-residue: $HR_RESULT  （sprint-status.yaml 不存在时省此行）
   - git hooks: <installed / unchanged | WARN: core.hooksPath ...（exit 3 良性拒装）| WARN: 安装失败 exit <N>（见 §A.4.a 自查引导）>
   - codex (optional): $CODEX_RESULT
+  - BMad runtime: $BMAD_RUNTIME_RESULT
 ```
 
 ### A.7 BMad ready 分叉（按 §A.5 的 HELPER_EXIT）
@@ -533,14 +545,14 @@ printf '%s\n' "$HELPER_GUIDANCE"
       # 或 npx bmad-method install --modules core,bmm,bmb,cis,tea --tools claude-code --yes
     （installer 会自动建 _bmad/ 配置 + 写 .claude/skills/bmad-*/，无需额外 init 步骤）
 
-    然后按下列顺序跑 BMad planning workflow：
-      /bmad-create-prd            → prd.md（必需）
-      /bmad-create-architecture   → architecture.md（必需，默认单文件；可选 /bmad-shard-doc 切片）
-      /bmad-sprint-planning       → sprint-status.yaml（必需）
-      /bmad-product-brief         → product-brief-<name>.md（**可选**；不跑也能进 yaml 提取）
+    BMad 6.12 的 skill 启动依赖 uv（没有就先装：curl -LsSf https://astral.sh/uv/install.sh | sh）。
 
-    （命令名也可写 /bmad:prd / /bmad:architecture / /bmad:sprint-planning / /bmad:product-brief —
-      hyphen 与 colon 形式功能等价，按你环境的 skill 习惯选）
+    然后按下列顺序跑 BMad planning workflow：
+      /bmad-product-brief             → product-brief-<name>.md（**可选**；不跑也能进 yaml 提取）
+      /bmad-prd                       → prd.md（必需）
+      /bmad-architecture              → architecture.md（必需）
+      /bmad-create-epics-and-stories  → epics.md（sprint-planning 的输入）
+      /bmad-sprint-planning           → sprint-status.yaml（必需）
 
     完成后**重跑** /harness-zh:init —— 检测到 3 个必需产物齐后即进入 yaml 字段提取（product-brief 不必有）。
 
@@ -601,8 +613,8 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 > **Source 列读法 — 单文件 / sharded 两种形式都是 BMad 合法默认布局**：
 >
-> - **单文件形式**（BMad 上游 `/bmad-create-architecture` 默认产出）：`architecture.md` 含 tech-stack / repo-structure / i18n / nfrs / proxy / testing-strategy 等章节；LLM 用 Read 读全文按章节标题（"Tech Stack" / "Repo Structure" / 等）grep 对应段落
-> - **Sharded 形式**（用户跑过 `/bmad-shard-doc` 后切片）：`architecture/tech-stack.md` 等独立子文件；LLM 用 Read 直读对应子文件
+> - **单文件形式**（BMad 上游 `/bmad-architecture` 默认产出）：`architecture.md` 含 tech-stack / repo-structure / i18n / nfrs / proxy / testing-strategy 等章节；LLM 用 Read 读全文按章节标题（"Tech Stack" / "Repo Structure" / 等）grep 对应段落
+> - **Sharded 形式**（旧版 BMad `bmad-shard-doc` 切片的项目）：`architecture/tech-stack.md` 等独立子文件；LLM 用 Read 直读对应子文件
 >
 > 下表"BMad source"列写法 `architecture/tech-stack.md` 或 `architecture.md §tech-stack` 表达同一信息的两种存储形式。LLM 提取时按以下顺序探测：
 >

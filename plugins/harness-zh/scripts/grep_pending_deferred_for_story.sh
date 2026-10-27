@@ -60,7 +60,7 @@ NORMALIZED=$(echo "$RAW_KEY" | sed -E 's/[._]/-/g')
 EPIC=$(echo "$NORMALIZED" | awk -F- '{print $1}')
 SEQ=$(echo "$NORMALIZED" | awk -F- '{print $2}')
 
-if ! [[ "$EPIC" =~ ^[0-9]+$ ]] || ! [[ "$SEQ" =~ ^[0-9]+$ ]]; then
+if ! [[ "$EPIC" =~ ^[0-9]+$ ]] || ! [[ "$SEQ" =~ ^[0-9]+[a-z]?$ ]]; then   # 124-4b-…: BMad allows a letter suffix
     echo "ERROR: cannot derive (EPIC, SEQ) from '$RAW_KEY' — expect form 4-1-... / 4-1 / 4.1" >&2
     exit 1
 fi

@@ -85,7 +85,7 @@ needs-review 状态示例（C12 反查产物）：
 | 值 | 语义 | 何时翻 |
 |---|---|---|
 | `pending` | 未开始消化 | 初始登记 |
-| `in-progress` | dev/review 进行中（trigger story 在 active sprint） | run-sprint stage 2 dev-story 创建时（可选；机器可由 sprint-status 推） |
+| `in-progress` | dev/review 进行中（trigger story 在 active sprint） | 目标 story 开始实现时（可选；机器可由 sprint-status 推） |
 | `partial` | 部分消化；残余路径已 spawn 新 FU 或 inline 注明 | dev/review 阶段确认部分覆盖时 |
 | `resolved` | 完全消化 | dev/review/chore 阶段确认完整覆盖时 |
 | `skipped` | 决策性不做（spec author 显式 Skip / 触发条件未到 / 上游工具兜底） | spec / review 阶段决策时 |
@@ -151,7 +151,9 @@ pending ──→ in-progress ──→ partial ──→ resolved
 
 合法值：
 
-- `dev-of-X.Y`（Story X.Y dev-story 阶段）
+- `dev-of-X.Y`（Story X.Y dev-story 阶段；≤ 0.1.39 旧流水线）
+- `build-of-X.Y`（Story X.Y 的 bmad-build-auto 实现子 agent 直接登记，v0.2.0+）
+- `build-auto-of-X.Y`（bmad-build-auto review 归入 spec frontmatter `deferred:`、由 `harness-commit.py build-sync` 导入的条目；id 形如 `FU-X.Y.B<n>`，bucket 一律 `other`、target `Epic N`，导入后由人或后续 story 再细分，v0.2.0+）
 - `bmad-review-of-X.Y`（bmad-code-review 阶段）
 - `codex-review-of-X.Y`（codex review 阶段）
 - `epic-N-retro`
@@ -251,8 +253,8 @@ pending ──→ in-progress ──→ partial ──→ resolved
 
 `.claude/harness/prompt-suffixes/` 三份 suffix 增加约束段（具体注入文案在 prompt-suffix 文件，非本文档）：
 
-- **bmad-create-story-suffix**：spec author 引入新 FU 时按本 schema 头格式写入
-- **bmad-dev-story-suffix**：dev agent 翻 status / 加 partial / spawn 新 FU 时按 §3 状态变迁路径走，必加 `历史` 行
+- **bmad-build-auto-suffix**（规划契约）：spec 把注入的 pending FU 纳入范围时，写成「翻转 ledger 条目」的 task；新延后项走 spec frontmatter `deferred:`，由 build-sync 导入（`source:build-auto-of-X.Y`）
+- **bmad-build-implement-suffix**（实现清单）：实现子 agent 翻 status / 加 partial / spawn 新 FU 时按 §3 状态变迁路径走，必加 `历史` 行
 - **bmad-retrospective-suffix**：retro 阶段做 superseded / 大群合并时按 schema 翻 status
 
 ---

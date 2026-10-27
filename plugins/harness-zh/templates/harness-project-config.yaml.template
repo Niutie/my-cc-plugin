@@ -90,10 +90,10 @@ extra:
   #     - 交付形态：<私有化 / SaaS / 混合>
   #     - 关键约束：<合规 / 性能 / 资源 / 维护成本等>
 
-  # 全栈贯通 review checklist（dev-story Q6 — harness-prompt-suffix.py stage 2 注入）
+  # 全栈贯通 review checklist（Q6 — harness-prompt-suffix.py implement 渲染给 bmad-build-auto 实现子 agent；旧流水线 stage 2 同源）
   # init §2 字段 16 从 architecture/*.md 推断核心写入路径列表。
   # 每项 = {label: 短描述, file_path: 具体文件路径或 module::symbol}。
-  # 空 list 合法（dev-story Q6 整段降级跳过；不阻流）。
+  # 空 list 合法（Q6 整段降级跳过；不阻流）。
   fullstack_review_steps: []
   # 自动填充示例：
   #   - label: '字段定义'

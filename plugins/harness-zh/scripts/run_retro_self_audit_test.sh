@@ -21,8 +21,8 @@ if [ ! -f "$SCRIPT_DIR/run_retro_self_audit.sh" ]; then
     echo "ERROR: run_retro_self_audit.sh not found next to test" >&2
     exit 1
 fi
-if [ ! -f "$SUFFIX_DIR/bmad-dev-story-suffix.md" ]; then
-    echo "ERROR: prompt-suffixes/bmad-dev-story-suffix.md not found at $SUFFIX_DIR" >&2
+if [ ! -f "$SUFFIX_DIR/bmad-build-implement-suffix.md" ]; then
+    echo "ERROR: prompt-suffixes/bmad-build-implement-suffix.md not found at $SUFFIX_DIR" >&2
     exit 1
 fi
 

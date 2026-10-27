@@ -37,6 +37,18 @@
         → 输出该 epic 内的下一条 backlog story key（yaml 出现顺序最早的一条），
           找不到时退出码 1。run-sprint --epic 模式的循环退出条件用它。
 
+    python3 .claude/harness/scripts/sprint-status.py epic-stories <epic_num>
+        → 每行 `<key>\t<status>`，列出该 epic 的全部 story（harness-commit stage 6
+          用它算 EPIC_WONT_DO）。
+
+    python3 .claude/harness/scripts/sprint-status.py action-status <id> [<new_status>]
+        → 读 / 写 BMad 6.12 原生 `action_items:` 列表里 `id: <id>` 那一项的 status
+          （open / in-progress / done）。找不到 id 时退出码 1。retro-fulfill 翻
+          harness `retro_action_items` 的同时用它同步原生账（id 约定
+          `epic-<N>-retro-<CODE>`，见 bmad-retrospective-suffix.md）。
+
+终态：epic-all-done 把 `done` 与 `wont-do`（项目自定义的放弃态）都视为完成。
+
 故意手写 yaml 解析（避免引入 PyYAML 依赖）。兼容 development_status 下两种布局：
   - 单行：`  <key>: <status>`（含行尾 inline 注释）
   - 多行块（BMad v6.7.1+ bmad-sprint-planning 默认，带 depends_on）：
@@ -52,6 +64,9 @@ import datetime
 import os
 import re
 import sys
+# Never drop __pycache__/ next to the deployed scripts: an untracked dir there
+# makes the worktree dirty, and bmad-build-auto refuses to start on a dirty tree.
+sys.dont_write_bytecode = True
 import tempfile
 from pathlib import Path
 
@@ -131,6 +146,77 @@ def _iter_dev_status(include_epic_keys: bool = False) -> list[tuple[int, str, st
                     out.append((i, pending_key, status))
                 pending_key = None  # 已取到 status；块内 depends_on 等忽略
     return out
+
+
+# `wont-do` is not in the BMad template vocabulary but real projects use it for
+# stories deliberately dropped; without it an epic carrying one never reads as
+# all-done and its retrospective is never triggered.
+TERMINAL_STORY_STATUSES = ("done", "wont-do")
+
+
+def _find_action_item_status_line(lines: list[str], item_id: str) -> int | None:
+    """Line index of the `status:` key of the `action_items:` entry whose id
+    equals item_id (quoted or bare). None when absent."""
+    in_block = False
+    in_item = False
+    item_matches = False
+    item_indent = None
+    status_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.rstrip("\n")
+        if not in_block:
+            if stripped.startswith("action_items:"):
+                in_block = True
+            continue
+        if stripped and not stripped.startswith((" ", "\t", "-", "#")):
+            break  # next top-level key
+        m_item = re.match(r"^(\s*)-\s+(.*)$", stripped)
+        if m_item and (item_indent is None or len(m_item.group(1)) == item_indent):
+            if in_item and item_matches and status_idx is not None:
+                return status_idx
+            item_indent = len(m_item.group(1))
+            in_item = True
+            item_matches = False
+            status_idx = None
+            first = m_item.group(2)
+            fields = [(i, first)]
+        elif in_item:
+            fields = [(i, stripped.strip())]
+        else:
+            continue
+        for idx, text in fields:
+            m_kv = re.match(r"^([A-Za-z_][\w-]*):\s*(.*?)\s*(?:#.*)?$", text)
+            if not m_kv:
+                continue
+            k, v = m_kv.group(1), m_kv.group(2).strip().strip('"').strip("'")
+            if k == "id" and v == item_id:
+                item_matches = True
+            elif k == "status":
+                status_idx = idx
+    if in_item and item_matches and status_idx is not None:
+        return status_idx
+    return None
+
+
+def cmd_action_status(item_id: str, new_status: str | None) -> int:
+    if not SPRINT_FILE.exists():
+        sys.exit(f"missing {SPRINT_FILE}")
+    text_lines = SPRINT_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
+    idx = _find_action_item_status_line(text_lines, item_id)
+    if idx is None:
+        return 1
+    line = text_lines[idx]
+    m = re.match(r"^(\s*(?:-\s+)?status:\s*)([\"']?)([^\"'#\s]*)([\"']?)(\s*#.*)?(\r?\n)?$", line)
+    if not m:
+        sys.exit(f"failed to parse action item status line {idx}: {line!r}")
+    if new_status is None:
+        print(m.group(3))
+        return 0
+    if new_status not in ("open", "in-progress", "done"):
+        sys.exit(f"invalid action item status {new_status!r} (open / in-progress / done)")
+    text_lines[idx] = f"{m.group(1)}{m.group(2)}{new_status}{m.group(4)}{m.group(5) or ''}{m.group(6) or ''}"
+    _atomic_write(SPRINT_FILE, "".join(text_lines))
+    return 0
 
 
 def cmd_next() -> int:
@@ -225,7 +311,7 @@ def cmd_epic_all_done(epic_num: str) -> int:
     matched = [(k, s) for _, k, s in items if k.startswith(prefix)]
     if not matched:
         sys.exit(f"epic {epic_num} 在 sprint-status 中没有 story")
-    pending = [(k, s) for k, s in matched if s != "done"]
+    pending = [(k, s) for k, s in matched if s not in TERMINAL_STORY_STATUSES]
     if not pending:
         return 0
     print(
@@ -243,6 +329,15 @@ def cmd_epic_retro_status(epic_num: str) -> int:
             print(s)
             return 0
     return 1
+
+
+def cmd_epic_stories(epic_num: str) -> int:
+    """每行 `<key>\t<status>`，该 epic 的全部 story（yaml 顺序）。"""
+    prefix = f"{epic_num}-"
+    for _, k, st in _iter_dev_status():
+        if k.startswith(prefix):
+            print(f"{k}\t{st}")
+    return 0
 
 
 def cmd_next_in_epic(epic_num: str) -> int:
@@ -289,6 +384,10 @@ def main(argv: list[str]) -> int:
         return cmd_find_by_status(argv[2])
     if cmd == "next-in-epic" and len(argv) == 3:
         return cmd_next_in_epic(argv[2])
+    if cmd == "epic-stories" and len(argv) == 3:
+        return cmd_epic_stories(argv[2])
+    if cmd == "action-status" and len(argv) in (3, 4):
+        return cmd_action_status(argv[2], argv[3] if len(argv) == 4 else None)
     sys.exit(__doc__)
 
 

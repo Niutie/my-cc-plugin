@@ -11,6 +11,75 @@
 
 ---
 
+## v0.2.0 — 2026-10-27 — 适配 BMad 6.11+：每条 story 改由 bmad-build-auto 跑完，harness 改做事后审计与收口
+
+### 触发
+
+unified_agent_gateway 升到 BMad 6.12.4（manifest `installShims: false`）后排查：
+
+- `bmad-create-story` / `bmad-dev-story` 在 6.11 并入 `bmad-build` / `bmad-build-auto`，6.12 默认不装旧 ID。0.1.39 的 stage ①② 直接调这两个 skill，第一条 story 就会失败。gateway 里 harness 流水线最后一次跑是 2026-08-07（epic 75），之后改用手工 `bmad-build` + bmad-loop。
+- 6.12 的 skill 启动走 `uv run _bmad/scripts/render_skill.py`，机器上没装 uv。`bmad-build(-auto)` 缺 uv 直接 HALT。
+- `bmad-build-auto` 自带四层 review（blind-hunter / edge-case / verification-gap / intent-alignment），项目还能在 `_bmad/custom/bmad-build-auto.toml` 挂 codex 层（gateway 已挂），并且自己 commit、要求干净工作区。旧 stage ③④⑤ 与之重复，旧"子 agent 不许 commit"规则与之冲突。
+- retro 重写为证据驱动 5 Phase，有 `-H <epic>` 无人值守接口和 frontmatter `verdict`，action items 写进 sprint-status 顶层 `action_items:`，与 harness `retro_action_items` 成了两本账。
+- deferred 有三种写法并存：schema v1 FU、bmad-build 的 `source_spec/summary/evidence`、bmad-build-auto 写在 spec frontmatter 的 `deferred:`。最后一种 harness 完全看不见。
+- 顺带发现：pre-commit gate ① 与 run.md §0.A.0 写死 `[4-6]-*.md`（模板项目遗留，epic ≥ 7 的项目从未触发）；文档多处引用的 `_bmad/customize/` 不是 BMad 的覆盖目录（应为 `_bmad/custom/`），相关 toml 从未存在；`release_check.sh` 在 README 拆分后一直 FAIL。
+
+### 改动范围
+
+**① 流水线（`commands/run.md` 重写）**
+
+每条 story：B0 start tag + C11 注入 → B1 subagent 内跑 `bmad-build-auto`（嵌套子 agent，Claude Code 默认 3 层）→ `harness-commit.py build-verify` 审计 → `built` tag → B2 外部 codex review + fix（仅 codex 没挂进 build 时）→ B3 follow-up review（B2 有修复或 spec `followup_review_recommended: true` 时，最多一轮）→ B4 `build-sync` → `done` tag → ⑤.5 测试 → ⑥ retro → ⑥.5 residue。
+
+- spec 由 bmad-build-auto 写成 `spec-<slug>.md`，状态在 frontmatter。prompt 要求 slug 等于 key，但它会把中文 key 转写成英文 slug（gateway 里 `124-1-测试环境基线…` → `spec-124-1-test-env-baseline-….md`），所以 harness 按 `spec-<epic>-<seq>-*` 编号前缀识别（与 bmad-build 自己的 story-key 解析同规则，`1-1` 不会撞 `1-10`）。
+- `--continue` 改用 harness 自己的 tag 判断（`harness-state.py --in-flight`），不再用 sprint-status 的 `review`（6.11+ 里它也表示"交互式 build 完成待合并"）。
+- §0.A 工作区必须干净（bmad-build-auto 的要求）；§0.A.0 retro dev 项前置 gate 对任意 epic 生效，`_NO_SPEC_` 残留时不 dispatch（避免 build 跑完才被 hook 拦）。
+- 阶段 ⑥ 用 `bmad-retrospective -H <EPIC>`；stage 6 / 6-done 输出 `RETRO_VERDICT=` 与 `EPIC_WONT_DO=`。`rejected` 且没有 wont-do story 时 all 模式 halt；有 wont-do 时只醒目提示（上游把 wont-do 算未完成，会强制 rejected）。
+- codex-skipped marker 推迟到 B4 才写，B3 的 bmad-build-auto 不会碰到脏工作区；每条 story 的 B0 都检查工作区干净；Build intent 说明当前分支承载整轮 sprint，避免 build-auto 的分支检查误判。
+- 旧流水线启动、未完成的 story 走 §1.L：stage ③④⑤ 可续（codex / freelance fix / bmad-code-review 都还在），卡在 ②之前的只能重置后走新流水线。
+
+**② `harness-commit.py`**
+
+- 新 `build-verify` 模式：不 stage、不 commit，审计 `harness/<KEY>/start..HEAD`（凭据黑名单 / `_bmad-output` 越界，尊重 `planning_artifacts:` / 跨 story 隔离，尊重 `cross_story_artifacts:`）+ 工作区干净 + spec status done + `## Auto Run Result` 存在；输出 `SPEC_FILE` / `BASELINE_REVISION` / `FOLLOWUP_RECOMMENDED` / `DEFERRED_COUNT` / `CODEX_LAYER_SKIPPED`。
+- 新 `build-sync` stage：`<KEY> → done`、epic `backlog → in-progress`，把 spec `deferred:` 导入为 schema v1 FU（`FU-<X.Y>.B<n>`，`[source:build-auto-of-X.Y]`，按位置编号，重跑幂等）。无变更时 STATUS=skip 仍给 `SUGGEST_TAG`。先 sync 再判空（干净工作区是常态）。
+- 跨 story 隔离与预期产出认本 story 的 spec（编号前缀匹配，`-n` 后缀取最大）和 `epic-<N>-context.md`；story status 优先读 spec frontmatter。build-verify 还会把 bmad-build-auto 建 spec 之前 HALT 留下的 `bmad-build-auto-result-*.md` 报成 `BUILD_AUTO_RESULT=`，spec done 却只改了 artifacts 的报 `NO_CODE_CHANGE=`。
+- stage 6 STATUS=ok 输出 `RETRO_VERDICT=`。
+
+**③ 新文件**
+
+- `scripts/harness_spec.py`：spec 解析、frontmatter 读取（PyYAML 可选，内置 fallback 与 PyYAML 在 gateway 40 个真实 spec 上结果一致）、codex review layer 探测、deferred 导入。
+- `scripts/check_bmad_runtime.sh`：uv / bmad-build-auto / render_skill.py / `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` 探测；run 硬检查、init advisory。
+- `scripts/build_pipeline_test.sh`：build-verify / build-sync / 状态机 / action-status / runtime probe / gate ① 正则等 fixture。初稿经一轮独立 review（10 条 finding）后修订。
+
+**④ 状态与账本**
+
+- `harness-state.py`：build / legacy 双流水线 next_action_code（build / build-verify / codex / codex-fix / followup / followup-verify / sync / blocked / legacy-stage*），新增 `--story-md`、`--in-flight`（排除 sprint-status 已 done / wont-do 的）；B3 前打 `followup-start` tag，续作不会重复跑 follow-up；codex-in-build 探测用 git toplevel。
+- `sprint-status.py`：新增 `action-status <id> [<status>]` 读写原生 `action_items`、`epic-stories <N>`；`epic-all-done` 把 `wont-do` 视为终态。retro-fulfill 翻原生条目优先用上游 `sprint_status.py update --set-action-status`。
+- story 编号允许字母后缀（`124-4b-…`）：short id、gate ①、deferred grep、schema target 正则一并放宽。
+- retro 两本账按 id `epic-<N>-retro-<CODE>` 对齐（retro suffix §7），retro-fulfill 两边一起翻。
+
+**⑤ prompt 契约**
+
+- `bmad-create-story-suffix.md` → `bmad-build-auto-suffix.md`（规划契约：slug、`context:` 挂实现清单、白名单声明、C7 继承段、注入项处理）。spec 长度 lint 与 D-decisions extract 退役。
+- `bmad-dev-story-suffix.md` → `bmad-build-implement-suffix.md`（实现子 agent 清单，经 spec `context:` 送达，再拉取 `harness-prompt-suffix.py implement`）。
+- `harness-prompt-suffix.py` 新增 `build` / `implement` / `chore` 三个 stage；stage 4 与 chore 不再提 dev-result.json。
+- `bmad-retrospective-suffix.md`：按 6.12 的 Phase 名改写挂点，新增 §7 原生账对齐。
+
+**⑥ 其它**
+
+- pre-commit gate ①：触发改为任意 epic 的新 story spec（`(spec-)?<N>-<M>-*.md`，带第二个 `.` 的 sidecar 不触发）。
+- `check_inheritance_block.sh` 认 `spec-` 前缀；`grep_prev_retro_action_items.sh` 改由 B1 实际调用。
+- init / update / codex-catchup / run-test / architecture / README / deferred-work schema（新增 `build-of` / `build-auto-of` source）同步；BMad 命令名更新为 `bmad-prd` / `bmad-architecture`。
+- `release_check.sh`：顶部表读根 README，Versioning 表读插件 README。
+
+### 后续注意
+
+- 升级后在项目里跑 `/harness-zh:update`，manifest purge 会删掉两个改名前的 suffix 文件。
+- 跑之前先装 uv，再跑 `bash .claude/harness/scripts/check_bmad_runtime.sh` 确认 `STATUS=ok`。
+- 新流水线尚未在真实项目上整轮跑过；第一轮建议 `/harness-zh:run --story`，观察 B1 的 spec 命名与 build-verify 结果。
+- BMad 原生 `deferred-work.md` 写法（bmad-build 交互版 / bmad-code-review）仍不进 C11 注入，只有 FU 格式的条目会被注入。
+
+---
+
 ## v0.1.39 — 2026-06-12 — epic-6 实跑反馈四连修：planning_artifacts 白名单 + process-marker 自动剔除 + 子 agent task 工具禁令 + retro 瞬态重试 (closes #8, closes #9)
 
 ### 触发

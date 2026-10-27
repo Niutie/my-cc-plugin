@@ -23,7 +23,7 @@
 # Regex constants (POSIX ERE, used with `grep -E`).
 # Exported so calling scripts can also use them directly if needed.
 DWSL_HEAD_FULL_RE='^- \*\*FU-[A-Za-z0-9._\-]+\*\* `\[status:[a-z\-]+\]` `\[bucket:[a-zA-Z0-9.+\-]+\]` `\[target:[^]`]*\]` `\[source:[^]`]*\]`'
-DWSL_TARGET_VALID_RE='^(Story [0-9]+\.[0-9]+([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
+DWSL_TARGET_VALID_RE='^(Story [0-9]+\.[0-9]+[a-z]?([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
 DWSL_STATUS_VALID_RE='^(pending|in-progress|partial|resolved|deferred|needs-review|superseded)$'
 DWSL_LEGACY_INLINE_RE='— (\*\*)?(Resolved|Partial resolution) by Story [0-9.]+(\*\*)? \([0-9]{4}-'
 DWSL_FU_HEAD_PREFIX_RE='^- \*\*FU-'
@@ -40,7 +40,7 @@ DWSL_FU_RETRO_PREFIX_RE='^- \*\*FU-RETRO-'
 #   - check_retro_action_items.sh       (pre-commit gate ①, awk — via `awk -v`)
 #   - grep_pending_dev_retro_items.sh   (enumerator, awk — via `awk -v`)
 #   - process_retro_residue.sh          (stage 6.5 residue processor, bash =~)
-#   - grep_prev_retro_action_items.sh   (create-story snapshot, bash =~)
+#   - grep_prev_retro_action_items.sh   (B1 epic-first-story snapshot, bash =~)
 #
 # SYNC CONTRACT with the canonical Python implementation: harness-commit.py
 # `_parse_retro_action_items` (Form 1 H3 / Form 2 table / Form 3 bold — the

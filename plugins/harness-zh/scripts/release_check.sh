@@ -3,7 +3,7 @@
 #
 # 校验五件 things：
 #   (1) 版本一致性（四处）：plugin.json（SoT）=== marketplace.json 里 harness-zh 的
-#       version === README.md 版本表（顶部 plugin 表 + Versioning 表首行）===
+#       version === README 版本表（根 README 顶部 plugin 表 + 插件 README Versioning 表首行）===
 #       changelog.md 头条 `## vX.Y.Z` 版本号。前两处防 0.1.16 / 0.1.26 那种漂移再发生
 #       （详 changelog v0.1.26 codex review）；后两处是 review 2026-06-10 finding #42 —
 #       changelog 头条是 collect_issue_context.sh 运行时取版本号的事实来源，README 表
@@ -47,12 +47,15 @@ PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MARKETPLACE_JSON="${MARKETPLACE_JSON:-$REPO_ROOT/.claude-plugin/marketplace.json}"
 PLUGIN_JSON="${PLUGIN_JSON:-$PLUGIN_DIR/.claude-plugin/plugin.json}"
 COMMANDS_DIR="${COMMANDS_DIR:-$PLUGIN_DIR/commands}"
-README_MD="${README_MD:-$REPO_ROOT/README.md}"
+# README 拆分（e2fb176）后：顶部 plugin 表在 marketplace 根 README，Versioning 表在
+# 插件自己的 README。两处分别取。
+ROOT_README_MD="${ROOT_README_MD:-$REPO_ROOT/README.md}"
+README_MD="${README_MD:-$PLUGIN_DIR/README.md}"
 CHANGELOG_MD="${CHANGELOG_MD:-$PLUGIN_DIR/changelog.md}"
 DW_TEMPLATE="${DW_TEMPLATE:-$PLUGIN_DIR/templates/deferred-work.md.template}"
 
 # Minimal precondition checks — all input files MUST exist; fail loud otherwise.
-for _f in "$MARKETPLACE_JSON" "$PLUGIN_JSON" "$README_MD" "$CHANGELOG_MD" "$DW_TEMPLATE"; do
+for _f in "$MARKETPLACE_JSON" "$PLUGIN_JSON" "$ROOT_README_MD" "$README_MD" "$CHANGELOG_MD" "$DW_TEMPLATE"; do
     if [ ! -f "$_f" ]; then
         echo "ERROR [release_check]: required file not found: $_f" >&2
         exit 1
@@ -112,21 +115,22 @@ echo "  ✓ marketplace.json and plugin.json both at $PG_VER"
 #     row) + changelog head entry — review 2026-06-10 finding #42. The
 #     changelog head is what collect_issue_context.sh reports as the deployed
 #     plugin version at runtime, so drift here pollutes issue triage.
-README_VERS="$(python3 - "$README_MD" <<'PYEOF'
+README_VERS="$(python3 - "$ROOT_README_MD" "$README_MD" <<'PYEOF'
 import re, sys
 top = table = "__MISSING__"
+# 根 README 顶部表：`| **harness-zh** | x.y.z |` 或 `| **[harness-zh](...)** | x.y.z |`
 with open(sys.argv[1], encoding="utf-8") as f:
     for line in f:
-        if top == "__MISSING__":
-            m = re.match(r"^\|\s*\*\*harness-zh\*\*\s*\|\s*(\d+\.\d+\.\d+)\s*\|", line)
-            if m:
-                top = m.group(1)
-                continue
-        if table == "__MISSING__":
-            m = re.match(r"^\|\s*(\d+\.\d+\.\d+)\s*\|", line)
-            if m:
-                table = m.group(1)
-        if top != "__MISSING__" and table != "__MISSING__":
+        m = re.match(r"^\|\s*\*\*\[?harness-zh\]?(?:\([^)]*\))?\*\*\s*\|\s*(\d+\.\d+\.\d+)\s*\|", line)
+        if m:
+            top = m.group(1)
+            break
+# 插件 README Versioning 表首个数据行
+with open(sys.argv[2], encoding="utf-8") as f:
+    for line in f:
+        m = re.match(r"^\|\s*(\d+\.\d+\.\d+)\s*\|", line)
+        if m:
+            table = m.group(1)
             break
 print(top)
 print(table)

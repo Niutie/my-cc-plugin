@@ -26,7 +26,7 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 
 ## −1. Commit 协议（test-sprint 专用 stage 命名空间）
 
-`harness-commit.py` 已扩展支持 `T1` / `T3` / `T4` stage（详 chore C-bootstrap Phase C；与 run-sprint 5-stage 隔离命名空间）。每个 stage 的预期产出：
+`harness-commit.py` 已扩展支持 `T1` / `T3` / `T4` stage（详 chore C-bootstrap Phase C；与 run-sprint 主流水线 stage 隔离命名空间）。每个 stage 的预期产出：
 
 | Stage | 预期产出路径 | Commit msg 模板 |
 |---|---|---|
@@ -55,6 +55,7 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 - `KEY` = `--story` 值
 - `EPIC` = `--epic` 值；若未传 → 跑 `python3 .claude/harness/scripts/sprint-status.py epic-of $KEY`；脚本退出码 1（chore-* / spec-* 类 key 无 epic）→ `EPIC=""`（T1 跳过）
 - `DRY_RUN` = `--dry-run` 给定 → `1`，否则 `0`
+- `STORY_MD` = `$(python3 .claude/harness/scripts/harness-state.py $KEY --story-md)`（v0.2.0 起 bmad-build-auto 写的是 `spec-$KEY.md`；旧流水线 story 是 `$KEY.md`，脚本两种都认）
 
 ### 0.0.5 触发条件评估（chore-test-harness-conditional-triggers）
 
@@ -62,7 +63,7 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 
 ```bash
 EVAL_JSON=$(bash .claude/harness/scripts/eval_test_stage_triggers.sh "$KEY" \
-    "_bmad-output/implementation-artifacts/$KEY.md" 2>/dev/null)
+    "$STORY_MD" 2>/dev/null)
 T1_TRIG=$(echo "$EVAL_JSON" | sed -nE 's/.*"t1":[[:space:]]*([a-z]+).*/\1/p')
 T3_TRIG=$(echo "$EVAL_JSON" | sed -nE 's/.*"t3":[[:space:]]*([a-z]+).*/\1/p')
 T4_TRIG=$(echo "$EVAL_JSON" | sed -nE 's/.*"t4":[[:space:]]*([a-z]+).*/\1/p')
@@ -155,7 +156,7 @@ Agent({
 
 prompt 核心：
 
-> 请直接调用 /bmad-testarch-atdd，目标 story key = $KEY。Story spec 路径：`_bmad-output/implementation-artifacts/$KEY.md`。
+> 请直接调用 /bmad-testarch-atdd，目标 story key = $KEY。Story spec 路径：`$STORY_MD`（主 agent 替换为实际路径）。
 >
 > 产出文件：
 >   `_bmad-output/implementation-artifacts/test_artifacts/$KEY.atdd-checklist.md`

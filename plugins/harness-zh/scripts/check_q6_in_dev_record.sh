@@ -30,7 +30,7 @@ fi
 # Q6 段锚（### Q6: 起）
 if ! grep -qE '^### Q6:' "$SPEC"; then
     echo "FAIL: $SPEC 缺 \`### Q6:\` 段（Q6 全栈贯通 review）" >&2
-    echo "      参考 .claude/harness/prompt-suffixes/bmad-dev-story-suffix.md Q6 7 sub-bullet 模板。" >&2
+    echo "      参考 .claude/harness/prompt-suffixes/bmad-build-implement-suffix.md Q6 7 sub-bullet 模板。" >&2
     exit 1
 fi
 

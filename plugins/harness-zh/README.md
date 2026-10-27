@@ -2,57 +2,42 @@
 
 > Part of the [my-cc-plugin](../../README.md) marketplace — see it for install steps and the other plugin.
 
-A 5-stage TDD-flavored development loop (`/harness-zh:run`) plus test-automation loop (`/harness-zh:run-test`) layered on top of [BMad Method](https://github.com/BMad-Code/bmad) planning artifacts. Designed for **solo developer + AI agent** workflows where:
+A sprint orchestration loop (`/harness-zh:run`) plus a test-automation loop (`/harness-zh:run-test`) layered on top of [BMad Method](https://github.com/bmad-code-org/BMAD-METHOD). Designed for **solo developer + AI agent** workflows where:
 
 - One developer drives multiple AI subagents (BMad agents, Codex review, etc.)
 - BMad produces planning artifacts (PRD / architecture / epics / sprint-status)
-- harness-zh then drives sprint execution: backlog story → create-story → dev-story → adversarial review → fix → final review → retrospective, with state machine rooted in `sprint-status.yaml`
+- harness-zh then drives sprint execution with the state machine rooted in `sprint-status.yaml`: for each backlog story, one `bmad-build-auto` run (plan → implement → multi-layer review → commit), an external codex review + fix when codex is not already a build review layer, an optional follow-up review pass, then sprint-status / deferred-ledger sync, tests, and the epic retrospective
+
+Since **0.2.0** harness-zh targets **BMad ≥ 6.11** (`bmad-create-story` / `bmad-dev-story` were merged into `bmad-build-auto`). Stories started under 0.1.x keep a limited resume path; see `commands/run.md` §1.L.
 
 ## Prerequisites
 
 harness-zh **orchestrates** other tools and requires the following installed in your environment:
 
-### 1. BMad-METHOD toolset
+### 1. BMad-METHOD toolset (≥ 6.11) + uv
 
-[BMad-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) provides `/bmad-product-brief`, `/bmad-create-prd`, `/bmad-create-architecture`, `/bmad-create-story`, `/bmad-dev-story`, `/bmad-retrospective`, `/bmad-sprint-planning`, and **~66 other skills** across 5+ modules. Most commands also have a colon-form alias (e.g. `/bmad:prd` ≡ `/bmad-create-prd`); a few newer/meta commands (`/bmad:research`, `/bmad:tech-spec`) are colon-only.
+[BMad-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) provides the skills harness-zh calls: `bmad-build-auto` (per-story build), `bmad-sprint-planning`, `bmad-retrospective`, the TEA test skills, plus the planning skills you run before harness-zh (`bmad-product-brief`, `bmad-prd`, `bmad-architecture`, `bmad-create-epics-and-stories`).
 
-| Module | Latest version | Purpose | Required for harness-zh? |
+BMad 6.12 starts every skill through `uv run _bmad/scripts/render_skill.py`, so **[uv](https://docs.astral.sh/uv/) is required** (`curl -LsSf https://astral.sh/uv/install.sh | sh`). `bmad-build-auto` halts without it. `/harness-zh:run` checks uv, the skill install and nested-subagent support before it dispatches anything (`scripts/check_bmad_runtime.sh`).
+
+| Module | Version tested | Purpose | Required for harness-zh? |
 |---|---|---|---|
-| **BMad Core** | v6.6.0 | Shared utilities + cross-module config used by all other modules | **Required** (auto pulled by BMM) |
-| **BMM** (Method) | v6.6.0 | Core PM workflow — PRD / architecture / story / sprint planning | **Required** |
-| **BMB** (Builder) | v1.7.0 | Custom agent / workflow authoring | Recommended |
-| **CIS** (Creative Innovation Suite) | v0.2.0 (early) | Brainstorming / design thinking / storytelling / innovation | Recommended |
-| **TEA** (Test Architect) | v1.15.1 | Risk-driven test strategy + atdd / trace / nfr / ci | Recommended |
-| **BMGD** (Game Dev Studio) | (community) | Unity / Unreal / Godot game-dev workflows | **Skip** unless game-dev project |
+| **BMad Core** | 6.12.4 | Shared utilities, `bmad-review`, config resolution | **Required** (auto pulled by BMM) |
+| **BMM** (Method) | 6.12.4 | PRD / architecture / epics / sprint planning / `bmad-build-auto` / retrospective | **Required** |
+| **TEA** (Test Architect) | 1.27.2 | atdd / test-design / framework used by `/harness-zh:run-test` | Recommended |
+| **BMB** (Builder) | 1.8.1 | Custom agent / workflow authoring | Optional |
+| **CIS** (Creative Innovation Suite) | 0.3.2 | Brainstorming / design thinking / storytelling | Optional |
 
-(Versions snapshot 2026-05-06; installer always shows current latest.)
+(Versions snapshot 2026-10-27; the installer always offers the current latest.)
 
-**Install**（Node.js v20+，`uv` 可选）— 交互式（推荐）：
+**Install** (Node.js v20+), interactive:
 
 ```bash
 cd /path/to/your/project
 npx bmad-method install
 ```
 
-按提示回答（默认值都是合理的，敲回车即可）：
-
-| 提示 | 推荐回答 |
-|---|---|
-| Installation directory | 当前项目路径（默认即可） |
-| Select official modules | **全选 5 个**：BMad Core / BMM / BMB / CIS / TEA（默认就是；不要勾 BMGD 除非做游戏开发） |
-| Browse community modules? | No |
-| Install from a custom source? | No |
-| Ready to install? | Yes |
-| Integrate with | **Claude Code** （必选，否则 skills 不写到 `.claude/skills/`） |
-| Module configuration | Express Setup（推荐快速默认） |
-| What should agents call you? | 你的名字 |
-| What is your project called? | 项目名（会写到 `_bmad/bmm/config.yaml` 的 `project_name`） |
-| What language should agents use? | Chinese / English |
-| Where should output files be saved? | `_bmad-output`（默认即可，harness-zh 也用这个路径） |
-
-装完得到 ~66 skills + 4 个输出目录（`planning-artifacts/` / `implementation-artifacts/` / `test-artifacts/` / `docs/`） + `_bmad/` 配置目录。**不需要**额外的 init 步骤，直接跑 `/bmad-product-brief` 等命令即可。
-
-非交互（CI / 自动化），一键脚本：
+Pick at least BMad Core + BMM (+ TEA for the test loop), and **Claude Code** as the integration so skills land in `.claude/skills/`. Keep the default output folder `_bmad-output` (harness-zh uses it). Non-interactive:
 
 ```bash
 npx bmad-method install \
@@ -66,14 +51,19 @@ Without BMad, the planning artifacts (`_bmad-output/planning-artifacts/`) that `
 
 ### 2. codex plugin (optional — v0.1.28+)
 
-Provides `/codex:rescue` and `/codex:setup` (adversarial review subagent invoked from `/harness-zh:run` stage 3 — story implementation review).
+Provides `/codex:adversarial-review`, used for cross-model review of each story.
 
 ```
 /plugin marketplace add openai/codex-plugin-cc
 /plugin install codex@openai-codex
 ```
 
-**Optional since v0.1.28.** harness-zh no longer declares codex as a hard dependency — install works without it. If codex isn't present, `/harness-zh:run` will pre-flight detect this, **skip stages 3+4** for each story, and drop a `<KEY>.codex-skipped.json` marker. Once you've installed codex later, run `/harness-zh:codex-catchup` to retroactively replay the skipped adversarial-review + dev-fix passes for all backlog markers.
+**Optional since v0.1.28.** Two ways it gets used:
+
+- If your project mounts codex as a review layer in `_bmad/custom/bmad-build-auto.toml` (a `[[workflow.review_layers]]` entry whose id contains `codex`), codex runs inside `bmad-build-auto` and harness-zh does not run it again.
+- Otherwise `/harness-zh:run` runs one external codex review + fix round after the build.
+
+If codex is unavailable (not installed, quota, not logged in, or the in-build layer was skipped), the story continues and a `<KEY>.codex-skipped.json` marker is written. After codex is back, `/harness-zh:codex-catchup` replays the skipped review + fix for every marker.
 
 ---
 
@@ -100,11 +90,11 @@ This one-time bootstrap deploys plugin assets into the project's `.claude/harnes
 |---|---|---|
 | `/harness-zh:init` | First-time bootstrap — deploy plugin assets + (optional) BMad-driven `harness-project-config.yaml` filling. Mid-project install also detects existing `deferred-work.md` schema state and `category:harness` retro residue, prompting solo-dev to migrate. | Once per project |
 | `/harness-zh:update` | After plugin upgrade — refresh project-side asset copies (does **not** touch yaml or run BMad extraction) | After each `/plugin marketplace update` |
-| `/harness-zh:run` | Main sprint loop — automatically processes `sprint-status.yaml` backlog stories through 5 stages (create-story → dev-story → codex adversarial review → dev fix → bmad final review), with retrospectives and retro-residue handling | Daily |
-| `/harness-zh:run-test` | Test automation sub-loop — single-story ATDD + E2E real-run (invoked by run-sprint stage 5.5 or directly) | As triggered |
+| `/harness-zh:run` | Main sprint loop — processes `sprint-status.yaml` backlog stories: `bmad-build-auto` build → audit of the committed range → external codex review + fix (when needed) → follow-up review (when needed) → sprint-status / deferred-ledger sync → tests → epic retrospective (headless, verdict-gated) → retro-residue handling | Daily |
+| `/harness-zh:run-test` | Test automation sub-loop — single-story ATDD + E2E real-run (invoked by `/harness-zh:run` stage 5.5 or directly) | As triggered |
 | `/harness-zh:upgrade-deferred-work` | Re-detect `deferred-work.md` schema-v1 conformance + 3-tier mode switch (advisory ↔ strict). For solo-dev who picked advisory at init time and later wants to flip back, or migrated history manually and wants to verify. | Ad-hoc |
 | `/harness-zh:report-issue` | One-shot bug/feedback channel — auto-collect plugin version + current sprint/story state + halt site + recent commits, then open a GitHub issue against `Niutie/my-cc-plugin` via `gh` CLI. Halt-mode submissions also include a temporary workaround so you don't have to wait for the plugin fix to keep moving. Replaces the v0.1.14-0.1.25 `upstream-feedback.md` channel. Requires `gh` CLI installed + `gh auth login` done. | Halt / sprint wrap-up / ad-hoc |
-| `/harness-zh:codex-catchup` | **v0.1.27+** Catch up on stages 3+4 (codex adversarial review + dev fix) that were auto-skipped during `/harness-zh:run` because codex-in-cc was unavailable (plugin not installed / quota exhausted / not logged in). Scans `*.codex-skipped.json` markers, re-runs review + fix per story, archives marker as `*.codex-skipped.resolved.json`. Refuses to run if codex still unavailable. | After codex availability is restored |
+| `/harness-zh:codex-catchup` | **v0.1.27+** Catch up on the codex adversarial review + dev fix that was skipped during `/harness-zh:run` because codex-in-cc was unavailable (plugin not installed / quota exhausted / not logged in / in-build codex layer skipped). Scans `*.codex-skipped.json` markers, re-runs review + fix per story, archives marker as `*.codex-skipped.resolved.json`. Refuses to run if codex still unavailable. | After codex availability is restored |
 
 `/harness-zh:run` accepts `--story [<key>]` / `--epic [<num>]` / `--continue` / `--dry-run` (no `--help` flag exists — running it with no args starts the full sprint loop). For the full flag semantics see the §0.0 / §5 parameter tables in [`commands/run.md`](commands/run.md) (deployed copy: `.claude/commands/run.md`).
 
@@ -122,7 +112,7 @@ harness-zh is an **asset deployer**, not a runtime container:
   2. Markdown slash-command bash blocks are not guaranteed to receive `${CLAUDE_PLUGIN_ROOT}` injection
 - Trade-off: each project carries a deployed copy of harness assets. Sync via `/harness-zh:update` after plugin upgrades.
 
-For full runtime architecture (5-stage state machine, sprint-status.yaml schema, retro residue / chore tracking, prompt-suffix injection, etc.) see [`architecture.md`](architecture.md).
+For full runtime architecture (build pipeline state machine, sprint-status.yaml schema, retro residue / chore tracking, prompt-suffix injection, etc.) see [`architecture.md`](architecture.md).
 
 ---
 
@@ -130,6 +120,7 @@ For full runtime architecture (5-stage state machine, sprint-status.yaml schema,
 
 | Version | Date | Highlights |
 |---|---|---|
+| 0.2.0 | 2026-10-27 | 适配 BMad 6.11+（实测 6.12.4）。`bmad-create-story` / `bmad-dev-story` 已并入 `bmad-build-auto`，6.12 默认不装旧 ID，0.1.x 的 stage ①② 在新版 BMad 上直接跑不起来。每条 story 改为一次 `bmad-build-auto`（规划 + 实现 + 多层 review + 自己 commit），harness 用新的 `build-verify` 事后审计 `start..HEAD` 区间（凭据黑名单 / 越界 / 跨 story），`build-sync` 统一推进 sprint-status 并把 spec frontmatter `deferred:` 导入 deferred-work.md。外部 codex 只在 codex 没挂进 build 时跑，按需追加一轮 follow-up review。retro 改用 `-H <epic>` 无人值守接口并读 `verdict` 作 epic 门，BMad 原生 `action_items` 与 `retro_action_items` 按 id 对齐。新增 `check_bmad_runtime.sh`（uv / skill / 嵌套子 agent 前置检查）、`harness_spec.py`、`--in-flight` 续作探测；pre-commit gate ① 不再写死 epic 4-6；`release_check.sh` 适配 README 拆分。旧流水线未完成的 story 见 run.md §1.L。初稿经一轮独立 review（10 条）修订：spec 按 `spec-<epic>-<seq>-*` 编号前缀识别（bmad-build-auto 会把中文 key 转写成英文 slug）；codex 跳过检测排除"无 SKIPPED"一类否定句；`followup-start` tag 防止续作时重复跑 follow-up；codex-skipped marker 推迟到 B4 写；只因 wont-do 被判 rejected 的 epic 不 halt；支持 `124-4b-…` 这类带字母的 story 编号；脚本不再在部署目录生成 `__pycache__`。 |
 | 0.1.39 | 2026-06-12 | epic-6 实跑反馈四连修 (closes #8, #9)。**①** spec frontmatter 新增 `planning_artifacts:` 白名单：chore/story spec 显式要求回写 `_bmad-output/planning-artifacts/*.md`（如 forward-only remediation 回写 epics.md）时声明即放行，不再 OUT_OF_SCOPE_BMAD halt + 手工 out-of-band commit；retro-fulfill 下按 code-first 解析 chore spec，STATUS=ok 输出 `PLANNING_ARTIFACT=` 信息行。**②** `harness-commit.py` 新增 process-marker 自动剔除（`AUTO_FIXED=process-marker`）：dev subagent 多产的 `<KEY>.maven-skipped.json` / `<KEY>.sandbox-skipped.json`（与 dev-result.json `checks_skip_reasons` 完全冗余）自动 unstage+rm 不 halt——显式枚举白名单，绝不泛化到 `*-skipped.json`（codex-skipped 是 schema 内 artifact）；`harness-prompt-suffix.py 2/4` 同步注入源头禁令。**③** 全 stage prompt suffix + 全部不走 suffix 的 spawn 点（run-test T1/T3、run.md 阶段 ⑤.5、⑥.5 residue prompt）注入任务追踪工具禁令（TaskCreate/TaskUpdate/TaskList 归主 orchestrator 独占——epic-6 run 实测子 agent 污染 / 清空过主任务清单）；run-test §进度可视化 改双模式。**④** stage ⑥ retro subagent 瞬态 `API Error: Overloaded` + worktree 干净 → 重 dispatch 一次不 halt（§3 硬约束表同步镜像该例外）。新增 2 个测试（planning_artifacts / process-marker 各 7 fixture）+ prompt suffix 测试扩 2 项；初稿经一轮对抗式 review 修 9 处自身缺陷后收口。 |
 | 0.1.38 | 2026-06-10 | 全量对抗式 review 收口（96 findings，详 `REVIEW-2026-06-10.md` + changelog）。安全门双洞：`harness-commit.py` porcelain 改 `-uall -z`（untracked 新目录内文件此前对 blacklist 扫描完全不可见）+ `**/` 改 gitignore 语义（仓库根目录 `.env`/`*.pem` 此前全绕过）；BLACKLIST 拆凭证 halt / 垃圾自动跳过两档。codex 降级链闭环：`*.codex-skipped.json` / `.resolved.json` 纳入各 stage expected（marker 不再触发 unexpected_artifact halt），catchup 归档随 stage 4 commit 入库、stage 3 review 窗口锚定 `harness/<KEY>/done` tag。retro 契约真实接线（suffix Read 强制注入 + `category: dev\|harness` 子键被 parser 消费）；状态机两阶段 read-then-set + `epic-*` key；E2E / artifacts 路径全走 harness_config SoT。测试体系重建：8 个 KNOWN_STALE 全修绿、新增 3 个回归测试、CI 3 job（含 macOS bash 3.2 真覆盖）。`prompt-templates/` 死资产删除；`release_check.sh` 版本门扩 4 处一致 + 2 道防漂移机检门。 |
 | 0.1.37 | 2026-06-10 | `read_harness_config.sh` 修 `_RHC_THIS` unset-after-source (closes #7)：source 末尾 unset 了函数**调用期**仍需的变量 → caller `set -u` + config yaml 在场时，任何 post-source `read_harness_config_field` 调用确定性 `unbound variable`，stage ⑥.5 `process_retro_residue.sh`（及同 pattern 的 `backfill_resolved_markers.sh`）对任意 epic exit 1。改为 `_RHC_SCRIPT_DIR` source 期绝对路径化且不 unset + 函数内 `${...:-}` 双保险；`process_retro_residue.sh` 6 个 `declare -a` 补 `=()`（次生崩溃区间实测为 bash ≥ 4.3 含现场 Debian 5.2，≤ 4.2/macOS 3.2 反而容忍）。函数入口硬化（无 key / `HARNESS_CONFIG_PATH` 被 unset 降级回 default 不杀 caller）；同族 sweep 顺带修 `eval_test_stage_triggers.sh` fail-open 契约破坏 + `lint_deferred_work.sh` `DWSL_*` 裸引（对齐 pre-commit 守护）。新增 `read_harness_config_issue7_test.sh`（deployed 式 fixture，变异校验 pre-fix 4/5 FAIL）。 |

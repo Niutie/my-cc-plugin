@@ -35,6 +35,9 @@ from __future__ import annotations
 
 import re
 import sys
+# Never drop __pycache__/ next to the deployed scripts: an untracked dir there
+# makes the worktree dirty, and bmad-build-auto refuses to start on a dirty tree.
+sys.dont_write_bytecode = True
 from pathlib import Path
 
 # Default config path: relative to this script's location (deployed under
@@ -402,11 +405,11 @@ def get_project_context() -> str:
 
 def get_fullstack_review_steps() -> list[dict[str, str]]:
     """Return extra.fullstack_review_steps as list of {label, file_path} dicts.
-    Used by harness-prompt-suffix.py stage 2 to render dev-story Q6 (a)-(z)
+    Used by harness-prompt-suffix.py `implement` (and legacy stage 2) to render Q6 (a)-(z)
     bullets dynamically from project config rather than hardcoded paths."""
     raw = _read_extra_list_of_dict("fullstack_review_steps", ("label", "file_path"))
     if raw is None:
-        _warn("extra.fullstack_review_steps not set, using empty list (dev-story Q6 disabled)")
+        _warn("extra.fullstack_review_steps not set, using empty list (Q6 disabled)")
         return list(_DEFAULT_FULLSTACK_REVIEW_STEPS)
     out: list[dict[str, str]] = []
     for d in raw:

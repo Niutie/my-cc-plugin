@@ -99,11 +99,15 @@ import os
 import re
 import subprocess
 import sys
+# Never drop __pycache__/ next to the deployed scripts: an untracked dir there
+# makes the worktree dirty, and bmad-build-auto refuses to start on a dirty tree.
+sys.dont_write_bytecode = True
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness_config import get_artifacts_root, get_sprint_status_path  # noqa: E402
+import harness_spec  # noqa: E402  (story spec resolution — BMad 6.11+ spec-<key>.md layout)
 
 def _compute_artifacts_dir_str() -> str:
     repo_root = Path(__file__).resolve().parents[3]
@@ -590,7 +594,13 @@ def _read_story_status_ex(key):
     one Status-shaped line exists — lets the stage 2/5 gates distinguish
     "Status line present but value unrecognized" from "no Status line at
     all" (finding #76)."""
-    path = f"{ARTIFACTS_DIR}{key}.md"
+    path = harness_spec.story_md_path(key, ARTIFACTS_DIR)
+    # bmad-build(-auto) specs keep status in YAML frontmatter (`status: done`,
+    # often followed by a vocabulary comment the body-line regex would swallow).
+    if os.path.basename(path).startswith("spec-") and os.path.exists(path):
+        fm_status = harness_spec.spec_status(path)
+        if fm_status:
+            return fm_status, True
     line_seen = False
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -810,6 +820,30 @@ def validate_review_findings(key):
 #   - `.codex-skipped.resolved.json` → stages 3/4/5 (catchup reruns stage 3+4
 #     commits after archiving; 5 is defensive for late archives)
 STAGES = {
+    # ----------------------------------------------------------------------
+    # BMad 6.11+ build pipeline (v0.2.0+). bmad-build-auto plans, implements,
+    # reviews AND commits the story itself, so the harness no longer pre-stages
+    # its code: `build-verify` (special mode, see run_build_verify) audits the
+    # committed range after the fact, and `build-sync` is the one harness-owned
+    # commit per story — sprint-status (story → done, epic backlog →
+    # in-progress) + the spec `deferred:` → deferred-work.md FU import.
+    # Stages 1/2/5 below are the legacy create-story / dev-story /
+    # bmad-code-review pipeline (plugin ≤ 0.1.39), kept for old in-flight
+    # stories and the test suite; stages 3/4 are shared by both pipelines
+    # (external codex review + fix round).
+    "build-sync": {
+        "story_md":         True,
+        "story_json":       [".codex-skipped.json", ".codex-skipped.resolved.json"],
+        "story_codex":      False,
+        "global_files":     ["sprint-status.yaml", "deferred-work.md"],
+        "epic_retro":       False,
+        "project_code":     False,
+        "commit_msg":       "story({key}): sync sprint status & deferred ledger",
+        "skip_if_empty":    True,
+        "validate_dev":     False,
+        "validate_review":  False,
+        "suggest_tag":      "harness/{key}/done",
+    },
     "1": {
         "story_md":         True,
         "story_json":       [],
@@ -1120,7 +1154,16 @@ def _sync_sprint_status_for_stage(stage, key, epic):
     """
     sync_script = str(Path(__file__).resolve().parent / "sprint-status.py")
     transitions = []
-    if stage == "2":
+    # build-sync: story → done; its epic is lifted backlog → in-progress (the
+    # same lift bmad-build's sync-sprint-status.md performs). The epic lift is
+    # conditional, so it is tracked separately from the unconditional sets.
+    conditional = []
+    if stage == "build-sync":
+        transitions.append((key, "done"))
+        ek = harness_spec.epic_of_key(key)
+        if ek:
+            conditional.append((f"epic-{ek}", "backlog", "in-progress"))
+    elif stage == "2":
         transitions.append((key, "review"))
     elif stage == "5":
         transitions.append((key, "done"))
@@ -1166,6 +1209,11 @@ def _sync_sprint_status_for_stage(stage, key, epic):
         if current == new_status:
             continue  # idempotent — already at target
         to_set.append((k, new_status))
+    for k, only_from, new_status in conditional:
+        r = subprocess.run([sys.executable, sync_script, "status", k],
+                           capture_output=True, text=True, check=False)
+        if r.returncode == 0 and r.stdout.strip() == only_from:
+            to_set.append((k, new_status))
 
     for k, new_status in to_set:
         r = subprocess.run([sys.executable, sync_script, "set", k, new_status],
@@ -2092,7 +2140,7 @@ def read_cross_story_allowlist(key):
       already allowed by default — listing redundantly is a smell).
     Invalid entries are silently dropped (the field is best-effort).
     """
-    path = f"{ARTIFACTS_DIR}{key}.md"
+    path = harness_spec.story_md_path(key, ARTIFACTS_DIR)
     if not os.path.exists(path):
         return set()
     allowed = set()
@@ -2127,7 +2175,7 @@ def read_cross_story_allowlist(key):
                         continue
                     if not val.endswith(".md"):
                         continue
-                    if val == f"{key}.md" or val.startswith(f"{key}."):
+                    if harness_spec.is_story_owned_artifact(val, key):
                         continue
                     allowed.add(val)
                 else:
@@ -2242,7 +2290,7 @@ def _resolve_spec_md_path(key, epic, stage):
         if not candidates:
             return None
         return f"{ARTIFACTS_DIR}{candidates[0]}"
-    path = f"{ARTIFACTS_DIR}{key}.md"
+    path = harness_spec.story_md_path(key, ARTIFACTS_DIR)
     return path if os.path.exists(path) else None
 
 
@@ -2351,7 +2399,9 @@ def cross_story_ok(path, key, epic, cross_story_allowlist=None, chore_retro=Fals
     if not m:
         return True  # non-artifact paths aren't subject to this rule
     fname = m.group(1)
-    if fname == f"{key}.md" or fname.startswith(f"{key}."):
+    # <key>.md / <key>.* / spec-<key>[-n].md / epic-<N>-context.md (bmad-build
+    # compiles the epic context cache while building this story's spec).
+    if harness_spec.is_story_owned_artifact(fname, key):
         return True
     if fname in ("sprint-status.yaml", "deferred-work.md"):
         return True
@@ -2369,7 +2419,7 @@ def is_expected_artifact(path, key, epic, spec, cross_story_allowlist=None):
     if not m:
         return False
     fname = m.group(1)
-    if spec["story_md"] and fname == f"{key}.md":
+    if spec["story_md"] and (fname == f"{key}.md" or harness_spec.is_story_spec_name(fname, key)):
         return True
     for suf in spec["story_json"]:
         if fname == f"{key}{suf}":
@@ -2484,12 +2534,183 @@ def emit(line):
     print(line)
 
 
+def _today_iso():
+    import datetime
+    return datetime.date.today().isoformat()
+
+
+def read_retro_verdict(epic):
+    """`verdict` from the latest epic-<epic>-retro-*.md frontmatter.
+
+    BMad 6.12 bmad-retrospective records accepted / accepted-with-open-items /
+    rejected there and deliberately NOT in sprint-status (the retro key reads
+    `done` whichever way the verdict went). Returns "missing" when the retro
+    has no machine-readable verdict (older retro format)."""
+    md = _find_latest_retro_md(epic)
+    if not md:
+        return "missing"
+    v = harness_spec.parse_frontmatter(md).get("verdict")
+    v = str(v).strip().lower() if v is not None else ""
+    return v if v in ("accepted", "accepted-with-open-items", "rejected") else "missing"
+
+
+def _emit_retro_verdict(epic):
+    """RETRO_VERDICT= plus EPIC_WONT_DO= (stories the project dropped on
+    purpose). Upstream bmad-retrospective counts every non-`done` story as
+    pending and forces the machine verdict to `rejected`, so a `wont-do` story
+    alone produces `rejected` — run.md's verdict gate uses EPIC_WONT_DO to tell
+    that apart. Emitted on 6 (ok) and 6-done (ok or skip) so a resumed run
+    that only reaches 6-done still gets the gate input."""
+    emit(f"RETRO_VERDICT={read_retro_verdict(epic)}")
+    sync_script = str(Path(__file__).resolve().parent / "sprint-status.py")
+    r = subprocess.run([sys.executable, sync_script, "epic-stories", str(epic)],
+                       capture_output=True, text=True, check=False)
+    wont = [ln.split("\t")[0] for ln in r.stdout.splitlines()
+            if ln.endswith("\twont-do")] if r.returncode == 0 else []
+    emit("EPIC_WONT_DO=" + (",".join(wont) if wont else "none"))
+
+
+def _range_paths(base, head="HEAD"):
+    """[(status, path)] for `git diff --name-status -z base..head` (renames → both paths)."""
+    r = run(["git", "diff", "--name-status", "-z", "--no-renames", f"{base}..{head}"])
+    if r.returncode != 0:
+        return None, r.stderr.strip()
+    fields = r.stdout.split("\0")
+    out = []
+    i = 0
+    while i + 1 < len(fields):
+        st, p = fields[i], fields[i + 1]
+        if st:
+            out.append((st, p))
+        i += 2
+    return out, None
+
+
+def run_build_verify(key, base=None):
+    """Post-hoc audit of a bmad-build-auto run (no staging, no commit).
+
+    bmad-build-auto commits its own work, so the §-1.d gates move from
+    "before git add" to "after the fact over base..HEAD":
+      1. worktree must be clean (build-auto's Finalize guarantees it; dirty =
+         the run died mid-way or spilled files)
+      2. the story spec exists, frontmatter status == done, `## Auto Run Result`
+         present (blocked / unfinished runs halt with the recorded reason)
+      3. every path changed in base..HEAD passes the blacklist, the
+         out-of-scope _bmad-output guard (spec `planning_artifacts:` honored)
+         and cross-story isolation (spec `cross_story_artifacts:` honored)
+    Emits SPEC_FILE= / SPEC_STATUS= / BASELINE_REVISION= / FOLLOWUP_RECOMMENDED=
+    / DEFERRED_COUNT= / CODEX_LAYER_SKIPPED= info lines. Exit 0 ok, 1 halt.
+    A halt here never touches git — the commits already exist; undoing them is
+    the user's call (`git reset --hard harness/<key>/start`)."""
+    spec_path = harness_spec.story_md_path(key, ARTIFACTS_DIR)
+    if base is None:
+        base_tag = f"harness/{key}/start"
+        r = run(["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{base_tag}"])
+        if r.returncode != 0:
+            emit("STATUS=halt")
+            emit(f"REASON=build-verify needs a base: tag {base_tag} missing and --base not given")
+            return 1
+        base = r.stdout.strip()
+
+    halts = []
+    infos = []
+
+    paths, err = porcelain_paths()
+    if paths is None:
+        emit("STATUS=halt")
+        emit(f"REASON=git status failed: {err}")
+        return 1
+    paths = filter_junk_paths(paths, dry_run=True)
+    result_files = set()
+    for _xy, p in paths:
+        if os.path.basename(p).startswith("bmad-build-auto-result-"):
+            result_files.add(p)
+        else:
+            halts.append(f"DIRTY_WORKTREE={p}")
+
+    if not os.path.exists(spec_path):
+        halts.append(f"SPEC_MISSING={spec_path}")
+        status = None
+    else:
+        fm = harness_spec.parse_frontmatter(spec_path)
+        status = str(fm.get("status") or "").strip().lower() or None
+        infos.append(f"SPEC_FILE={spec_path}")
+        infos.append(f"SPEC_STATUS={status}")
+        if fm.get("baseline_revision"):
+            infos.append(f"BASELINE_REVISION={fm.get('baseline_revision')}")
+        infos.append("FOLLOWUP_RECOMMENDED=" + ("true" if fm.get("followup_review_recommended") is True else "false"))
+        deferred = fm.get("deferred") or []
+        infos.append(f"DEFERRED_COUNT={len(deferred) if isinstance(deferred, list) else 0}")
+        infos.append("CODEX_LAYER_SKIPPED=" + ("true" if harness_spec.codex_layer_skipped(spec_path) else "false"))
+        if status != "done":
+            halts.append(f"SPEC_STATUS_NOT_DONE={status}")
+            arr = harness_spec.section_text(spec_path, "Auto Run Result")
+            if arr:
+                for ln in arr.strip().splitlines()[:6]:
+                    if ln.strip():
+                        halts.append(f"AUTO_RUN_RESULT={ln.strip()}")
+        elif harness_spec.section_text(spec_path, "Auto Run Result") is None:
+            halts.append("AUTO_RUN_RESULT_MISSING=spec has no `## Auto Run Result` section")
+
+    changed, err = _range_paths(base)
+    if changed is None:
+        emit("STATUS=halt")
+        emit(f"REASON=git diff {base}..HEAD failed: {err}")
+        return 1
+    # A done spec whose range touches nothing outside the artifacts dir means
+    # nothing was implemented (the spec itself is always in the range, so an
+    # "empty range" check could never fire).
+    if status == "done" and not any(not p.startswith(ARTIFACTS_DIR) for _st, p in changed):
+        halts.append(f"NO_CODE_CHANGE=only {ARTIFACTS_DIR} files changed in {base[:12]}..HEAD")
+    for _st, p in changed:
+        if os.path.basename(p).startswith("bmad-build-auto-result-"):
+            result_files.add(p)
+    # bmad-build-auto HALTed before it knew the spec path: surface its result
+    # file instead of a bare SPEC_MISSING (see harness_spec.build_auto_result_files).
+    for p in sorted(result_files):
+        halts.append(f"BUILD_AUTO_RESULT={p}")
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                for ln in f:
+                    if re.match(r"^\s*(Status|Blocking condition)\s*:", ln):
+                        halts.append(f"AUTO_RUN_RESULT={ln.strip()}")
+        except OSError:
+            pass
+
+    planning_allowlist = read_planning_artifacts_allowlist(key, None, "build-verify")
+    cross_allowlist = read_cross_story_allowlist(key)
+    for st, p in changed:
+        if p in result_files:
+            continue  # reported above as BUILD_AUTO_RESULT=
+        pat = matches_blacklist(p)
+        if pat:
+            halts.append(f"BLACKLIST={p} ({pat})")
+            continue
+        if is_out_of_scope_bmad_output(p) and p not in planning_allowlist:
+            halts.append(f"OUT_OF_SCOPE_BMAD={p}")
+            continue
+        if not cross_story_ok(p, key, harness_spec.epic_of_key(key), cross_allowlist):
+            halts.append(f"CROSS_STORY={p}")
+
+    emit("STATUS=halt" if halts else "STATUS=ok")
+    emit("REASON=" + ("build-verify found violations — commits already exist; the user decides (see §3 halt template)"
+                      if halts else f"build verified ({len(changed)} paths in {base[:12]}..HEAD)"))
+    for ln in infos:
+        emit(ln)
+    for ln in halts:
+        emit(ln)
+    emit(f"RANGE={base}..{run(['git', 'rev-parse', 'HEAD']).stdout.strip()}")
+    return 1 if halts else 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sprint pipeline commit helper")
-    parser.add_argument("stage", choices=list(STAGES.keys()))
+    parser.add_argument("stage", choices=list(STAGES.keys()) + ["build-verify"])
     parser.add_argument("key", help="story key, e.g. 1-2-console-api-skeleton")
     parser.add_argument("--epic", default=None, help="epic number, required for stages 6 / 6-done")
     parser.add_argument("--dry-run", action="store_true", help="do everything except `git add`")
+    parser.add_argument("--base", default=None,
+                        help="build-verify only: audit range base (default: harness/<key>/start tag)")
     parser.add_argument(
         "--simulate-retro-md-with-d-items",
         action="store_true",
@@ -2503,9 +2724,11 @@ def main():
     )
     args = parser.parse_args()
 
-    spec = STAGES[args.stage]
     key = args.key
     epic = args.epic
+    if args.stage == "build-verify":
+        sys.exit(run_build_verify(key, args.base))
+    spec = STAGES[args.stage]
 
     # Self-contained simulation path (T1.2 verification fixture; bypasses git
     # + real sprint-status.yaml entirely). Synthesizes a retro md with D1..D5
@@ -2543,10 +2766,15 @@ def main():
     # as empty (skip_if_empty stages exit 2 as usual).
     paths = filter_junk_paths(paths, dry_run=args.dry_run)
 
-    if not paths:
+    # build-sync starts from the clean tree bmad-build-auto leaves behind — its
+    # changes are produced by the auto-sync step below, so the emptiness
+    # verdict is taken after that step instead (see "1.8").
+    if not paths and args.stage != "build-sync":
         if spec["skip_if_empty"]:
             emit("STATUS=skip")
             emit(f"REASON=no worktree changes for stage {args.stage}; skip commit (already covered by previous step)")
+            if args.stage == "6-done" and epic:
+                _emit_retro_verdict(epic)
             sys.exit(2)
         emit("STATUS=halt")
         emit(f"REASON=no worktree changes for stage {args.stage} but stage requires non-empty output")
@@ -2678,6 +2906,23 @@ def main():
                 emit(f"REASON=chore_spec auto-fill failed (stage 6-5): {e}")
                 sys.exit(1)
 
+        # build-sync: import spec frontmatter `deferred:` items as schema v1 FU
+        # bullets (bmad-build-auto never writes deferred-work.md itself).
+        if args.stage == "build-sync":
+            spec_md = harness_spec.story_md_path(key, ARTIFACTS_DIR)
+            if os.path.exists(spec_md):
+                try:
+                    imported = harness_spec.import_spec_deferred(
+                        key, spec_md, f"{ARTIFACTS_DIR}deferred-work.md",
+                        _today_iso(),
+                    )
+                    for fid in imported:
+                        auto_sync_log.append(("import-deferred", fid, "pending"))
+                except RuntimeError as e:
+                    emit("STATUS=halt")
+                    emit(f"REASON=deferred import failed (build-sync): {e}")
+                    sys.exit(1)
+
         # Re-fetch porcelain to reflect sprint-status.yaml mutations
         if auto_sync_log:
             paths, err = porcelain_paths()
@@ -2686,6 +2931,15 @@ def main():
                 emit(f"REASON=git status failed after auto-sync: {err}")
                 sys.exit(1)
             paths = filter_junk_paths(paths, dry_run=args.dry_run)
+
+    # 1.8 — post-sync emptiness check for build-sync (nothing to sync: story
+    # already done and no new deferred items). The done tag is still due.
+    if not paths:
+        emit("STATUS=skip")
+        emit(f"REASON=no changes after auto-sync for stage {args.stage}; skip commit")
+        if spec["suggest_tag"]:
+            emit("SUGGEST_TAG=" + spec["suggest_tag"].format(key=key, epic=epic or ""))
+        sys.exit(2)
 
     # 2 — global blacklist
     blacklist_hits = []
@@ -2964,6 +3218,8 @@ def main():
     if spec["suggest_tag"]:
         tag_name = spec["suggest_tag"].format(key=key, epic=epic or "")
         emit(f"SUGGEST_TAG={tag_name}")
+    if args.stage in ("6", "6-done") and epic:
+        _emit_retro_verdict(epic)
     if cached_stat:
         # Multi-line — prefix every line so caller can grep them out.
         for ln in cached_stat.splitlines():

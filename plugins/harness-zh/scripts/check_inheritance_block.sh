@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Epic first-story inheritance block check
 #
-# bmad-create-story finalize sub-step + pre-commit hook（针对 [5-6]-1-*.md）；
+# bmad-build-auto 规划自检（bmad-build-auto-suffix.md §6；旧版为 create-story finalize sub-step）；
 # 扫 spec 文件名抽 epic / story id；若 X-1-* 且 X > 1 → grep
 # `^## 继承自前序 Epic patterns$` 锚 + 5 行 sub-bullet 行 + 含
 # `Epic {X-1} Story` 引用 + 至少一个 `sealed-patterns-epic-` 链接
@@ -38,6 +38,7 @@ fi
 
 # 从 spec 文件名抽 epic / story（如 4-1-rule-engine.md → epic=4 story=1）
 basename="$(basename "$SPEC" .md)"
+basename="${basename#spec-}"   # bmad-build(-auto) spec-<key>.md layout (v0.2.0)
 if [[ "$basename" =~ ^([0-9]+)-([0-9]+)- ]]; then
     epic="${BASH_REMATCH[1]}"
     story="${BASH_REMATCH[2]}"
@@ -62,7 +63,7 @@ prev_epic=$((epic - 1))
 # 检查 H2 锚
 if ! grep -qE '^## 继承自前序 Epic patterns[[:space:]]*$' "$SPEC"; then
     echo "FAIL: $SPEC 是 Epic $epic 第一个 story（X-1-* 触发），必须含 \`## 继承自前序 Epic patterns\` H2 段" >&2
-    echo "      参考 chore-retro-c3-C7 spec + .claude/harness/prompt-suffixes/bmad-create-story-suffix.md 模板" >&2
+    echo "      参考 chore-retro-c3-C7 spec + .claude/harness/prompt-suffixes/bmad-build-auto-suffix.md §6 模板" >&2
     exit 1
 fi
 

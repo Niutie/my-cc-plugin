@@ -6,6 +6,12 @@ Usage:
     # JSON state query (default mode):
     python3 .claude/harness/scripts/harness-state.py <story_key> [--json | --plain]
 
+    # Story spec path (spec-<key>.md for the build pipeline, <key>.md legacy):
+    python3 .claude/harness/scripts/harness-state.py <story_key> --story-md
+
+    # Stories started by the harness but not finished (start tag, no done tag):
+    python3 .claude/harness/scripts/harness-state.py --in-flight
+
     # Resume-prompt mode (post-quota-halt continuation):
     python3 .claude/harness/scripts/harness-state.py <story_key> --resume-prompt --stage <N>
 
@@ -34,8 +40,20 @@ Fields (JSON output):
                                 Use `git diff <stage2_base_sha>..HEAD` for stage 3 / stage 5 review.
     stage1_committed..5       — bool, has the canonical commit message for that stage landed?
     next_action               — human-readable suggestion, e.g. "dispatch stage 3: codex review"
-    next_action_code          — machine code: "stage1" / "stage2" / "stage3" / "stage4" / "stage5"
-                                / "done" / "tag-only" / "blocked-dirty" / "not-started"
+    next_action_code          — machine code.
+                                Build pipeline (v0.2.0+, BMad 6.11+ bmad-build-auto):
+                                  "build" / "build-verify" / "codex" / "codex-fix" /
+                                  "followup" / "followup-verify" / "sync" / "blocked"
+                                  ("blocked" also covers a bmad-build-auto-result-*.md
+                                  left by a HALT before any spec existed)
+                                Legacy pipeline (story started by plugin ≤ 0.1.39):
+                                  "legacy-stage1".."legacy-stage5"
+                                Shared: "done" / "tag-only" / "blocked-dirty" / "not-started"
+    pipeline                  — "build" | "legacy"
+    story_md_path             — resolved story spec path (see harness_spec.py)
+    spec_status               — build spec frontmatter status (null for legacy / missing)
+    codex_in_build            — bool, _bmad/custom/bmad-build-auto*.toml mounts a codex review layer
+    built_tag_exists / followup_tag_exists — build pipeline progress tags
 
 Exit code:
     0 — state read successfully (regardless of where in pipeline)
@@ -48,6 +66,9 @@ import json
 import os
 import subprocess
 import sys
+# Never drop __pycache__/ next to the deployed scripts: an untracked dir there
+# makes the worktree dirty, and bmad-build-auto refuses to start on a dirty tree.
+sys.dont_write_bytecode = True
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -56,6 +77,7 @@ from harness_config import (  # noqa: E402
     get_path_classifiers,
     get_verification_commands,
 )
+import harness_spec  # noqa: E402
 
 # Repo-relative artifacts dir as string (terminating slash for legacy regex prefix
 # checks; absolute path via get_artifacts_root() if needed).
@@ -65,6 +87,11 @@ def _compute_artifacts_dir_str() -> str:
     return str(rel) + "/"
 
 ARTIFACTS_DIR = _compute_artifacts_dir_str()
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _story_md(key):
+    return harness_spec.story_md_path(key, ARTIFACTS_DIR)
 
 # Canonical stage commit subjects (must stay in sync with STAGES.commit_msg in harness-commit.py).
 STAGE_SUBJECTS = {
@@ -73,6 +100,8 @@ STAGE_SUBJECTS = {
     "stage3_committed": "story({key}): codex adversarial review report",
     "stage4_committed": "story({key}): apply codex review fixes",
     "stage5_committed": "story({key}): final review fixes & done",
+    # build pipeline: the one harness-owned commit per story (harness-commit.py build-sync)
+    "sync_committed":   "story({key}): sync sprint status & deferred ledger",
 }
 
 
@@ -183,56 +212,110 @@ def compute_state(key, porcelain_result=None):
     r = porcelain_result if porcelain_result is not None else run(["git", "status", "--porcelain"])
     state["worktree_clean"] = (r.returncode == 0) and (r.stdout.strip() == "")
 
-    # Decide next action (highest-stage-completed wins)
+    md_path = _story_md(key)
+    md_name = os.path.basename(md_path)
+    state["story_md_path"] = md_path
+    is_build_spec = md_name.startswith("spec-")
+    state["spec_status"] = harness_spec.spec_status(md_path) if (is_build_spec and os.path.exists(md_path)) else None
+    state["pipeline"] = "legacy" if (state["stage1_committed"] and not is_build_spec) else "build"
+    state["built_tag_exists"] = tag_exists(f"harness/{key}/built")
+    state["followup_tag_exists"] = tag_exists(f"harness/{key}/followup")
+    # set right before B3 is dispatched (a tag, so it never dirties the tree):
+    # lets a resume tell "follow-up never started" from "follow-up ran, verify
+    # pending" — without it a crash between B3 and its verify re-ran B3.
+    state["followup_start_sha"] = tag_sha(f"harness/{key}/followup-start") if tag_exists(f"harness/{key}/followup-start") else None
+    state["head_sha"] = (run(["git", "rev-parse", "HEAD"]).stdout or "").strip() or None
+    state["build_auto_result_files"] = harness_spec.build_auto_result_files(ARTIFACTS_DIR)
+    state["codex_layer_skipped"] = bool(is_build_spec and os.path.exists(md_path) and harness_spec.codex_layer_skipped(md_path))
+    top = run(["git", "rev-parse", "--show-toplevel"])
+    project_root = top.stdout.strip() if top.returncode == 0 and top.stdout.strip() else str(_REPO_ROOT)
+    state["codex_in_build"] = bool(harness_spec.build_auto_codex_layer_ids(project_root))
+    marker = f"{ARTIFACTS_DIR}{key}.codex-skipped.json"
+    resolved_marker = f"{ARTIFACTS_DIR}{key}.codex-skipped.resolved.json"
+    state["codex_skipped_marker"] = os.path.exists(marker) or os.path.exists(resolved_marker)
+
     if state["done_tag_exists"]:
         next_action_code = "done"
         next_action = f"story {key} already complete; harness/{key}/done tag set"
-    elif state["stage5_committed"]:
-        next_action_code = "tag-only"
-        next_action = f"stage 5 committed but harness/{key}/done tag missing — run `git tag harness/{key}/done`"
-    elif state["stage4_committed"]:
-        if state["worktree_clean"]:
-            next_action_code = "stage5"
-            next_action = "dispatch stage 5: bmad final adversarial review (spawn general-purpose agent)"
-        else:
-            next_action_code = "blocked-dirty"
-            next_action = "stage 5 review work in progress (worktree not clean); verify review-findings.json + commit via harness-commit.py 5"
-    elif state["stage3_committed"]:
-        if state["worktree_clean"]:
-            next_action_code = "stage4"
-            next_action = "dispatch stage 4: spawn FRESH general-purpose dev agent to handle codex findings (do not rely on stage-2 dev agentId — it is session-scoped and may be unreachable)"
-        else:
-            next_action_code = "blocked-dirty"
-            next_action = "stage 4 dev fix in progress (worktree not clean); commit via harness-commit.py 4 once handling rows are written"
-    elif state["stage2_committed"]:
-        if state["worktree_clean"]:
-            next_action_code = "stage3"
-            next_action = f"dispatch stage 3: codex adversarial review (use --base {stage2_base or '<stage2_base_sha missing>'})"
-        else:
-            next_action_code = "blocked-dirty"
-            next_action = "stage 3 codex review report in progress (worktree not clean); commit via harness-commit.py 3 once codex-review.md is written"
-    elif state["stage1_committed"]:
-        if state["worktree_clean"]:
-            next_action_code = "stage2"
-            next_action = "dispatch stage 2: dev implementation (write dev-result.json with tri-state checks per harness-changelog 2026-05-01 §C)"
-        else:
-            next_action_code = "blocked-dirty"
-            next_action = "stage 2 dev work in progress (worktree not clean); validate dev-result.json + commit via harness-commit.py 2"
-    elif state["start_tag_exists"]:
-        next_action_code = "stage1"
-        next_action = "dispatch stage 1: create story spec via /bmad-create-story"
+    elif state["pipeline"] == "legacy":
+        next_action_code, next_action = _legacy_next_action(state, key, stage2_base)
     else:
-        next_action_code = "not-started"
-        next_action = f"story {key} not started — verify it is in sprint-status.yaml backlog, then `git tag harness/{key}/start` and dispatch stage 1"
-
+        next_action_code, next_action = _build_next_action(state, key, md_path)
     state["next_action_code"] = next_action_code
     state["next_action"] = next_action
     return state
 
 
+def _build_next_action(state, key, md_path):
+    """Next step for the BMad 6.11+ build pipeline (run.md §1 B1-B5)."""
+    st = state["spec_status"]
+    if state["sync_committed"]:
+        return "tag-only", f"build-sync committed but harness/{key}/done tag missing — run `git tag harness/{key}/done`"
+    if not state["start_tag_exists"]:
+        return "not-started", (f"story {key} not started — verify it is backlog in sprint-status.yaml, "
+                               f"then `git tag harness/{key}/start` and dispatch B1 build")
+    if not state["built_tag_exists"]:
+        if st is None and state["build_auto_result_files"]:
+            return "blocked", ("bmad-build-auto HALTed before it created a spec — read "
+                               + ", ".join(state["build_auto_result_files"]) + " (Status / Blocking condition); solo-dev decides")
+        if st == "blocked":
+            return "blocked", f"bmad-build-auto HALTed blocked — read `## Auto Run Result` in {md_path}; solo-dev decides"
+        if st == "done":
+            return "build-verify", f"build finished (spec status done) — run `harness-commit.py build-verify {key}`, then tag harness/{key}/built"
+        if st in ("draft", "ready-for-dev", "in-progress", "in-review"):
+            return "build", f"resume B1: dispatch bmad-build-auto on the existing spec {md_path} (status {st} — it resumes from its own step)"
+        return "build", "dispatch B1: bmad-build-auto for this story (fresh run)"
+    codex_needed = not state["codex_in_build"] and not state["codex_skipped_marker"]
+    if codex_needed and not state["stage3_committed"]:
+        if not state["worktree_clean"]:
+            return "blocked-dirty", "B2 codex review report in progress (worktree not clean); commit via harness-commit.py 3 once codex-review.md is written"
+        return "codex", "dispatch B2: external codex adversarial review (codex is not mounted inside bmad-build-auto)"
+    if state["stage3_committed"] and not state["stage4_committed"]:
+        if not state["worktree_clean"]:
+            return "blocked-dirty", "B2 codex fix round in progress (worktree not clean); commit via harness-commit.py 4 once handling rows are written"
+        return "codex-fix", "dispatch B2 fix: fresh dev agent handles codex findings"
+    followup_recommended = False
+    if os.path.exists(md_path):
+        followup_recommended = harness_spec.parse_frontmatter(md_path).get("followup_review_recommended") is True
+    if (state["stage4_committed"] or followup_recommended) and not state["followup_tag_exists"]:
+        fs = state["followup_start_sha"]
+        if fs and state["spec_status"] == "done" and state["head_sha"] and state["head_sha"] != fs:
+            return "followup-verify", (f"B3 follow-up pass already ran (HEAD moved past harness/{key}/followup-start) — "
+                                       f"run `harness-commit.py build-verify {key}`, then tag harness/{key}/followup; do NOT dispatch B3 again")
+        if fs and state["spec_status"] == "done" and not state["worktree_clean"]:
+            return "blocked-dirty", "follow-up review left a dirty worktree — inspect before re-running build-verify"
+        if fs:
+            return "followup", (f"resume B3: harness/{key}/followup-start exists, spec status {state['spec_status']} — "
+                                "dispatch bmad-build-auto on the spec again (it resumes from its own status); do not re-tag followup-start")
+        return "followup", f"dispatch B3: `git tag harness/{key}/followup-start`, then bmad-build-auto follow-up review pass on the done spec, then build-verify + tag harness/{key}/followup"
+    return "sync", f"run `harness-commit.py build-sync {key}`, commit, then tag harness/{key}/done"
+
+
+def _legacy_next_action(state, key, stage2_base):
+    """Story started by the legacy create-story/dev-story pipeline (plugin ≤ 0.1.39).
+
+    bmad-create-story / bmad-dev-story are gone in BMad 6.11+ (shims only with
+    installShims), so stages 1/2 cannot be resumed; stages 3/4/5 still can
+    (codex + freelance fix + bmad-code-review are all still installed)."""
+    if state["stage5_committed"]:
+        return "tag-only", f"stage 5 committed but harness/{key}/done tag missing — run `git tag harness/{key}/done`"
+    if state["stage4_committed"]:
+        return ("legacy-stage5", "legacy story: dispatch bmad-code-review final review (see run.md §1.L)") if state["worktree_clean"] \
+            else ("blocked-dirty", "legacy stage 5 review in progress (worktree not clean); verify review-findings.json + commit via harness-commit.py 5")
+    if state["stage3_committed"]:
+        return ("legacy-stage4", "legacy story: dispatch codex fix round (run.md §1 B2 fix prompt applies unchanged)") if state["worktree_clean"] \
+            else ("blocked-dirty", "legacy stage 4 dev fix in progress (worktree not clean); commit via harness-commit.py 4 once handling rows are written")
+    if state["stage2_committed"]:
+        return ("legacy-stage3", f"legacy story: dispatch codex adversarial review (--base {stage2_base or '<stage2_base_sha missing>'})") if state["worktree_clean"] \
+            else ("blocked-dirty", "legacy stage 3 codex review in progress (worktree not clean); commit via harness-commit.py 3")
+    return ("legacy-stage2", "legacy story stuck before dev: bmad-dev-story no longer exists in BMad 6.11+ — "
+                             "reset to harness/{key}/start and re-run the story through the build pipeline".replace("{key}", key))
+
+
 def format_plain(state):
     lines = [
         f"story_key:               {state['key']}",
+        f"codex_layer_skipped:     {state.get('codex_layer_skipped')}",
         f"story_status:            {state['story_status']}",
         f"worktree_clean:          {state['worktree_clean']}",
         "",
@@ -246,6 +329,14 @@ def format_plain(state):
         f"stage 3 committed:       {state['stage3_committed']}",
         f"stage 4 committed:       {state['stage4_committed']}",
         f"stage 5 committed:       {state['stage5_committed']}",
+        "",
+        f"pipeline:                {state.get('pipeline')}",
+        f"story_md_path:           {state.get('story_md_path')}",
+        f"spec_status:             {state.get('spec_status')}",
+        f"codex_in_build:          {state.get('codex_in_build')}",
+        f"tag harness/.../built:        {state.get('built_tag_exists')}",
+        f"tag harness/.../followup:     {state.get('followup_tag_exists')}",
+        f"build-sync committed:    {state.get('sync_committed')}",
         "",
         f"next_action_code:        {state['next_action_code']}",
         f"next_action:             {state['next_action']}",
@@ -358,7 +449,7 @@ def count_story_tasks(key):
     `## Tasks` (or `## Tasks / Subtasks`) heading and its `### Phase N` subheadings;
     exits the Tasks block when a non-Phase `## ` heading or `# ` heading appears.
     """
-    path = f"{ARTIFACTS_DIR}{key}.md"
+    path = _story_md(key)
     if not os.path.exists(path):
         return (0, 0, 0)
     done = 0
@@ -412,7 +503,7 @@ def count_codex_findings(key):
 
 def count_codex_handling_rows(key):
     """Count `- [F-N <sev>]` rows under `### Codex Review Handling` section in story md."""
-    path = f"{ARTIFACTS_DIR}{key}.md"
+    path = _story_md(key)
     if not os.path.exists(path):
         return 0
     in_section = False
@@ -463,7 +554,7 @@ def parse_review_progress(key):
 
 
 def has_section(key, section_title_substring):
-    path = f"{ARTIFACTS_DIR}{key}.md"
+    path = _story_md(key)
     if not os.path.exists(path):
         return False
     try:
@@ -755,7 +846,7 @@ def emit_resume_prompt(key, stage):
 #                   (otherwise stage hasn't finished — Status diff is normal).
 HALT_RECOVERY_SPECS = {
     "1": {
-        "stage_marker": [("{ARTIFACTS_DIR}{key}.md", "story md")],
+        "stage_marker": [("{STORY_MD}", "story md")],
         "partial":  [],
         "expect_status": None,
     },
@@ -774,7 +865,7 @@ HALT_RECOVERY_SPECS = {
     "4": {
         # Stage 4 has no machine-readable marker file beyond story md edits.
         # Use story md presence + Status=review (still review at end of stage 4).
-        "stage_marker": [("{ARTIFACTS_DIR}{key}.md", "story md (Codex Review Handling 段)")],
+        "stage_marker": [("{STORY_MD}", "story md (Codex Review Handling 段)")],
         "partial":  [],
         "expect_status": "review",
     },
@@ -804,7 +895,7 @@ def emit_halt_recovery_check(key, stage):
     present_marker = []
     missing_marker = []
     for tpl, label in spec["stage_marker"]:
-        path = tpl.format(ARTIFACTS_DIR=ARTIFACTS_DIR, key=key)
+        path = tpl.format(ARTIFACTS_DIR=ARTIFACTS_DIR, key=key, STORY_MD=_story_md(key))
         if os.path.exists(path):
             present_marker.append((path, label))
         else:
@@ -812,7 +903,7 @@ def emit_halt_recovery_check(key, stage):
 
     present_partial = []
     for tpl, label in spec["partial"]:
-        path = tpl.format(ARTIFACTS_DIR=ARTIFACTS_DIR, key=key)
+        path = tpl.format(ARTIFACTS_DIR=ARTIFACTS_DIR, key=key, STORY_MD=_story_md(key))
         if os.path.exists(path):
             present_partial.append((path, label))
 
@@ -823,7 +914,7 @@ def emit_halt_recovery_check(key, stage):
     # while stage 5 hasn't started yet is the expected baseline).
     if spec["expect_status"] and not missing_marker:
         if actual_status is None:
-            consistency_issues.append(f"story md Status 行缺失（无法读 `{ARTIFACTS_DIR}{key}.md` Status 段）")
+            consistency_issues.append(f"story md Status 行缺失（无法读 `{_story_md(key)}` Status 段）")
         elif actual_status != spec["expect_status"]:
             consistency_issues.append(
                 f"story md Status='{actual_status}' 但 stage {stage_str} 期望 '{spec['expect_status']}'"
@@ -907,9 +998,13 @@ def _normalize_status_value(raw):
 
 def read_story_status_for_resume(key):
     """Lightweight Status reader (mirrors harness-commit.read_story_status without the import dance)."""
-    path = f"{ARTIFACTS_DIR}{key}.md"
+    path = _story_md(key)
     if not os.path.exists(path):
         return None
+    if os.path.basename(path).startswith("spec-"):
+        fm_status = harness_spec.spec_status(path)
+        if fm_status:
+            return fm_status
     try:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -924,9 +1019,34 @@ def read_story_status_for_resume(key):
     return None
 
 
+def list_in_flight():
+    """Story keys the harness started but did not finish, by start-tag creation
+    order. Replaces the old `find-by-status review` heuristic for --continue:
+    in BMad 6.11+ projects `review` also means "interactive bmad-build done,
+    awaiting merge", which has nothing to do with an interrupted harness run."""
+    r = run(["git", "for-each-ref", "--sort=creatordate", "--format=%(refname:strip=2)",
+             "refs/tags/harness/"])
+    if r.returncode != 0:
+        return []
+    refs = r.stdout.split()
+    done = {ref[len("harness/"):-len("/done")] for ref in refs if ref.endswith("/done")}
+    out = []
+    for ref in refs:
+        if ref.endswith("/start"):
+            k = ref[len("harness/"):-len("/start")]
+            if k in done or k in out:
+                continue
+            # finished or dropped outside the harness (manual close, wont-do):
+            # an abandoned start tag must not keep the story "in flight" forever
+            if read_sprint_status(k) in ("done", "wont-do"):
+                continue
+            out.append(k)
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="Single-source-of-truth state query for /harness-zh:run")
-    parser.add_argument("key", help="story key, e.g. 1-3-postgresql-baseline-schema")
+    parser.add_argument("key", nargs="?", help="story key, e.g. 1-3-postgresql-baseline-schema")
     fmt = parser.add_mutually_exclusive_group()
     fmt.add_argument("--json", action="store_const", dest="format", const="json", default="json")
     fmt.add_argument("--plain", action="store_const", dest="format", const="plain")
@@ -934,9 +1054,23 @@ def main():
                         help="emit a ready-to-paste fresh-spawn prompt fragment for stage continuation")
     parser.add_argument("--halt-recovery-check", action="store_true",
                         help="(chore-harness-epic-4-orchestration-observations T4) emit halt-recovery verdict (READY_TO_COMMIT / NEED_RESUME / INCONSISTENT)")
+    parser.add_argument("--story-md", action="store_true",
+                        help="print the resolved story spec path (spec-<key>.md, legacy <key>.md) and exit")
+    parser.add_argument("--in-flight", action="store_true",
+                        help="list story keys with harness/<key>/start but no harness/<key>/done tag (oldest first)")
     parser.add_argument("--stage", type=int, choices=[1, 2, 3, 4, 5, 6],
                         help="(with --resume-prompt or --halt-recovery-check) which stage to inspect")
     args = parser.parse_args()
+
+    if args.in_flight:
+        for k in list_in_flight():
+            print(k)
+        return
+    if not args.key:
+        parser.error("story key is required (except with --in-flight)")
+    if args.story_md:
+        print(_story_md(args.key))
+        return
 
     if args.resume_prompt:
         if args.stage is None:

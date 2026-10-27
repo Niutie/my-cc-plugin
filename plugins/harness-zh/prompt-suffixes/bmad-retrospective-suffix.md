@@ -8,13 +8,19 @@
 > Form 1 书写、每条声明 `**Category**`，并先跑 §Pre-retro self-audit 脚本。
 > 本文件不靠 skill 自动加载——注入指令固化在 run.md 阶段 ⑥ 的 dispatch
 > prompt 模板里（§0.C retro-only 路径复用同一模板）。
+>
+> **BMad 6.12 起**（harness-zh 0.2.0）：bmad-retrospective 重写为证据驱动的
+> 5 个 Phase（Gather → Analyze → Team Discussion(opt-in) → Decide → Finalize），
+> 无人值守接口是 `-H <epic>`。它自带：retro 文档 frontmatter 的 `verdict`
+> （accepted / accepted-with-open-items / rejected）、Phase 5 用
+> `sprint_status.py update --add-action` 把 action items 写进 sprint-status 顶层
+> `action_items:` 列表。本文件的约定叠加在它之上，见下面 §7 原生账对齐。
 
 ---
 
 ## Pre-retro: 跑 self-audit 脚本
 
-retro skill 进入 Step 3 "Cross-reference with current epic execution" 之前
-先运行：
+retro skill 完成 Phase 1 Gather、进入 Phase 2 Analyze 之前先运行：
 
 ```bash
 bash .claude/harness/scripts/run_retro_self_audit.sh <prev_epic_num>
@@ -49,11 +55,11 @@ retro agent 在 paste 后必须为每行：
 
 ---
 
-## Action items markdown 格式契约（**覆盖上游 BMad SKILL §8 默认范式**）
+## Action items markdown 格式契约（**覆盖上游默认的自由写法**）
 
-> **背景**：上游 BMad retro skill (`bmm-skills/4-implementation/bmad-retrospective/SKILL.md`)
-> §8 默认输出 `**Process Improvements:**\n\n1. {{action_item}}\n   Owner: ...` —
-> bold category label + numbered list，**不出 H3 heading**。harness
+> **背景**：上游 BMad retro skill 的 retro 文档 Action items 段（6.12 起见
+> `references/retro-document.md`；更早版本是 SKILL §8 的编号列表范式）不规定
+> 条目形态，常见输出是 bold label + 编号列表，**不出 H3 heading**。harness
 > `_parse_retro_action_items` 与 stage ⑥.5 `process_retro_residue.sh` 都依赖
 > H3 + letter-prefix code 才能 seed `retro_action_items.epic-N-retro` 块。
 > 若 retro markdown 不按本契约写，stage 6 commit 会 **fail-loud halt**
@@ -148,9 +154,8 @@ hyphen `-` 任一；title 可省）。section heading 必须 `## ` 且 title 含
 
 ### 5. retro skill 起草 action items 时的写作流程
 
-retro skill 进入 SKILL §8 "Synthesize Action Items" 时，**忽略上游模板的
-`**Process Improvements:**\n\n1. {{action_item}}` 输出范式**，按本契约 Form 1
-直接生成 H3 heading。对应 §五（中文）/ §6 Action Items（英文）section 内：
+retro skill 在 Phase 4 Decide 编 action items 时，按本契约 Form 1 直接生成
+H3 heading（不要用编号列表 / 表格）。对应 §五（中文）/ §6 Action Items（英文）section 内：
 
 1. 先按主题分组排序（process / tech-debt / test / doc / 自我约束 ...）——
    **仅用于组织条目顺序与措辞，不写进 `**Category**` 行**（机器只认
@@ -232,6 +237,36 @@ review / 合并多条共提 / 撤回都灵活）。
   文本含 "用 /harness-zh:report-issue 把要反馈的项目提为 issue"
 - 缺 category 字段 → stderr WARN（schema drift），按"不阻"保守处理（默认 harness）
 - 状态枚举仍兼容旧 `migrated-upstream`（v0.1.14-0.1.25 残余；视同 done，不阻不 WARN）
+
+---
+
+## §7 原生 action_items 对齐（BMad 6.12）
+
+BMad 6.12 的 retro 在 Phase 5 自己往 sprint-status 顶层 `action_items:` 追加条目；
+harness 的 `retro_action_items.epic-N-retro` 块由 stage ⑥ commit 从 retro md 解析
+生成。两本账靠 **id 对齐**，别让它们各说各话：
+
+1. Phase 5 调 `sprint_status.py update --add-action` 时，JSON 里**每个 Form 1 H3
+   条目一项**，并显式给 `id`：
+
+   ```json
+   [{"id": "epic-<EPIC>-retro-<CODE>", "action": "<H3 标题那句话>", "owner": "solo-dev"}]
+   ```
+
+   `<CODE>` 与 H3 heading 的 code 完全一致（如 `epic-12-retro-L3`）。不要让脚本
+   自动派生 id（派生的 `epic-N-retro-item-<n>-<slug>` 对不上 harness code）。
+   上游追加时**不去重**：调用前先用
+   `python3 .claude/harness/scripts/sprint-status.py action-status <id>` 逐个查，
+   退出码 0（已存在，典型是 retro 重跑）的那些从 JSON 里去掉，只追加缺的。
+2. 无人值守（`-H`）下**不要**传 `--set-action-status`（上游规则：前序 epic 条目的
+   状态迁移只记进文档的 Previous-retro follow-through 段）。harness 在 retro-fulfill
+   兑现 dev 项时会同步把对应原生条目翻 `done`。
+3. `uv` 不可用导致 `sprint_status.py` 跑不起来时：照上游规则**不要手改**
+   sprint-status.yaml，在返回报告里写明；harness stage ⑥ commit 会把
+   `epic-N-retrospective` 翻 done 并 seed `retro_action_items`，原生 `action_items`
+   这一次缺席。
+4. retro 文档 frontmatter 的 `verdict` 必须写（上游契约），harness stage ⑥ commit
+   会读出来（`RETRO_VERDICT=`），`rejected` 时主循环不进入下一个 epic。
 
 ---
 

@@ -99,9 +99,9 @@ check_A2() {
 }
 check_A3() {
     local hits
-    hits="$(grep -lE '可观测性反向验证|状态机边界|Self-review|self-review' "${ROOT}/.claude/harness/prompt-suffixes/bmad-dev-story-suffix.md" 2>/dev/null | wc -l | tr -d ' ')"
+    hits="$(grep -lE '可观测性反向验证|状态机边界|Self-review|self-review' "${ROOT}/.claude/harness/prompt-suffixes/bmad-build-implement-suffix.md" 2>/dev/null | wc -l | tr -d ' ')"
     if [ "$hits" -ge 1 ]; then
-        echo "| A3 | dev-story 5-question self-review gate | done | .claude/harness/prompt-suffixes/bmad-dev-story-suffix.md Standard checklists 段 |"
+        echo "| A3 | dev-story 5-question self-review gate | done | .claude/harness/prompt-suffixes/bmad-build-implement-suffix.md Standard checklists 段 |"
     else
         echo "| A3 | dev-story 5-question self-review gate | partial | via spec-pattern 未在 SKILL 集成 |"
     fi
@@ -138,9 +138,9 @@ check_A6() {
     fi
 }
 check_A7() {
-    local f="${ROOT}/.claude/harness/prompt-suffixes/bmad-dev-story-suffix.md"
+    local f="${ROOT}/.claude/harness/prompt-suffixes/bmad-build-implement-suffix.md"
     if [ -f "$f" ] && grep -qE 'Mech-verify dry-run' "$f"; then
-        echo "| A7 | spec mech-verify dry-run gate | done | bmad-dev-story-suffix.md Mech-verify 段 |"
+        echo "| A7 | spec mech-verify dry-run gate | done | bmad-build-implement-suffix.md Mech-verify 段 |"
     else
         echo "| A7 | spec mech-verify dry-run gate | partial | via spec-pattern 未在 SKILL 集成 |"
     fi
@@ -165,17 +165,20 @@ check_B1() {
     fi
 }
 check_B2() {
-    local f="${ROOT}/.claude/harness/prompt-suffixes/bmad-dev-story-suffix.md"
+    local f="${ROOT}/.claude/harness/prompt-suffixes/bmad-build-implement-suffix.md"
     if [ -f "$f" ] && grep -qE 'Self-review.*5-question' "$f"; then
-        echo "| B2 | self-review 5q gate workflow 集成 | done | bmad-dev-story-suffix.md |"
+        echo "| B2 | self-review 5q gate workflow 集成 | done | bmad-build-implement-suffix.md |"
     else
         echo "| B2 | self-review 5q gate workflow 集成 | partial | via spec-pattern |"
     fi
 }
 check_B3() {
-    local f="${ROOT}/_bmad/customize/bmad-create-story.toml"
-    if [ -f "$f" ] && grep -qE 'mech-verify dry-run|Mech-verify dry-run' "$f"; then
-        echo "| B3 | mech-verify dry-run gate workflow 集成 | done | bmad-create-story.toml |"
+    # v0.2.0: mech-verify 清单经 bmad-build-auto-suffix.md §2 挂进 spec
+    # frontmatter `context:`（旧版查的 _bmad/customize/bmad-create-story.toml
+    # 目录名本就不对——BMad 的覆盖目录是 _bmad/custom/——从未命中过）。
+    local f="${ROOT}/.claude/harness/prompt-suffixes/bmad-build-auto-suffix.md"
+    if [ -f "$f" ] && grep -q 'bmad-build-implement-suffix.md' "$f"; then
+        echo "| B3 | mech-verify dry-run gate workflow 集成 | done | bmad-build-auto-suffix.md §2 context 挂载 |"
     else
         echo "| B3 | mech-verify dry-run gate workflow 集成 | partial | via spec-pattern |"
     fi
@@ -192,9 +195,9 @@ check_B4() {
 check_B5() {
     local f="${ROOT}/.claude/harness/scripts/grep_pending_deferred_for_story.sh"
     if [ -x "$f" ]; then
-        echo "| B5 | bmad-create-story deferred-work auto-import | done | $f executable |"
+        echo "| B5 | build 规划阶段 deferred-work auto-import | done | $f executable |"
     else
-        echo "| B5 | bmad-create-story deferred-work auto-import | pending | $f missing |"
+        echo "| B5 | build 规划阶段 deferred-work auto-import | pending | $f missing |"
     fi
 }
 check_B6() {
@@ -248,9 +251,9 @@ check_C2() {
     fi
 }
 check_C3() {
-    local f="${ROOT}/.claude/harness/prompt-suffixes/bmad-dev-story-suffix.md"
+    local f="${ROOT}/.claude/harness/prompt-suffixes/bmad-build-implement-suffix.md"
     if [ -f "$f" ] && grep -qE 'Q6.*全栈贯通' "$f"; then
-        echo "| C3 | bmad-dev-story Q6 全栈贯通 review | done | bmad-dev-story-suffix.md Q6 段 |"
+        echo "| C3 | bmad-dev-story Q6 全栈贯通 review | done | bmad-build-implement-suffix.md Q6 段 |"
     else
         echo "| C3 | bmad-dev-story Q6 全栈贯通 review | pending | Q6 未集成 |"
     fi

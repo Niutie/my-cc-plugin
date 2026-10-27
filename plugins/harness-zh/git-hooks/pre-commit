@@ -1,7 +1,8 @@
 #!/bin/bash
 # Harness pre-commit hook
 #
-# 单 gate：retro action items checker — staged diff 含 [4-6]-*.md 新建时触发
+# Gate ①：retro action items checker — staged diff 新建任一 story spec 时触发
+#         （`<N>-<M>-*.md` 旧布局 / `spec-<N>-<M>-*.md` bmad-build 布局，任意 epic）
 #
 # 其它 commit 一概放行（包括 C2-C9 自身、Epic 1-3 改动、文档、tests、删除
 # 老 4-x-*.md 等清理操作）。
@@ -26,11 +27,16 @@
 # v1.5 (2026-05-05)：retro automation B 方案 — checker 按 category 分流，
 # gate ① 只阻 dev 类 pending；harness 类仅 stderr WARN（不 block）。详
 # .claude/harness/architecture.md §六 Q4 决策段。
+# v0.2.0 (2026-10-27)：触发不再写死 epic 4-6（模板项目遗留，epic ≥ 7 的项目里
+# gate ① 从没触发过），改为任意 epic 的新 story spec；文件名带第二个 `.`
+# 的 sidecar（`<KEY>.codex-review.md` 等）不触发。bmad-build-auto 自己 commit，
+# 本 hook 拦下它的 commit 会让它 HALT「finalization left repository dirty」——
+# /harness-zh:run §0.A.0 因此在 dispatch 前就把待兑现 dev 项清零或 halt。
 
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-RETRO_TRIGGER='_bmad-output/implementation-artifacts/[4-6]-.*\.md$'
+RETRO_TRIGGER='_bmad-output/implementation-artifacts/(spec-)?[0-9]+-[0-9]+[a-z]?-[^/.]*\.md$'
 RETRO_CHECKER=".claude/harness/scripts/check_retro_action_items.sh"
 DEFERRED_WORK_PATH="_bmad-output/implementation-artifacts/deferred-work.md"
 SCHEMA_LIB="$REPO_ROOT/.claude/harness/scripts/deferred_work_schema_lib.sh"
@@ -68,7 +74,7 @@ if echo "$ADDED_PATHS" | grep -qE "$RETRO_TRIGGER"; then
     if ! bash "$RETRO_CHECKER"; then
         cat >&2 <<'EOF'
 
-ERROR: 仍有未兑现 dev 类 retro action items；不能创建新 epic 4-6 story spec
+ERROR: 仍有未兑现 dev 类 retro action items；不能创建新的 story spec
 ─────────────────────────────────────────────────────
 注：仅 category: dev 的 pending/in-progress 项阻断本 gate；harness 类
     （流程脚本 / hook / skill / template / convention 等）显示为 WARN
@@ -130,7 +136,7 @@ if $GIT diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
         LEGACY_INLINE_RE_LOCAL="$DWSL_LEGACY_INLINE_RE"
     else
         HEAD_FULL_RE_LOCAL='^- \*\*FU-[A-Za-z0-9._\-]+\*\* `\[status:[a-z\-]+\]` `\[bucket:[a-zA-Z0-9.+\-]+\]` `\[target:[^]`]*\]` `\[source:[^]`]*\]`'
-        TARGET_VALID_RE_LOCAL='^(Story [0-9]+\.[0-9]+([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
+        TARGET_VALID_RE_LOCAL='^(Story [0-9]+\.[0-9]+[a-z]?([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
         LEGACY_INLINE_RE_LOCAL='— (\*\*)?(Resolved|Partial resolution) by Story [0-9.]+(\*\*)? \([0-9]{4}-'
     fi
 

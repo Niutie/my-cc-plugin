@@ -130,7 +130,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# F4 — 真 MUST-EXIST 缺失（删 prd.md）→ exit 2 + stderr 含 "/bmad-create-prd"
+# F4 — 真 MUST-EXIST 缺失（删 prd.md）→ exit 2 + stderr 含 "/bmad-prd"
 # ---------------------------------------------------------------------------
 echo ""
 echo "=== Fixture 4: MUST-EXIST 缺失（删 prd.md）→ exit 2 + stderr 引导 ==="
@@ -143,8 +143,8 @@ set -e
 if [ "$F4_RC" -eq 2 ] \
    && printf '%s' "$F4_OUT" | grep -q '"all_present": false' \
    && printf '%s' "$F4_OUT" | grep -q "prd.md" \
-   && printf '%s' "$F4_OUT" | grep -q "/bmad-create-prd"; then
-    echo "${GREEN}PASS${RESET}: F4 — exit 2 + stderr 含 '/bmad-create-prd' (rc=$F4_RC)"
+   && printf '%s' "$F4_OUT" | grep -q "/bmad-prd"; then
+    echo "${GREEN}PASS${RESET}: F4 — exit 2 + stderr 含 '/bmad-prd' (rc=$F4_RC)"
     PASS=$((PASS + 1))
 else
     echo "${RED}FAIL${RESET}: F4 — expected rc=2 + stderr 引导; got rc=$F4_RC"

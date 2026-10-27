@@ -21,7 +21,7 @@
 #
 # 退出码：
 #   0  — 全部 MUST-EXIST 在位
-#   2  — 至少 1 个 BMad planning artifact 缺失（→ stderr 引导跑 /bmad-product-brief / /bmad-create-prd / /bmad-create-architecture）
+#   2  — 至少 1 个 BMad planning artifact 缺失（→ stderr 引导跑 /bmad-product-brief / /bmad-prd / /bmad-architecture）
 #   3  — sprint-status.yaml 缺失（→ stderr 引导跑 /bmad-sprint-planning）
 #   4  — 同时缺 planning + sprint-status；优先报 planning（exit 2）
 #   1  — 参数错误 / 内部错误
@@ -71,13 +71,13 @@ declare -a OPTIONAL_GUIDANCE=()
 # 1) prd: 单文件 OR sharded 目录（必需）
 if [ ! -f "$ROOT/_bmad-output/planning-artifacts/prd.md" ] && [ ! -d "$ROOT/_bmad-output/planning-artifacts/prd" ]; then
     MISSING_PLANNING+=("_bmad-output/planning-artifacts/prd.md (或 prd/ sharded 目录)")
-    MISSING_GUIDANCE+=("/bmad-create-prd")
+    MISSING_GUIDANCE+=("/bmad-prd")
 fi
 
 # 2) architecture: 单文件 OR sharded 目录（必需）
 if [ ! -f "$ROOT/_bmad-output/planning-artifacts/architecture.md" ] && [ ! -d "$ROOT/_bmad-output/planning-artifacts/architecture" ]; then
     MISSING_PLANNING+=("_bmad-output/planning-artifacts/architecture.md (或 architecture/ sharded 目录)")
-    MISSING_GUIDANCE+=("/bmad-create-architecture")
+    MISSING_GUIDANCE+=("/bmad-architecture")
 fi
 
 # 4) product-brief: glob 匹配（**可选** — 不进 MISSING_PLANNING，只进 OPTIONAL_MISSING）

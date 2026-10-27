@@ -100,6 +100,7 @@ deploy_fixture_scripts() {
     cp "${SCRIPT_DIR}/harness-commit.py" "$1/.claude/harness/scripts/"
     cp "${SCRIPT_DIR}/sprint-status.py" "$1/.claude/harness/scripts/"
     cp "${SCRIPT_DIR}/harness_config.py" "$1/.claude/harness/scripts/"
+    cp "${SCRIPT_DIR}/harness_spec.py" "$1/.claude/harness/scripts/"
     make_fixture_config "$1/.claude/harness/harness-project-config.yaml"
 }
 

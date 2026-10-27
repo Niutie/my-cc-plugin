@@ -1,5 +1,5 @@
 ---
-description: 补跑 /harness-zh:run 时因 codex-in-cc 不可用（未装 / 配额耗尽 / 未登录）被自动跳过的 stage 3+4。扫描 *.codex-skipped.json marker → 重跑 codex 对抗式 review + dev fix → 归档 marker。
+description: 补跑 /harness-zh:run 时因 codex-in-cc 不可用（未装 / 配额耗尽 / 未登录 / build 内 codex 层超时）被跳过的 codex review + fix。扫描 *.codex-skipped.json marker → 重跑 codex 对抗式 review + dev fix → 归档 marker。
 argument-hint: '[--story <KEY> | --all] [--dry-run]'
 allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 ---
@@ -7,19 +7,21 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 # /harness-zh:codex-catchup — 补跑被跳过的 codex review + fix
 
 你是这个 catchup 的**主 orchestrator**。当用户触发 `/harness-zh:codex-catchup`，扫描所有
-被 `/harness-zh:run` 标记为"codex-skipped"的 story，对每条重跑 stage 3 + stage 4。
+被 `/harness-zh:run` 标记为"codex-skipped"的 story，对每条重跑 codex review（stage 3）+ 修复（stage 4），即 run.md §1 B2.2 / B2.3。
 
 **触发场景**：
 
-1. 之前跑 `/harness-zh:run` 时 codex 配额耗尽 / plugin 没装 / 未登录 → stage 3+4 被自动跳过
-   （留下 `<KEY>.codex-skipped.json` marker）。codex 恢复后用本命令补上漏跑的 QA 关
+1. 之前跑 `/harness-zh:run` 时 codex 配额耗尽 / plugin 没装 / 未登录 → B2 被自动跳过；或 codex
+   作为 review layer 挂在 bmad-build-auto 里、但那一轮被跳过（`reason: in_build_layer_skipped`，
+   常见原因是超时）。两种情况都留下 `<KEY>.codex-skipped.json` marker，codex 恢复后用本命令补上
 2. 用户事后想给某条 story 单独跑一次 codex 对抗审查（即使原跑没跳过）—— `--story <KEY>` + `--force`
    （v0.2 留扩展，本版只支持已 skip 的 story）
 
 **与 /harness-zh:run 的关系**：
 
-- **不动 stage 1/2/5/6**。catchup 只补 stage 3+4。已经过 stage 5（done）的 story 也能 catchup —
-  catchup 产生的 fix commit 直接落在 done 之后，作为后期 QA。
+- catchup 只补 codex review + fix，不重跑 bmad-build-auto、不动 retro。已经 done 的 story 也能
+  catchup——fix commit 直接落在 done 之后，作为后期 QA（不再追加 follow-up review；需要的话
+  用户可以自己对 spec 跑一次 `bmad-build-auto` 或 `bmad-code-review`）。
 - **codex 仍不可用时拒绝运行**：本命令开头会跑 `check_codex_availability.sh` 探测；不可用直接
   halt，告诉用户什么时候可以再试。绝不静默重跳过。
 
@@ -101,7 +103,8 @@ markers=( _bmad-output/implementation-artifacts/*.codex-skipped.json )
 读 `<KEY>.codex-skipped.json` 拿 reason / skipped_at / stage2_base_sha 等上下文。
 
 ### 4.2 验证前置
-- `<KEY>.md` 存在（stage 1 已跑）
+- story spec 存在：`python3 .claude/harness/scripts/harness-state.py <KEY> --story-md` 指向的文件
+  （新流水线 `spec-<KEY>.md`，旧流水线 `<KEY>.md`）
 - worktree 残留检查（跑 `git status --porcelain`）：
   - 输出为空 → 通过。
   - 输出**仅含**本命令已知的归档残留——路径形如 `_bmad-output/implementation-artifacts/*.codex-skipped.json`
@@ -109,7 +112,7 @@ markers=( _bmad-output/implementation-artifacts/*.codex-skipped.json )
     WARN 说明后继续：
     - 残留属于**当前** `<KEY>`：
       - marker 是 untracked `??` 态（旧版本 plugin 遗留——新协议下 marker 应已随原 run 的
-        stage 5 commit 入库）→ **先预收口**：跑 `python3 .claude/harness/scripts/harness-commit.py 4 <KEY>`
+        B4 build-sync commit（旧流水线：stage 5 commit）入库）→ **先预收口**：跑 `python3 .claude/harness/scripts/harness-commit.py 4 <KEY>`
         （stage 4 expected 含 marker 本体；此时 commit 只含 marker），stderr WARN 一行说明。
         这一步不可省——stage 3 的 expected 只放行 `.codex-skipped.resolved.json` 不放行
         marker 本体，untracked marker 留到 §4.4 会被判 unexpected_artifact。
@@ -122,27 +125,26 @@ markers=( _bmad-output/implementation-artifacts/*.codex-skipped.json )
   - 含任何**其它**路径 → halt 告知用户先 commit/stash（既有规则不变）。
 
 ### 4.3 调度 stage 3 codex review subagent
-**完全复用 `/harness-zh:run §1 阶段 ③` 的 prompt 模板**（不要在本文件复粘，把要点写在主
-agent 操作清单里，让主 agent 引用 run.md §1 ③ 的同款 prompt），但 catchup 比正常流水线多
-一步 **(a) review 窗口锚定**：
+**完全复用 `/harness-zh:run §1 B2.2` 的 prompt 模板**（不要在本文件复粘，让主 agent 引用
+run.md 的同款 prompt），但 catchup 比正常流水线多一步 **(a) review 窗口锚定**：
 
-**(a) review 窗口锚定（catchup 专属，spawn 之前先做）**：正常流水线里 stage 3 紧跟 stage ②
-commit，`--base <STAGE2_BASE>` 的隐式 diff 终点（当前 HEAD）恰好就是本 story 的实现；但
-catchup 的典型场景是 sprint 跑完后补跑——HEAD 已包含本 story 的 stage 5 fix、之后所有 story
-的代码与 retro/chore commit，直接复用会让 review 窗口被大量无关 diff 污染。先锚定本 story
-自己的提交窗口终点 `<STAGE3_HEAD>`：
+**(a) review 窗口锚定（catchup 专属，spawn 之前先做）**：正常流水线里 B2.2 紧跟 B1，
+`--base <STAGE2_BASE>` 的隐式 diff 终点（当前 HEAD）恰好就是本 story 的实现；但 catchup 的
+典型场景是 sprint 跑完后补跑——HEAD 已包含之后所有 story 的代码与 retro/chore commit，直接
+复用会让 review 窗口被大量无关 diff 污染。先锚定本 story 自己的提交窗口终点 `<STAGE3_HEAD>`：
 
 ```bash
-# 优先级：per-story done tag（与 harness-state.py 同源机制）→ stage 5 commit subject 精确匹配 → 当前 HEAD
+# 优先级：per-story done tag → build-sync commit（新流水线）→ stage 5 commit（旧流水线）→ 当前 HEAD
 STAGE3_HEAD=""
 if git rev-parse --verify --quiet "refs/tags/harness/${KEY}/done" >/dev/null; then
     STAGE3_HEAD="$(git rev-parse "refs/tags/harness/${KEY}/done")"
 else
-    # fallback：stage 5 commit（subject 与 harness-state.py STAGE_SUBJECTS 同源，精确等值匹配）
+    # subject 与 harness-state.py STAGE_SUBJECTS 同源，精确等值匹配
     STAGE3_HEAD="$(git log --format='%H::%s' \
-        | awk -F'::' -v want="story(${KEY}): final review fixes & done" '$2 == want {print $1; exit}')"
+        | awk -F'::' -v a="story(${KEY}): sync sprint status & deferred ledger" \
+                     -v b="story(${KEY}): final review fixes & done" '$2 == a || $2 == b {print $1; exit}')"
 fi
-[ -z "${STAGE3_HEAD:-}" ] && STAGE3_HEAD="$(git rev-parse HEAD)"   # story 尚未过 stage 5 → 窗口本来就精确
+[ -z "${STAGE3_HEAD:-}" ] && STAGE3_HEAD="$(git rev-parse HEAD)"   # story 尚未收口 → 窗口本来就精确
 HEAD_NOW="$(git rev-parse HEAD)"
 echo "STAGE3_HEAD=$STAGE3_HEAD"
 echo "HEAD_NOW=$HEAD_NOW"
@@ -171,10 +173,11 @@ echo "HEAD_NOW=$HEAD_NOW"
 
 **(b) spawn**：
 
-- 解析 `<CODEX_COMPANION_PATH>`（同 run.md 阶段 ③ 解析逻辑）
-- 解析 `<STAGE2_BASE>` ← marker JSON 里的 `stage2_base_sha` 字段；缺失则 fallback 到
-  `harness-state.py <KEY>` 取 stage2_base_sha
-- spawn general-purpose subagent，prompt = run.md §1 ③ 同款两步指令 + `harness-prompt-suffix.py 3`，
+- 解析 `<CODEX_COMPANION_PATH>`（同 run.md §1 B2.2 解析逻辑）
+- 解析 `<STAGE2_BASE>` ← marker JSON 里的 `stage2_base_sha` 字段；缺失则依次 fallback：spec
+  frontmatter `baseline_revision`（新流水线）→ `harness-state.py <KEY>` 的 `stage2_base_sha`
+  （旧流水线）→ `git rev-parse harness/<KEY>/start`
+- spawn general-purpose subagent，prompt = run.md §1 B2.2 同款两步指令 + `harness-prompt-suffix.py 3`，
   外加两处 catchup 改写：
   1. `CATCHUP_WT_ACTIVE=1` 时，第 1 步的 node 命令追加 `--cwd "<CATCHUP_WT>"`（review diff
      即被钉在 `<STAGE2_BASE>..<STAGE3_HEAD>`）；
@@ -204,18 +207,18 @@ echo "HEAD_NOW=$HEAD_NOW"
 ### 4.4 commit stage 3
 `python3 .claude/harness/scripts/harness-commit.py 3 <KEY>`，按 §−1.d 退出码处理。
 
-> 新协议下 marker 已随原 run 的 stage 5 commit 入库（tracked 且 clean，porcelain 不可见），
+> 新协议下 marker 已随原 run 的 B4 build-sync commit（旧流水线：stage 5 commit）入库（tracked 且 clean，porcelain 不可见），
 > 本步通常只会看到 `<KEY>.codex-review.md`；旧版本遗留的 untracked marker 已在 §4.2 预收口。
 > `<KEY>.codex-skipped.resolved.json`（上一轮中断残留）在 stage 3 expected 内，不会被判
 > unexpected_artifact。
 
 ### 4.5 调度 stage 4 dev fix subagent
-同 `/harness-zh:run §1 阶段 ④`：
+同 `/harness-zh:run §1 B2.3`：
 
 - spawn fresh general-purpose subagent
-- prompt = `harness-state.py <KEY> --resume-prompt --stage 4` 输出 + run.md §1 ④ 同款指令 +
+- prompt = `harness-state.py <KEY> --resume-prompt --stage 4` 输出 + run.md §1 B2.3 同款指令 +
   `harness-prompt-suffix.py 4`
-- 等返回，验收 `<KEY>.md` 的 `### Codex Review Handling (Stage 3)` 段每条 finding 都有处理记录
+- 等返回，验收 story spec 的 `### Codex Review Handling (Stage 3)` 段每条 finding 都有处理记录
 - 注意：若 §4.3 走了降级口径（`CATCHUP_WT_ACTIVE=0` 且窗口未锚定成功），review 报告可能混入
   后续 story 的 finding——dev fix prompt 里追加一句"只处理属于 `<KEY>` 实现范围内的 finding，
   明显属于其它 story 代码的 finding 标 `wontfix: out of catchup window` 即可"。
@@ -294,8 +297,8 @@ stage 4 的 expected 产物清单已含 `<KEY>.codex-skipped.json`（删除态�
 - 简单 — 单文件 = 单 story 状态，glob 即可发现，归档时只挪一个文件
 - 不污染 sprint-status 状态机（dev_status 仍是 review / done 等正常值；codex-skip 是
   正交关注点）
-- audit trail 直接落在 _bmad-output/implementation-artifacts/，与 story md / dev-result.json
-  在同一目录，git 历史里好检索
+- audit trail 直接落在 _bmad-output/implementation-artifacts/，与 story spec 在同一目录，git
+  历史里好检索
 
 **为什么 resolved marker 不删**？
 

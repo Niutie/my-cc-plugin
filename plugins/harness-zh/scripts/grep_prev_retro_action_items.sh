@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prev-epic retro action items grep
 #
-# bmad-create-story 启动时通过 customize.toml activation_steps_prepend 调用；
+# /harness-zh:run §1 B1 在 epic 第一个 story（X-1-*）dispatch 前由主 agent 调用（v0.2.0 起；旧注释所称的 customize.toml 挂载从未落地）；
 # 输出 markdown 段 `## 前置 retro action items 状态`，列上一 epic 的 retro
 # action items（code / status / chore_spec / 简述），让 spec dev notes 段
 # 自动含跨 epic 状态 snapshot。warn-only — 不阻断 spec 创建。

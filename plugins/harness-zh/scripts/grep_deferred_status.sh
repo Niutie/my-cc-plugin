@@ -14,7 +14,7 @@
 #
 # Used by:
 #   - solo-dev manual query: `just deferred-status STORY=2-5`
-#   - run-sprint stage 5 echo extension
+#   - run-sprint B4 build-sync 之后的趋势输出（旧流水线：stage 5）
 #
 # Usage:
 #   grep_deferred_status.sh <story-key> [path/to/deferred-work.md]

@@ -143,7 +143,7 @@ echo "$SUMMARY"
 被删文件清单（`stderr` 的 `purged: ...` 行 grep 出来），并明确告诉 solo-dev：
 
 > 这些文件在 v0.1.X 已从 plugin 中移除（参见 changelog）。如果项目自定义代码
-> 还在引用它们（例如 `.claude/commands/` 或 `_bmad/customize/` 里 source 过），
+> 还在引用它们（例如 `.claude/commands/` 或 `_bmad/custom/` 里 source 过），
 > 请改引用替代品；否则可以放心。本次清理已生成 `*.bak.<TS>` 留底。
 
 > **设计动机**：v0.1.26 删除 `extract_harness_feedback.sh` / `detect_harness_residue.sh`
@@ -189,7 +189,7 @@ echo "HOOKS_EXIT=$HOOKS_EXIT"
 【purged 清单】（仅 $PURGED > 0 时输出本块；数据来自 §3 deploy stderr 的 `purged:` 行）
   - <被删文件路径 1>（备份：<路径 1>.bak.<TS>）
   - <被删文件路径 2>（备份：...）
-  ⚠️ 请二次确认：项目侧脚本 / `.claude/commands/` 自定义命令 / `_bmad/customize/` 是否
+  ⚠️ 请二次确认：项目侧脚本 / `.claude/commands/` 自定义命令 / `_bmad/custom/` 是否
      还引用上述文件；如有，改引用替代品（参见 changelog 对应版本条目）；确认无误后
      可删 `.bak.<TS>` 备份。
 
@@ -199,6 +199,10 @@ echo "HOOKS_EXIT=$HOOKS_EXIT"
        diff .claude/harness/harness-project-config.yaml \
             "$PLUGIN_ROOT/templates/harness-project-config.yaml.template"
   ③ 若 BMad artifacts 完整且想刷新 yaml，重跑 /harness-zh:init（**不会**覆盖既有非空字段，但会补齐空字段）
+  ④ 从 ≤ 0.1.39 升到 0.2.x：跑一次 bash .claude/harness/scripts/check_bmad_runtime.sh，
+     确认 STATUS=ok（新流水线要求 BMad ≥ 6.11 + uv）；被 purge 的
+     bmad-create-story-suffix.md / bmad-dev-story-suffix.md 已改名为
+     bmad-build-auto-suffix.md / bmad-build-implement-suffix.md
 ```
 
 把 TaskCreate 任务标 `completed`，退出码 0。

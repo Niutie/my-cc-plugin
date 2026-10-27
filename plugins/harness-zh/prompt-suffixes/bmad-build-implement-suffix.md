@@ -1,13 +1,19 @@
-# bmad-dev-story prompt suffix（项目层）
+# bmad-build-auto 实现清单（项目层）
 
-> 由 epic-3 retro C2 (2026-05-04) 立。CLAUDE.md 严禁动 `.claude/skills/bmad-*/`
-> 上游 SKILL —— 本文件作为项目层 prompt 拼接路径（C11 范式），让"复制粘贴
-> pattern"沉淀到 SKILL 级标准 checklists。
+> 旧名 `bmad-dev-story-suffix.md`（BMad 6.11 起 bmad-dev-story 并入
+> bmad-build-auto，本文件 v0.2.0 改名）。上游 SKILL 不改，本文件作为项目层
+> 清单让「复制粘贴 pattern」沉淀成标准 checklists。
 >
-> **加载机制**：`run.md` 阶段 ② 的 dev dispatch prompt 末尾拼接
-> `harness-prompt-suffix.py 2` 的 stdout，其中 "Deferred-work 扫描约定"
-> 与 Q6 块显式指向本文件相应段。dev agent 据此 Read 本文件，并按
-> §Standard checklists 段填写 Dev Agent Record 各 self-review 子段。
+> **加载机制**：bmad-build-auto 规划时按 `bmad-build-auto-suffix.md` §2 把本文件
+> 挂进 spec frontmatter `context:`；实现子 agent 启动时按 spec 要求 Read 本文件。
+> 开始实现前先跑一次：
+>
+> ```bash
+> python3 .claude/harness/scripts/harness-prompt-suffix.py implement
+> ```
+>
+> 它输出本项目的 Q6 全栈追溯清单（从 `harness-project-config.yaml` 渲染）和其它
+> 项目级约束。
 >
 > 历史：
 > - 2026-05-04 C2: 5-question self-review gate / Mech-verify dry-run / Dev
@@ -15,12 +21,14 @@
 > - 2026-05-04 C3: 增 Q6 — 全栈贯通 review 7 sub-bullet。
 > - 2026-05-04 deferred-work-schema-v1: dev agent 翻 status / 加 partial /
 >   spawn 新 FU 时按 schema v1（详 §"deferred-work schema v1 写入约束"）。
+> - 2026-10-27 v0.2.0: 改为 bmad-build-auto 实现子 agent 的清单；记录位置从
+>   story md 的 Dev Agent Record 改为 spec 末尾的 `## Dev Agent Record` H2。
 
 ---
 
 ## deferred-work schema v1 写入约束
 
-dev agent 在 implementation 过程中需更新
+实现子 agent 在 implementation 过程中需更新
 `_bmad-output/implementation-artifacts/deferred-work.md` 时（解决 FU / 标 partial
 / 立新 FU），**必须**按 schema v1 格式（权威：
 `.claude/harness/conventions/deferred-work-schema.md`）：
@@ -43,10 +51,13 @@ partial 解析（部分覆盖、残余路径仍 open）路径：
 
 ### spawn 新 FU 路径
 
-dev 实施过程发现新 deferred 项必须按 4-tag 头 + 字段格式登记：
+实现中发现、但不属于本 spec 的延后项，优先在返回报告的「left incomplete or
+risky」里说明，由 bmad-build-auto 的 review 归入 spec frontmatter `deferred:`
+（harness build-sync 统一导入 ledger）。确实需要直接登记时，按 4-tag 头 +
+字段格式：
 
 ```markdown
-- **FU-X.Y.Z** `[status:pending]` `[bucket:<B>]` `[target:<T>]` `[source:dev-of-X.Y]` — 一句话描述
+- **FU-X.Y.Z** `[status:pending]` `[bucket:<B>]` `[target:<T>]` `[source:build-of-X.Y]` — 一句话描述
   - **修复方向**：...
   - **触发条件**：...
   - **关联**：FU-A.B.C / ADR-N（可省）
@@ -64,8 +75,9 @@ dev 实施过程发现新 deferred 项必须按 4-tag 头 + 字段格式登记�
 
 ## Standard checklists
 
-dev agent 在 implementation 完成后必须在 story spec `## Dev Agent Record` 段
-下填写以下 self-review 子段，每子段格式严格遵守。
+实现完成后，在 spec 文件**末尾**追加（或续写）`## Dev Agent Record` H2，填写以下
+self-review 子段，每子段格式严格遵守。这个段在 `<intent-contract>` 之外，可以写；
+`<intent-contract>` 内的内容只读。
 
 ### Self-review (5-question gate)
 
@@ -141,9 +153,9 @@ canonical pin 漏验 / mapping 漏 / i18n key 漏 / 详情页漏渲染）。Q6
 sub-bullet 强制 dev agent 在新审计字段 / 新数据写入面引入时端到端追溯到
 所有写入面。
 
-**项目特定的 sub-bullet 清单（(a)-(z)）由 `harness-prompt-suffix.py` stage 2
+**项目特定的 sub-bullet 清单（(a)-(z)）由 `harness-prompt-suffix.py implement`
 从 `.claude/harness/harness-project-config.yaml` 的 `extra.fullstack_review_steps:`
-list 字段动态渲染**，已自动注入到本 dev subagent prompt 中（每条形如
+list 字段动态渲染**（见本文件开头的命令；每条形如
 `- (X) <file_path>（<label>）：✓ / N/A / deferred-to-FU-X.Y.Z`）。clone 到新
 项目时改 yaml 即可，本文件不需动；list 为空时 Q6 段降级跳过。
 

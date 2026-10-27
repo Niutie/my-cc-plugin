@@ -5,7 +5,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 | Plugin | Version | What it does |
 |---|---|---|
 | **[article-maker](plugins/article-maker/README.md)** | 0.1.1 | Turn any source (URL / PDF / DOCX / Markdown / text / screenshots) into a beautiful, share-ready single-file HTML article (optional PDF) |
-| **[harness-zh](plugins/harness-zh/README.md)** | 0.1.39 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **[harness-zh](plugins/harness-zh/README.md)** | 0.2.0 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 | **[ppt-maker](plugins/ppt-maker/README.md)** | 1.1.0 | Turn source material into an offline web deck **and** a genuinely editable `.pptx`, from one `deck.json` source of truth |
 | **[video-maker](plugins/video-maker/README.md)** | 1.11.0 | Turn scripts / articles / lessons into click-driven 16:9 web presentations you can screen-record as cinematic videos |
 
@@ -31,10 +31,10 @@ Add the marketplace once, then install whichever plugin you want:
 
 ### harness-zh
 
-A 5-stage TDD-flavored development loop (`/harness-zh:run`) plus a test-automation loop (`/harness-zh:run-test`) layered on top of [BMad Method](https://github.com/bmad-code-org/BMAD-METHOD) planning artifacts. Built for **solo developer + AI agent** workflows: BMad produces the planning artifacts, then harness-zh drives sprint execution — backlog story → create-story → dev-story → adversarial review → fix → final review → retrospective, with the state machine rooted in `sprint-status.yaml`.
+A sprint orchestration loop (`/harness-zh:run`) plus a test-automation loop (`/harness-zh:run-test`) layered on top of [BMad Method](https://github.com/bmad-code-org/BMAD-METHOD). Built for **solo developer + AI agent** workflows: BMad produces the planning artifacts, then harness-zh drives sprint execution with the state machine rooted in `sprint-status.yaml`. Each backlog story goes through one `bmad-build-auto` run (plan, implement, multi-layer review, commit), an audit of the committed range, an external codex review when codex is not already a build review layer, an optional follow-up review, then status sync, tests and the epic retrospective.
 
 - **Commands:** `/harness-zh:init`, `:run`, `:run-test`, `:update`, `:upgrade-deferred-work`, `:report-issue`, `:codex-catchup`
-- **Requires:** [BMad-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) (planning artifacts); the codex plugin is optional (adversarial review)
+- **Requires:** [BMad-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) ≥ 6.11 and [uv](https://docs.astral.sh/uv/); the codex plugin is optional (cross-model review)
 - **Full docs:** [`plugins/harness-zh/README.md`](plugins/harness-zh/README.md) · architecture + changelog live alongside it
 
 ### video-maker

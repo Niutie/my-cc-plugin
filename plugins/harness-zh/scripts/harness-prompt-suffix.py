@@ -5,7 +5,18 @@ harness-prompt-suffix.py — emit standardized subagent prompt suffix.
 Usage:
     python3 .claude/harness/scripts/harness-prompt-suffix.py <stage>
 
-stage ∈ {1, 2, 3, 4, 5, 6}
+stage ∈ {build, implement, chore, 3, 4, 6}   (build pipeline, v0.2.0+;
+                                             chore = §0.A.0 retro-fulfill)
+      ∪ {1, 2, 5}                           (legacy create-story / dev-story /
+                                             bmad-code-review pipeline, ≤ 0.1.39)
+
+  - build: appended to the run.md §1 B1/B3 dispatch prompt of the subagent
+    that runs bmad-build-auto (planning contract pointer, C11 notice,
+    project verification commands, git rules, self-report, answer policy).
+  - implement: fetched by bmad-build-auto's implementation subagent itself
+    (bmad-build-implement-suffix.md tells it to run this) — it never sees
+    the dispatch prompt, so its project checklists (Q6, ledger format,
+    marker ban) are delivered through this pull channel.
 
 Output (stdout): text block to append to a subagent prompt. Currently:
 
@@ -40,6 +51,9 @@ Exit code:
 
 import argparse
 import sys
+# Never drop __pycache__/ next to the deployed scripts: an untracked dir there
+# makes the worktree dirty, and bmad-build-auto refuses to start on a dirty tree.
+sys.dont_write_bytecode = True
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -48,6 +62,7 @@ from harness_config import (  # noqa: E402
     get_deferred_work_path,
     get_fullstack_review_steps,
     get_project_context,
+    get_verification_commands,
 )
 
 # Resolve once at module load (relative-to-repo paths used in prompt strings)
@@ -175,7 +190,7 @@ def _q6_block() -> str:
 
 纯重构 / 无新字段 story 整体答 `(a)-({letter(len(_FULLSTACK_REVIEW_STEPS)-1)}) 全部不适用 — 本 story 无新字段`（仍显式 {len(_FULLSTACK_REVIEW_STEPS)} 行）。
 
-参考本项目已落地 dev story Dev Agent Record 的 Q6 答复模式建立答复体例（答复结构契约详 `.claude/harness/prompt-suffixes/bmad-dev-story-suffix.md` Q6 段；尚无已落地 story 时按上面 sub-bullet 格式直接作答）。"""
+参考本项目已落地 story spec `## Dev Agent Record` 段的 Q6 答复模式建立答复体例（答复结构契约详 `.claude/harness/prompt-suffixes/bmad-build-implement-suffix.md` Q6 段；尚无已落地 story 时按上面 sub-bullet 格式直接作答）。"""
 
 
 Q6_FULLSTACK_REVIEW_BLOCK = _q6_block()
@@ -219,7 +234,46 @@ DEFERRED_SCAN_BLOCK = f"""**Deferred-work 扫描约定**（schema v1 — 2026-05
 - ❌ 写 `FU-RETRO-*` 命名空间到 deferred-work.md（归 sprint-status retro_action_items；schema v1 §3.2）
 - ❌ 直接编辑 `<!-- AUTO-GENERATED-BUCKETS-* -->` 块（用 `bash .claude/harness/scripts/grep_deferred_buckets.sh --emit-section1` 重新生成）
 
-详细 schema 写入约束 + reference example 见 `.claude/harness/prompt-suffixes/bmad-dev-story-suffix.md` 的 `deferred-work schema v1 写入约束` 段。"""
+详细 schema 写入约束 + reference example 见 `.claude/harness/prompt-suffixes/bmad-build-implement-suffix.md` 的 `deferred-work schema v1 写入约束` 段。"""
+
+
+# --- build pipeline blocks (v0.2.0+) ----------------------------------------
+
+BUILD_CONTRACT_BLOCK = f"""**bmad-build-auto 调度契约（harness 强制）**：
+
+1. 用 Skill 工具调用 `bmad-build-auto`，把上面的「Build intent」作为它的调用意图。一直跑到它按自身 HALT 协议给出终态（`done` / `blocked` / `ready-for-dev`）为止，中途不要停下来汇报。
+2. 它要求的子 agent 一律**同步阻塞**调用，禁止 `run_in_background`（bmad-build-auto 无人值守，后台子 agent 永远不会把控制权交回来）。
+3. 进入 step-02 写 spec **之前**，先 Read `.claude/harness/prompt-suffixes/bmad-build-auto-suffix.md`，按其中要求写 spec：slug = story key 原文、frontmatter `context:` 挂实现清单、cross_story_artifacts / planning_artifacts 声明、epic 第一个 story 的继承段、deferred 注入项处理。
+4. git：只允许 bmad-build-auto Finalize 步骤自己创建的本地 commit。禁止 push、建 / 切分支、打 tag、amend、rebase、reset、stash、checkout 别的文件。harness 会在你返回后审计 `harness/<KEY>/start..HEAD` 区间。
+5. 不要改 `{_ARTIFACTS_REL}/sprint-status.yaml`（harness build-sync 统一推进）；新的延后项走 spec frontmatter `deferred:`，不要直接写 `{_DEFERRED_WORK_REL}`（spec Tasks 要求翻转既有 FU 状态的除外）。
+6. 若 bmad-build-auto 因 `uv` 不可用、`no subagents` 等环境原因 HALT，原样报告它的输出，不要绕过它直接实现代码。"""
+
+BUILD_DEFERRED_NOTICE_BLOCK = """**Deferred-work 注入提示（C11）**：「Build intent」里可能带一段 `## Deferred-work 待消化提示（auto-injected by C11）`，由主 agent 用 `grep_pending_deferred_for_story.sh <KEY>` 生成，列出 target 指向本 story、仍 pending 的 FU 条目。它是规划阶段的参考上下文，不是额外目标：按 `bmad-build-auto-suffix.md` §3 处理（自然范围内的写成 task + ledger 翻转 task，会膨胀范围的放过）。为空时跳过。"""
+
+
+def _verification_block() -> str:
+    cmds = [ln.strip() for ln in get_verification_commands().splitlines() if ln.strip()]
+    if not cmds:
+        return "**项目级验证命令**：harness-project-config.yaml 未配置 verification 命令；spec `## Verification` 按 bmad-build-auto 默认规则填写。"
+    bullets = "\n".join(f"- `{c}`" for c in cmds)
+    return f"""**项目级验证命令**（来自 harness-project-config.yaml；spec `## Verification` 的 Commands 至少包含这些，环境跑不了的在 `## Auto Run Result` 写明跳过原因）：
+
+{bullets}"""
+
+
+BUILD_SELF_REPORT_BLOCK = """**返回报告（强制，stop 前最后一步）**：最终返回 message 必须包含：
+1. bmad-build-auto 的终态 status 与 blocking condition（如有）；
+2. spec 文件路径；
+3. 用 Bash 实跑的 `git status --porcelain` 完整输出（代码块）；
+4. 用 Bash 实跑的 `git log --oneline harness/<KEY>/start..HEAD` 输出（代码块）。
+
+不要凭记忆复述——主 agent 会拿这些输出和 build-verify 的审计结果交叉核对。"""
+
+BUILD_ANSWER_POLICY_NOTE = """**intent 不清时**：bmad-build-auto 遇到 intent gap 会 HALT blocked，不会提问。下面的代答政策 + 项目语境若能把多种读法收敛到唯一一种，就按那种读法规划（把依据写进 spec Design Notes）；收敛不了，就让它照常 HALT blocked，harness 会把问题交给 solo-dev。"""
+
+FIX_MARKER_BLOCK = """**禁止过程 marker 文件**：环境受限导致没跑成的检查（mvn / java / docker 不可用等），写进你那条处理记录的说明里（或最终返回 message），**不要**另写 `<KEY>.maven-skipped.json` / `<KEY>.sandbox-skipped.json` 之类的 marker 文件——harness-commit.py 会自动剔除它们（`AUTO_FIXED=process-marker`），徒增 commit 噪音。"""
+
+IMPLEMENT_MARKER_BLOCK = """**禁止过程 marker 文件**：sandbox / 环境受限导致的检查跳过（mvn / java / docker 不可用等），在你的返回报告里写明「哪条命令没跑、为什么」，由 bmad-build-auto 记进 `## Auto Run Result`。**不要**另写 `<KEY>.maven-skipped.json` / `<KEY>.sandbox-skipped.json` 之类的 marker 文件。"""
 
 
 def resume_block(stage):
@@ -246,25 +300,27 @@ STAGE5_SCHEMA_STAGES = {"5"}
 # main-agent-prepended `## Deferred-work 待消化提示` section).
 STAGE1_DEFERRED_INJECTION_NOTICE_STAGES = {"1"}
 
-# Issue #8 — process-marker ban on the dev stages (2 = initial dev, 4 = codex
-# fix round; both run /bmad-dev-story-style work that can hit sandbox skips).
-NO_PROCESS_MARKER_STAGES = {"2", "4"}
+# Issue #8 — process-marker ban. Stage 2 (legacy dev) records skips in
+# dev-result.json; stage 4 (codex fix round, both pipelines) and `chore`
+# (retro-fulfill) have no dev-result.json, so they get the generic wording.
+NO_PROCESS_MARKER_STAGES = {"2"}
+FIX_MARKER_STAGES = {"4", "chore"}
 
 # Issue #9 finding 2 — task-tools ban on every stage. The observed polluters
 # were stages 2/4/5(+run-test), but any subagent with tool access can trash
 # the orchestrator's task list — same all-stages posture as GIT_STATUS_STAGES.
-TASK_TOOLS_BAN_STAGES = {"1", "2", "3", "4", "5", "6"}
+TASK_TOOLS_BAN_STAGES = {"1", "2", "3", "4", "5", "6", "chore"}
 
 # §M — git status self-report goes on every stage (1/2/3/4/5/6). The 2-7
 # main.go incident showed even stage 1 (/bmad-create-story) can spill changes.
-GIT_STATUS_STAGES = {"1", "2", "3", "4", "5", "6"}
+GIT_STATUS_STAGES = {"1", "2", "3", "4", "5", "6", "chore"}
 
-VALID_STAGES = {"1", "2", "3", "4", "5", "6"}
+VALID_STAGES = {"build", "implement", "chore", "1", "2", "3", "4", "5", "6"}
 
 
 def main():
     parser = argparse.ArgumentParser(description="Emit standardized subagent prompt suffix")
-    parser.add_argument("stage", help="stage number: 1 / 2 / 3 / 4 / 5 / 6")
+    parser.add_argument("stage", help="build / implement / chore / 3 / 4 / 6 (legacy: 1 / 2 / 5)")
     args = parser.parse_args()
     stage = args.stage.strip()
 
@@ -273,6 +329,17 @@ def main():
         sys.exit(2)
 
     blocks = []
+    if stage == "build":
+        blocks = [BUILD_CONTRACT_BLOCK, BUILD_DEFERRED_NOTICE_BLOCK, _verification_block(),
+                  TASK_TOOLS_BAN_BLOCK, BUILD_SELF_REPORT_BLOCK, BUILD_ANSWER_POLICY_NOTE,
+                  ANSWER_POLICY_BLOCK]
+        print("\n\n---\n\n".join(blocks))
+        return
+    if stage == "implement":
+        blocks = [Q6_FULLSTACK_REVIEW_BLOCK, IMPLEMENT_MARKER_BLOCK, TASK_TOOLS_BAN_BLOCK,
+                  ANSWER_POLICY_BLOCK]
+        print("\n\n---\n\n".join(blocks))
+        return
     if stage in RESUME_STAGES:
         blocks.append(resume_block(stage))
     if stage in DEFERRED_SCAN_STAGES:
@@ -285,6 +352,8 @@ def main():
         blocks.append(STAGE5_PROGRESS_SCHEMA_BLOCK)
     if stage in NO_PROCESS_MARKER_STAGES:
         blocks.append(NO_PROCESS_MARKER_BLOCK)
+    if stage in FIX_MARKER_STAGES:
+        blocks.append(FIX_MARKER_BLOCK)
     if stage in TASK_TOOLS_BAN_STAGES:
         blocks.append(TASK_TOOLS_BAN_BLOCK)
     if stage in GIT_STATUS_STAGES:
