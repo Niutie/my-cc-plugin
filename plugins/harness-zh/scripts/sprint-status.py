@@ -22,8 +22,13 @@
         → 输出该 story 所属 epic 编号（key 第一段）。
 
     python3 .claude/harness/scripts/sprint-status.py epic-all-done <epic_num>
-        → 退出码 0 表示该 epic 所有 story 均 done，1 表示还有未完成；
-          stderr 同时打印简要清单。
+        → 退出码 0 表示该 epic 所有 story 均已终态，1 表示还有未完成。
+          未完成时 stderr 打印清单，并按状态分两行：
+            active=<key>(<status>),...        BMad 标准的进行中状态（backlog /
+                                              ready-for-dev / in-progress / review）
+            unrecognized=<key>(<status>),...  既不是 BMad 标准状态，也不是终态
+          只有 unrecognized 时，story 多半是被作废了但状态写法 harness 不认，
+          再打印一行改法提示（run.md §2 据此决定 halt 文案）。
 
     python3 .claude/harness/scripts/sprint-status.py epic-retro-status <epic_num>
         → 输出 epic-N-retrospective 当前状态（找不到则退出码 1）。
@@ -53,7 +58,8 @@
           退出码 0 = 无需迁移，3 = 需要迁移（stdout 打印条目数）。BMad 6.12 的原生脚本
           整文件按 YAML 解析，旧写法会让它们直接失败。
 
-终态：epic-all-done 把 `done` 与 `wont-do`（项目自定义的放弃态）都视为完成。
+终态：epic-all-done 把 `done` 与放弃态 `wont-do` / `cancelled`（`canceled` 也认）
+都视为完成，清单见 harness_spec.TERMINAL_STORY_STATUSES（issue #13）。
 
 故意手写 yaml 解析（避免引入 PyYAML 依赖）。兼容 development_status 下两种布局：
   - 单行：`  <key>: <status>`（含行尾 inline 注释）
@@ -78,6 +84,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness_config import get_artifacts_root, get_sprint_status_path  # noqa: E402
+from harness_spec import (  # noqa: E402
+    ACTIVE_STORY_STATUSES,
+    DROPPED_STORY_STATUSES,
+    TERMINAL_STORY_STATUSES,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SPRINT_FILE = get_sprint_status_path()
@@ -152,12 +163,6 @@ def _iter_dev_status(include_epic_keys: bool = False) -> list[tuple[int, str, st
                     out.append((i, pending_key, status))
                 pending_key = None  # 已取到 status；块内 depends_on 等忽略
     return out
-
-
-# `wont-do` is not in the BMad template vocabulary but real projects use it for
-# stories deliberately dropped; without it an epic carrying one never reads as
-# all-done and its retrospective is never triggered.
-TERMINAL_STORY_STATUSES = ("done", "wont-do")
 
 
 def _find_action_item_status_line(lines: list[str], item_id: str) -> int | None:
@@ -320,11 +325,24 @@ def cmd_epic_all_done(epic_num: str) -> int:
     pending = [(k, s) for k, s in matched if s not in TERMINAL_STORY_STATUSES]
     if not pending:
         return 0
-    print(
-        f"epic {epic_num}: {len(matched) - len(pending)}/{len(matched)} done; pending=" +
-        ",".join(f"{k}({s})" for k, s in pending),
-        file=sys.stderr,
-    )
+
+    def fmt(pairs):
+        return ",".join(f"{k}({s})" for k, s in pairs)
+
+    active = [(k, s) for k, s in pending if s in ACTIVE_STORY_STATUSES]
+    unknown = [(k, s) for k, s in pending if s not in ACTIVE_STORY_STATUSES]
+    lines = [
+        f"epic {epic_num}: {len(matched) - len(pending)}/{len(matched)} done; pending={fmt(pending)}",
+        f"active={fmt(active) or 'none'}",
+        f"unrecognized={fmt(unknown) or 'none'}",
+    ]
+    if unknown and not active:
+        lines.append(
+            "hint: 剩下的 story 状态既不是 BMad 标准状态也不是终态，--continue 续不了。"
+            "若它们已作废，把状态改成 " + " / ".join(DROPPED_STORY_STATUSES[:2]) +
+            "；若已交付，改成 done；改完重跑。"
+        )
+    print("\n".join(lines), file=sys.stderr)
     return 1
 
 

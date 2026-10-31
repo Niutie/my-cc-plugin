@@ -72,9 +72,9 @@ allowed-tools: Bash, Read, Edit, Write, Agent, Task, AskUserQuestion
 | 无参数 | `all` | — | §0.A |
 | `--story` | `single-story` | `TARGET_KEY = $(python3 .claude/harness/scripts/sprint-status.py next)`；退出码 1 → halt | §0.A |
 | `--story <key>` | `single-story` | `TARGET_KEY = <key>`；`git rev-parse --verify --quiet harness/<key>/start` 成功 → §0.B 续作；否则 §0.A | §0.A / §0.B |
-| `--epic` | `single-epic` | 先 `sprint-status.py next`：退出码 0 → `TARGET_EPIC = $(sprint-status.py epic-of <next>)`，§0.A；退出码 1 → 按 yaml 顺序找最早一个 `epic-N-retrospective` 非 `done` 的 epic，`TARGET_EPIC = N`，再跑 `epic-all-done N`：0 → §0.C；非 0 → halt（提示先 `--continue` 续作中断 story）；都没有 → 回报"sprint 已全部完成"退出 | §0.A / §0.C / 退出 |
+| `--epic` | `single-epic` | 先 `sprint-status.py next`：退出码 0 → `TARGET_EPIC = $(sprint-status.py epic-of <next>)`，§0.A；退出码 1 → 按 yaml 顺序找最早一个 `epic-N-retrospective` 非 `done` 的 epic，`TARGET_EPIC = N`，再跑 `epic-all-done N`：0 → §0.C；非 0 → halt（文案见 §2「epic 未全终态 halt」）；都没有 → 回报"sprint 已全部完成"退出 | §0.A / §0.C / 退出 |
 | `--epic <num>` | `single-epic` | `TARGET_EPIC = <num>`。`epic-all-done` + `epic-retro-status` 判断：仍有非终态 story → §0.A；全终态且 retro != done → §0.C；全终态且 retro = done → 回报"该 epic 已完成"退出 | §0.A / §0.C / 退出 |
-| `--continue` 或 `--continue 继续完成当前这个story` | `continue-single` | `python3 .claude/harness/scripts/harness-state.py --in-flight`（harness 打了 start tag、没有 done tag、sprint-status 也不是 done / wont-do 的 story）：恰好 1 条 → `TARGET_KEY`；多条 → 用 AskUserQuestion 让用户选；为空 → halt | §0.B |
+| `--continue` 或 `--continue 继续完成当前这个story` | `continue-single` | `python3 .claude/harness/scripts/harness-state.py --in-flight`（harness 打了 start tag、没有 done tag、sprint-status 也不是 done / wont-do / cancelled 的 story）：恰好 1 条 → `TARGET_KEY`；多条 → 用 AskUserQuestion 让用户选；为空 → halt | §0.B |
 | `--dry-run` | `dry-run` | — | §2 dry-run 分支 |
 
 > `--continue` 以前用 `sprint-status.py find-by-status review` 找目标。BMad 6.11+ 项目里 `review` 也表示"交互式 bmad-build 做完、等合并"，跟中断的 harness 运行无关，所以改用 harness 自己的 tag 判断。
@@ -510,7 +510,7 @@ if python3 .claude/harness/scripts/sprint-status.py epic-all-done $EPIC; then
 fi
 ```
 
-（`epic-all-done` 把 `done` 与 `wont-do` 都算终态。）
+（`epic-all-done` 把 `done`、`wont-do`、`cancelled` 都算终态。）
 
 ```
 Agent({
@@ -572,7 +572,7 @@ verdict 取自 commit row 6 或 6-done 输出的 `RETRO_VERDICT=`（两处都会
 
 `RETRO_VERDICT=rejected` → 本 epic 被 retro 判为不通过（上游语义：有非 `done` 的 story，或 acceptance criteria 不满足）。⑥.5 / 6-done 照常做完，然后：
 - `EPIC_WONT_DO=none` 且 `LOOP_SCOPE = all` → **halt**（§3 模板），不进入下一个 epic；把 retro 文档的 Acceptance verdict 段和 Open questions 段要点贴给用户。
-- `EPIC_WONT_DO=<keys>`：上游把 `wont-do` 也算未完成，会强制判 `rejected`，这类 epic 每次都会是 rejected。不 halt，在回报里醒目写一行"verdict=rejected，可能只是 wont-do 的 <keys> 触发；请看 retro 文档 Acceptance verdict 段确认是否还有其它原因"，然后继续。
+- `EPIC_WONT_DO=<keys>`（状态为 `wont-do` 或 `cancelled` 的 story）：上游把这两种也算未完成，会强制判 `rejected`，这类 epic 每次都会是 rejected。不 halt，在回报里醒目写一行"verdict=rejected，可能只是 wont-do / cancelled 的 <keys> 触发；请看 retro 文档 Acceptance verdict 段确认是否还有其它原因"，然后继续。
 - 其它 scope → 在最终回报里醒目标注。
 
 `accepted-with-open-items` → 回报里列出 open items 所在段落，不阻流。`missing`（旧格式 retro）→ 不判断。
@@ -612,7 +612,7 @@ loop:
     if 该 epic 无 backlog:
       if `epic-retro-status $TARGET_EPIC` != "done":
         if `epic-all-done $TARGET_EPIC` 退出码 0: 走 §0.C 触发 retro
-        else: halt（该 epic 有 story 停在中途；提示先 --continue）
+        else: halt（见下方「epic 未全终态 halt」）
       break
   else:
     next_key = `sprint-status.py next`
@@ -644,6 +644,11 @@ report "💡 这一轮如果有 plugin 行为不顺手 / 文档误导 — 跑 /h
 ```
 
 SKIPPED_COUNT 必须用 Bash 实跑，> 0 时必须完整打印通知框。每次回到循环顶部都重新检查 LOOP_SCOPE。
+
+**epic 未全终态 halt**：epic 已无 backlog、retro 未 done、`epic-all-done` 却非 0 时，把它的 stderr 原样贴给用户，再按 `active=` / `unrecognized=` 两行给建议：
+
+- `active=` 非 none：有 story 停在中途（ready-for-dev / in-progress / review）。提示先 `/harness-zh:run --continue`；`harness-state.py --in-flight` 为空时说明这些 story 不是 harness 推进的，请用户手工收尾。
+- 只有 `unrecognized=`：这些 story 的状态不在 BMad 标准状态里，也不在终态里（常见于规划期作废的 story 用了别的写法）。`--continue` 续不了，不要建议它。提示用户：已作废的改成 `cancelled` 或 `wont-do`，已交付的改成 `done`，改完重跑 `/harness-zh:run --epic <N>`。
 
 ---
 

@@ -1037,14 +1037,15 @@ def list_in_flight():
             k = ref[len("harness/"):-len("/start")]
             if k in done or k in out:
                 continue
-            # Finished or dropped OUTSIDE the harness (manual close, wont-do):
+            # Finished or dropped OUTSIDE the harness (manual close, wont-do,
+            # cancelled):
             # an abandoned start tag must not keep the story "in flight"
             # forever. Judge by the COMMITTED sprint-status and require that
             # no harness close-out commit exists — build-sync flips the
             # worktree copy to done before it commits, and after its commit
             # the done tag may still be missing; both are unfinished harness
             # runs that --continue must still find (codex review 2026-10-27).
-            if committed_story_status(k) in ("done", "wont-do") and not _harness_closed(k, subjects):
+            if committed_story_status(k) in harness_spec.TERMINAL_STORY_STATUSES and not _harness_closed(k, subjects):
                 continue
             out.append(k)
     return out

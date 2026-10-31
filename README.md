@@ -5,7 +5,7 @@ Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niut
 | Plugin | Version | What it does |
 |---|---|---|
 | **[article-maker](plugins/article-maker/README.md)** | 0.1.1 | Turn any source (URL / PDF / DOCX / Markdown / text / screenshots) into a beautiful, share-ready single-file HTML article (optional PDF) |
-| **[harness-zh](plugins/harness-zh/README.md)** | 0.2.0 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **[harness-zh](plugins/harness-zh/README.md)** | 0.2.1 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
 | **[ppt-maker](plugins/ppt-maker/README.md)** | 1.1.0 | Turn source material into an offline web deck **and** a genuinely editable `.pptx`, from one `deck.json` source of truth |
 | **[video-maker](plugins/video-maker/README.md)** | 1.11.0 | Turn scripts / articles / lessons into click-driven 16:9 web presentations you can screen-record as cinematic videos |
 

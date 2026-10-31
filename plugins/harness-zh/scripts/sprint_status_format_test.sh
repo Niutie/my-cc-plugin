@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Hermetic: a caller-exported config override must not leak into the sandbox.
 unset HARNESS_CONFIG_PATH 2>/dev/null || true
 
-for f in sprint-status.py harness_config.py; do
+for f in sprint-status.py harness_config.py harness_spec.py; do
     if [ ! -f "$SCRIPT_DIR/$f" ]; then
         echo "ERROR: $f not found at $SCRIPT_DIR/$f" >&2
         exit 2
@@ -51,6 +51,7 @@ make_project() {
              "$PROJ/_bmad-output/implementation-artifacts"
     cp "$SCRIPT_DIR/sprint-status.py" "$PROJ/.claude/harness/scripts/"
     cp "$SCRIPT_DIR/harness_config.py" "$PROJ/.claude/harness/scripts/"
+    cp "$SCRIPT_DIR/harness_spec.py" "$PROJ/.claude/harness/scripts/"
     printf "artifacts_root: '_bmad-output/implementation-artifacts'\n" \
         > "$PROJ/.claude/harness/harness-project-config.yaml"
     SS="$PROJ/.claude/harness/scripts/sprint-status.py"

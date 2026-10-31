@@ -11,6 +11,27 @@
 
 ---
 
+## v0.2.1 — 2026-10-31 — `cancelled` 算 story 终态 (closes #13)
+
+### 触发
+
+issue #13：一个 epic 的 16 条 backlog 跑完后，`epic-all-done 98` 退出码 1，因为 98-2 / 98-3 / 98-5 在规划阶段作废，状态写的是 `cancelled`，而终态只认 `done` 和 `wont-do`。§2 主循环把它当成"有 story 停在中途"，halt 并建议 `--continue`。这三条从没开始过，`--continue` 找不到东西，retro 也进不去。同一份 sprint-status 里还有一条 `cancelled`，跑到那个 epic 时会再卡一次。
+
+### 改动范围
+
+- `harness_spec.py`：新增 `ACTIVE_STORY_STATUSES`（backlog / ready-for-dev / in-progress / review）、`DROPPED_STORY_STATUSES`（wont-do / cancelled / canceled）、`TERMINAL_STORY_STATUSES`（done + 放弃态）。三个脚本共用这一份清单，之前 `sprint-status.py` 和 `harness-state.py` 各写了一份。
+- `sprint-status.py epic-all-done`：`cancelled` 计入终态。未全终态时 stderr 在原有清单后多打两行，`active=` 是 BMad 标准的进行中状态，`unrecognized=` 是两类都不属于的状态；只剩 `unrecognized=` 时再打一行 `hint:`，说明 `--continue` 续不了，给出改法。
+- `harness-state.py --in-flight`：已提交状态为 `cancelled` 的 story 也排除。
+- `harness-commit.py` stage 6 / 6-done：`EPIC_WONT_DO=` 同时列出 `wont-do` 和 `cancelled` 的 key。上游 retro 对两者一样强制 `rejected`，verdict 门据此不 halt。行名保持不变，run.md 里的判断不用改。
+- `commands/run.md`：§2 新增"epic 未全终态 halt"一段，按 `active=` / `unrecognized=` 分别给建议，只有前者才建议 `--continue`；`--epic` 参数表、阶段 ⑥、verdict 门同步写上 `cancelled`。
+- 测试：`build_pipeline_test.sh` 新增 N7（cancelled 终态、in-flight 排除、EPIC_WONT_DO 列出）和 N8（active / unrecognized 分行与 hint）；`sprint_status_format_test.sh` 夹具补拷 `harness_spec.py`。
+
+### 后续注意
+
+- 项目侧跑 `/harness-zh:update` 拿到新脚本后，直接重跑 `/harness-zh:run --epic <N>`，不用再手工把 `cancelled` 改成 `wont-do`。
+- retro verdict 仍会是 `rejected`（上游行为），回报里会注明可能只是这些 key 触发。
+- 终态清单没有做成配置项。遇到别的作废写法（如 `superseded`），halt 文案会提示改成 `cancelled` 或 `wont-do`。
+
 ## v0.2.0 — 2026-10-27 — 适配 BMad 6.11+：每条 story 改由 bmad-build-auto 跑完，harness 改做事后审计与收口
 
 ### 触发

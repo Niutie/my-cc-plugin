@@ -2592,17 +2592,20 @@ def read_retro_verdict(epic):
 
 def _emit_retro_verdict(epic):
     """RETRO_VERDICT= plus EPIC_WONT_DO= (stories the project dropped on
-    purpose). Upstream bmad-retrospective counts every non-`done` story as
-    pending and forces the machine verdict to `rejected`, so a `wont-do` story
-    alone produces `rejected` — run.md's verdict gate uses EPIC_WONT_DO to tell
-    that apart. Emitted on 6 (ok) and 6-done (ok or skip) so a resumed run
-    that only reaches 6-done still gets the gate input."""
+    purpose: any harness_spec.DROPPED_STORY_STATUSES, i.e. `wont-do` and
+    `cancelled`; the name is kept for compatibility). Upstream
+    bmad-retrospective counts every non-`done` story as pending and forces the
+    machine verdict to `rejected`, so a dropped story alone produces
+    `rejected` — run.md's verdict gate uses EPIC_WONT_DO to tell that apart.
+    Emitted on 6 (ok) and 6-done (ok or skip) so a resumed run that only
+    reaches 6-done still gets the gate input."""
     emit(f"RETRO_VERDICT={read_retro_verdict(epic)}")
     sync_script = str(Path(__file__).resolve().parent / "sprint-status.py")
     r = subprocess.run([sys.executable, sync_script, "epic-stories", str(epic)],
                        capture_output=True, text=True, check=False)
-    wont = [ln.split("\t")[0] for ln in r.stdout.splitlines()
-            if ln.endswith("\twont-do")] if r.returncode == 0 else []
+    rows = [ln.split("\t") for ln in r.stdout.splitlines()] if r.returncode == 0 else []
+    wont = [row[0] for row in rows
+            if len(row) == 2 and row[1] in harness_spec.DROPPED_STORY_STATUSES]
     emit("EPIC_WONT_DO=" + (",".join(wont) if wont else "none"))
 
 

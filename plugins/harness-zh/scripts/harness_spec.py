@@ -34,6 +34,17 @@ except Exception:  # pragma: no cover
 # bmad-build-auto spec-template.md frontmatter `status` vocabulary.
 SPEC_STATUSES = ("draft", "ready-for-dev", "in-progress", "in-review", "done", "blocked")
 
+# sprint-status.yaml story statuses.
+# BMad template vocabulary for a story still on its way to `done`.
+ACTIVE_STORY_STATUSES = ("backlog", "ready-for-dev", "in-progress", "review")
+# Closed without delivery. Not in the BMad template, but real projects use
+# `wont-do` for stories dropped mid-sprint and `cancelled` for stories voided at
+# planning time (superseded / merged elsewhere, key kept for traceability —
+# issue #13). Upstream bmad-retrospective still counts them as pending and
+# forces verdict `rejected`; harness reports them as EPIC_WONT_DO=.
+DROPPED_STORY_STATUSES = ("wont-do", "cancelled", "canceled")
+TERMINAL_STORY_STATUSES = ("done",) + DROPPED_STORY_STATUSES
+
 
 def epic_of_key(key: str) -> str | None:
     """`3-2-digest-delivery` → `3`. None when the key has no numeric epic segment."""

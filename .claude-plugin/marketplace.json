@@ -15,7 +15,7 @@
       "name": "harness-zh",
       "source": "./plugins/harness-zh",
       "description": "BMad-based sprint orchestration harness for solo-dev + AI workflows (zhenhua's flavor). Requires BMad >= 6.11 (bmad-build-auto) + uv.",
-      "version": "0.2.0"
+      "version": "0.2.1"
     },
     {
       "name": "ppt-maker",

@@ -475,6 +475,40 @@ else
     fail "N5" "inflight=$inf out=$out"
 fi
 
+# N7 — `cancelled` is terminal (issue #13): epic-all-done passes, --in-flight
+#      skips it, EPIC_WONT_DO lists it
+dir="$(seed_repo)"
+(cd "$dir" && git tag harness/9-2-bar/start && python3 "$SS" set 9-1-foo done >/dev/null 2>&1 && python3 "$SS" set 9-2-bar cancelled >/dev/null 2>&1 \
+   && git add -A && git commit -q -m "voided at planning")
+(cd "$dir" && python3 "$SS" epic-all-done 9 >/dev/null 2>&1); n7_rc=$?
+inf="$(cd "$dir" && python3 "$HS" --in-flight 2>/dev/null)"
+printf -- '---\nepic: 9\nverdict: rejected\n---\n# retro\n' > "$dir/$ART/epic-9-retro-2026-10-31.md"
+(cd "$dir" && git add -A && git commit -q -m retro)
+out="$(cd "$dir" && python3 "$HC" 6-done 9-1-foo --epic 9 2>&1)"
+rm -rf "$dir"
+if [ "$n7_rc" = 0 ] && [ -z "$inf" ] && printf '%s' "$out" | grep -qx "EPIC_WONT_DO=9-2-bar"; then
+    pass "N7 cancelled terminal + EPIC_WONT_DO"
+else
+    fail "N7" "epic-all-done rc=$n7_rc inflight=$inf out=$out"
+fi
+
+# N8 — epic-all-done splits pending into active= / unrecognized=; hint only
+#      when nothing is active
+dir="$(seed_repo)"
+(cd "$dir" && python3 "$SS" set 9-1-foo done >/dev/null 2>&1 && python3 "$SS" set 9-2-bar superseded >/dev/null 2>&1)
+err_u="$(cd "$dir" && python3 "$SS" epic-all-done 9 2>&1 >/dev/null)"; rc_u=$?
+(cd "$dir" && python3 "$SS" set 9-2-bar in-progress >/dev/null 2>&1)
+err_a="$(cd "$dir" && python3 "$SS" epic-all-done 9 2>&1 >/dev/null)"; rc_a=$?
+rm -rf "$dir"
+if [ "$rc_u" = 1 ] && printf '%s' "$err_u" | grep -qx "active=none" \
+   && printf '%s' "$err_u" | grep -qx "unrecognized=9-2-bar(superseded)" && printf '%s' "$err_u" | grep -q "^hint:" \
+   && [ "$rc_a" = 1 ] && printf '%s' "$err_a" | grep -qx "active=9-2-bar(in-progress)" \
+   && printf '%s' "$err_a" | grep -qx "unrecognized=none" && ! printf '%s' "$err_a" | grep -q "^hint:"; then
+    pass "N8 epic-all-done active/unrecognized split"
+else
+    fail "N8" "rc_u=$rc_u err_u=$err_u | rc_a=$rc_a err_a=$err_a"
+fi
+
 # N6 — gate ① regex covers letter-suffixed story numbers
 echo "$ART/spec-124-4b-foo.md" | grep -qE "$TRIG" && pass "N6 gate ① letter suffix" || fail "N6" "regex=$TRIG"
 
