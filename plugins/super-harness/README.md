@@ -8,6 +8,75 @@ harness-zh 一次推进一条 story。super-harness 在它上面加一层调度�
 
 设计说明见 [architecture.md](architecture.md)，思路来自 [deepseek-ai/dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype)。
 
+## 架构一览
+
+图文版在 [`docs/architecture.html`](docs/architecture.html)：单个文件，不依赖网络，克隆仓库后直接用浏览器打开。里面有 6 张图（整体结构、两路并行的时间线、tick 决策、lane 状态机、合流流程、收口），以及就绪规则、冲突处理、状态文件和失败恢复的对照表。下面是其中三张的简化版。
+
+### 一条 story 怎么走完
+
+```mermaid
+flowchart LR
+  S["sprint-status.yaml<br/>depends_on / deps_overrides"] --> R{"就绪判定<br/>且有空 slot"}
+  R -->|prepare + launch| W1["lane worktree：story/A<br/>claude -p worker 跑 B0–B3"]
+  R -->|prepare + launch| W2["lane worktree：story/B<br/>claude -p worker 跑 B0–B3"]
+  W1 -->|report ready| I["合流（串行）<br/>rebase → 搬 tag → build-verify → ff"]
+  W2 -->|report ready| I
+  I --> C["收口（串行）<br/>build-sync → done tag → ⑤.5 测试"]
+  C -->|epic 全部完成| T["epic retro ⑥ / ⑥.5"]
+  C -.->|下游依赖满足| R
+```
+
+并行的只有 worker 那一段（B0–B3），各在自己的 worktree 和分支上。合流、收口、retro 要写共享账本或共用测试环境，在主 worktree 里一条一条做。
+
+### 一轮调度
+
+```mermaid
+sequenceDiagram
+  participant D as 调度者（主 agent）
+  participant S as superh.py
+  participant W as worker（claude -p）
+  D->>S: tick
+  S-->>D: next_action = launch
+  D->>S: prepare KEY，再后台 launch KEY
+  S->>W: 启动，cwd = lane worktree
+  Note over D: 没事可做，结束本轮回复
+  W->>S: report KEY --status ready
+  W-->>D: 进程退出，唤醒调度者
+  D->>S: tick
+  S-->>D: next_action = integrate
+  D->>S: integrate KEY（rebase + ff）
+  loop 直到 NEXT=finish
+    D->>S: postmerge KEY
+    S-->>D: NEXT = sync / tag / test / finish
+  end
+```
+
+调度者的每个决定都来自 `superh.py` 的结构化输出。状态落在 `.git/super-harness/`，每个文件只有一个写入者，任何一步被打断，下次 tick 都能从磁盘接着走。
+
+### 一条 lane 的状态
+
+```mermaid
+stateDiagram-v2
+  state "blocked · failed · quota · crashed" as trouble
+  [*] --> preparing
+  preparing --> prepared: 完成
+  preparing --> held: prepare 失败
+  prepared --> working: launch
+  working --> ready: report ready
+  working --> trouble: worker 出问题
+  trouble --> prepared: retry（crashed 自动一次）
+  ready --> integrating: integrate
+  integrating --> conflict: 代码冲突
+  conflict --> integrating: 子 agent 或你解决后
+  integrating --> held: build-verify 不通过
+  held --> prepared: 修好后 retry
+  integrating --> merged: ff 合并
+  merged --> done: postmerge 收口完成
+  done --> [*]
+```
+
+trouble、conflict、held 是需要你处理的状态，`/super-harness:board` 会把它们排在最前面。
+
 ## 前置条件
 
 - harness-zh ≥ 0.2.1，并且已经在项目里执行过 `/harness-zh:init`

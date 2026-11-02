@@ -2,6 +2,8 @@
 
 super-harness 是装在 harness-zh 上面的一层调度器。harness-zh 一次只推进一条 story；super-harness 让几条互不依赖的 story 同时推进，每条 story 内部走的仍然是 harness-zh 那条流水线。
 
+带图的版本见 [docs/architecture.html](docs/architecture.html)（单文件，浏览器直接打开）。
+
 设计思路来自 [deepseek-ai/dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype)，主要参考它的 `docs/001-domain.md` 和 `docs/003-execution.md`。
 
 ## 1. 借鉴了什么
