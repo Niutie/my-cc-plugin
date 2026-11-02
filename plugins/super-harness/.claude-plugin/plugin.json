@@ -1,0 +1,11 @@
+{
+  "name": "super-harness",
+  "version": "0.1.0",
+  "description": "Parallel sprint dispatcher on top of harness-zh: one git worktree + one headless claude worker per story, dependency-aware scheduling with a fixed number of slots, serial merge queue that auto-resolves ledger conflicts, and a board that only shows what needs a person. Provides /super-harness:init, /super-harness:run, /super-harness:board. Requires harness-zh >= 0.2.1 deployed in the project.",
+  "author": {
+    "name": "zhenhua zhu"
+  },
+  "homepage": "https://github.com/Niutie/my-cc-plugin",
+  "repository": "https://github.com/Niutie/my-cc-plugin",
+  "license": "UNLICENSED"
+}

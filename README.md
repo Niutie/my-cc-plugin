@@ -1,11 +1,12 @@
 # my-cc-plugin
 
-Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niutie). Distributes four plugins:
+Personal Claude Code plugin marketplace by [zhenhua zhu](https://github.com/Niutie). Distributes five plugins:
 
 | Plugin | Version | What it does |
 |---|---|---|
 | **[article-maker](plugins/article-maker/README.md)** | 0.1.1 | Turn any source (URL / PDF / DOCX / Markdown / text / screenshots) into a beautiful, share-ready single-file HTML article (optional PDF) |
 | **[harness-zh](plugins/harness-zh/README.md)** | 0.2.1 | BMad-driven sprint orchestration harness for solo-dev + AI workflows |
+| **[super-harness](plugins/super-harness/README.md)** | 0.1.0 | Parallel dispatcher on top of harness-zh: one worktree + one headless Claude worker per story, merged back in order |
 | **[ppt-maker](plugins/ppt-maker/README.md)** | 1.1.0 | Turn source material into an offline web deck **and** a genuinely editable `.pptx`, from one `deck.json` source of truth |
 | **[video-maker](plugins/video-maker/README.md)** | 1.11.0 | Turn scripts / articles / lessons into click-driven 16:9 web presentations you can screen-record as cinematic videos |
 
@@ -19,6 +20,7 @@ Add the marketplace once, then install whichever plugin you want:
 /plugin marketplace add https://github.com/Niutie/my-cc-plugin.git
 /plugin install article-maker@my-cc-plugin
 /plugin install harness-zh@my-cc-plugin
+/plugin install super-harness@my-cc-plugin
 /plugin install ppt-maker@my-cc-plugin
 /plugin install video-maker@my-cc-plugin
 ```
@@ -36,6 +38,14 @@ A sprint orchestration loop (`/harness-zh:run`) plus a test-automation loop (`/h
 - **Commands:** `/harness-zh:init`, `:run`, `:run-test`, `:update`, `:upgrade-deferred-work`, `:report-issue`, `:codex-catchup`
 - **Requires:** [BMad-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) ≥ 6.11 and [uv](https://docs.astral.sh/uv/); the codex plugin is optional (cross-model review)
 - **Full docs:** [`plugins/harness-zh/README.md`](plugins/harness-zh/README.md) · architecture + changelog live alongside it
+
+### super-harness
+
+A dispatcher layered on harness-zh that runs independent stories in parallel. Each ready story (dependencies taken from `depends_on` in `sprint-status.yaml` or from `deps_overrides`) gets its own git worktree and a headless `claude -p` worker that runs harness-zh's per-story build steps (B0-B3). Finished lanes are rebased onto the sprint branch one at a time and fast-forwarded in, with conflicts in the shared ledgers resolved automatically. The main session then runs build-sync, tests and the epic retro serially. A board lists the lanes that need a person first.
+
+- **Commands:** `/super-harness:init`, `:run`, `:board`
+- **Requires:** harness-zh ≥ 0.2.1 deployed in the project, git ≥ 2.38, the `claude` CLI
+- **Full docs:** [`plugins/super-harness/README.md`](plugins/super-harness/README.md) · [`architecture.md`](plugins/super-harness/architecture.md)
 
 ### video-maker
 

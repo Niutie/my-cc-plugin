@@ -1,0 +1,215 @@
+# super-harness 架构
+
+super-harness 是装在 harness-zh 上面的一层调度器。harness-zh 一次只推进一条 story；super-harness 让几条互不依赖的 story 同时推进，每条 story 内部走的仍然是 harness-zh 那条流水线。
+
+设计思路来自 [deepseek-ai/dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype)，主要参考它的 `docs/001-domain.md` 和 `docs/003-execution.md`。
+
+## 1. 借鉴了什么
+
+| superagent | super-harness |
+|---|---|
+| Ticket：一份已授权的工作 | lane：一条 story 的一次并行执行 |
+| 每个 Ticket 一个 Executor Session、一个目录，目录通常由 prepare 命令用 `git worktree` 准备 | 每条 story 一个 worktree（分支 `story/<KEY>`）加一个 headless `claude -p` 进程 |
+| 主 Session 只评估和派工，自己不干活 | `/super-harness:run` 的主 agent 只做调度、合流和收口 |
+| worker slot 数量固定，满了就排队 | `max_slots`，prepared 和 running 的 lane 都占 slot |
+| Engine 是领域状态的唯一写入者 | 共享账本（sprint-status、deferred-work、`done` tag）只在主 worktree 里串行写 |
+| Ticket 的阶段由存储的事实推导，按表从上到下取第一条匹配 | lane 阶段由 `lane.json`、`proc.json`、`result.json` 推导（§4.2） |
+| 面板只显示需要人处理的事 | `/super-harness:board` 先列需要人处理的 lane，健康的 lane 只占一行 |
+| 一个 Ticket 受阻不影响其他 Ticket | 单路 blocked / failed / conflict 只停这一路 |
+| 人可以直接在 Executor Session 里接着做 | `cd <worktree> && claude --resume <session>` |
+| 重启后从存储恢复，进程丢失的 Assignment 带恢复说明重启 | 状态落在 `.git/super-harness/`；进程丢失的 lane 自动 retry 一次，worker 按 harness-state 续作 |
+
+没有照搬的部分：Source、Eval、Mandate、Subscription 这套事件和授权模型。super-harness 的工作来源只有 sprint-status.yaml，授权就是用户执行了 `/super-harness:run`。
+
+## 2. 三个角色
+
+```
+                 调度者（主 worktree，/super-harness:run 的主 agent）
+   tick → 有空 slot 就 prepare + 后台 launch → 无事可做就结束本轮，等 worker 退出通知
+        │                         │
+        ▼                         ▼
+  worker（wt/3-2，claude -p）  worker（wt/3-4，claude -p）
+  按 harness-zh run.md 跑       B0 start tag → B1 bmad-build-auto → build-verify
+  B0-B3，最后 superh report      → B2 codex（按需）→ B3 follow-up（按需）
+        │                         │
+        └────────────┬────────────┘
+                     ▼
+            合流（调度者，串行）
+   superh integrate：rebase 到 sprint 分支 → 账本冲突自动消解 → 搬 tag
+                     → lane 内 build-verify → ff 合并
+   代码冲突 → 合流冲突子 agent（prompts/merge-fix.md）→ 修不了就留给人
+                     ▼
+            收口（调度者，串行，主 worktree）
+   B4 build-sync → ⑤.5 run-test → done tag → cleanup
+   epic 全部 done → ⑥ retro / ⑥.5
+```
+
+- 调度者：主 agent。所有确定性的判断都交给 `scripts/superh.py`，主 agent 只读 `tick` 的 JSON 做分派。
+- worker：一个独立的 Claude Code 进程，工作目录是自己的 worktree。它读的是 harness-zh 部署的 `.claude/commands/run.md`，只执行 B0-B3，覆盖规则写在 `prompts/worker.md`。
+- 合流冲突子 agent：只在 rebase 遇到代码冲突时由调度者派出，在 lane worktree 里解决冲突并跑验证命令。
+
+## 3. 为什么 worker 用独立进程
+
+做过两种方案的对比：
+
+| | Agent 工具后台运行 + `isolation: worktree` | 独立 `claude -p` 进程 |
+|---|---|---|
+| 工作目录 | 分支名、清理时机不受控 | 进程 cwd 就是 lane worktree，bmad-build-auto 的相对路径、`uv run`、`.claude/skills` 都能原样工作 |
+| 嵌套深度 | 在调度者之下再嵌套，bmad-build-auto 自己还要起两层子 agent | 每个 worker 的嵌套深度从 0 算起 |
+| 人工接手 | 不行 | `claude --resume <session>` |
+| 上下文 | worker 的输出回流到调度者 | 调度者只读 `result.json` |
+
+launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SESSION*`、`CLAUDE_CODE_MESSAGING*` 等环境变量，让 worker 成为一个全新的会话。输出用 `stream-json`，session id 从第一条 init 事件里取（实测 `--session-id` 传进去的值和实际 session 不一致，所以不预先指定）。
+
+调度者用 Bash 的 `run_in_background` 启动 `superh.py launch`，这个包装进程一直等到 claude 退出才落盘退出码并结束。Claude Code 在后台命令退出时会唤醒调度者，所以调度者不需要轮询。代价是调度者的会话结束时，后台进程也会一起结束；下次运行时这些 lane 显示为 `crashed`，自动 retry 一次。
+
+## 4. 状态
+
+### 4.1 存放位置和写入者
+
+全部放在 `$(git rev-parse --git-common-dir)/super-harness/`，不进 git，所有 worktree 看到的是同一份。每个文件只有一个写入者，避免并发写坏：
+
+| 文件 | 写入者 | 内容 |
+|---|---|---|
+| `run.json` | 调度者（`start-run`） | 本次运行固定的 sprint 分支、`--slots` 覆盖值 |
+| `lanes/<KEY>.json` | 调度者（prepare / integrate / mark / retry / cleanup / abandon） | phase、分支、worktree、rebase 的 onto、要搬的 tag、自动消解记录 |
+| `lanes/<KEY>.proc.json` | `launch` 包装进程 | pid、session id、attempt、退出码、最后的 result 文本、花费 |
+| `lanes/<KEY>.result.json` | worker（`superh report`） | status、summary、codex 跳过原因、follow-up 提示、halt 原文 |
+| `logs/<KEY>.attempt-N.*` | `launch` | 渲染后的 prompt、stream-json 全量日志、stderr |
+
+harness-zh 自己的状态源（`harness/<KEY>/*` tag、spec frontmatter、sprint-status.yaml）保持不变。tag 是仓库级的，任何 worktree 里打的 tag 主 worktree 都能看到。
+
+### 4.2 lane 阶段
+
+按下表从上到下，取第一条匹配：
+
+| 阶段 | 条件 | 需要人 |
+|---|---|---|
+| done / abandoned | phase 为 done / abandoned | |
+| conflict | phase = conflict（rebase 停在代码冲突上） | 是 |
+| held | phase = held（prepare 失败、rebase 后 build-verify 不通过、调度者挂起） | 是 |
+| integrating | phase 为 integrating / merged | |
+| queued | phase 为 preparing / prepared，或这一次 attempt 还没有 proc 记录 | |
+| working | proc 没有退出码，pid 存活 | |
+| crashed | proc 没有退出码，pid 已不存在 | 是（第一次自动 retry） |
+| failed | 退出了，但没有本次 attempt 的 result | 是 |
+| ready / blocked / failed / quota | 按 result.status | blocked / failed / quota 需要人 |
+
+`tick` 的 `next_action` 优先级：post-merge（已合入未收口）> integrate > retro > launch > wait > finished / stalled。合流排在启动前面，是为了让依赖它的 story 尽早变成就绪。
+
+## 5. 就绪判定
+
+一条 story 能启动，需要同时满足：
+
+1. sprint-status 里是 `backlog`，没有活着的 lane，也没有「有 start tag、没有 done tag」的残留（那是 harness-zh 单路跑到一半的 story，super-harness 不接手）。
+2. epic 屏障：编号更小的 epic 里所有 story 都已终态（done / wont-do / cancelled）；`retro_barrier: true` 时，这些 epic 的 retrospective 也要是 done。
+3. 依赖：
+   - `deps_overrides` 里有这条 story，以它为准；
+   - 否则看 sprint-status 的 `depends_on`。BMad sprint-planning 的多行块格式本来就带这个字段，可以写 story key、短号（`3.2` / `3-2`）或 `epic-N`；
+   - 两处都没有：`no_deps_policy: serial` 时依赖它前面所有未终态的 story，效果和 harness-zh 一样一次一条；`epic-parallel` 时同 epic 内视为独立。
+   - 依赖只有在**已经合入并 build-sync 为 done** 之后才算满足，所以下游 story 开 worktree 时一定能看到上游的代码。
+
+`depends_on: []` 表示明确声明为独立，在 serial 策略下也能并行。
+
+## 6. lane worktree 的准备
+
+1. `git worktree add -b story/<KEY> <worktree_root>/<KEY> <sprint 分支 HEAD>`。worktree 默认放在仓库外面（`<仓库名>.worktrees/`），避免出现在主 worktree 的 `git status` 里。
+2. 主 worktree 里存在、但没进 git 的基建路径（`copy_paths`）复制进去，已经在 worktree 里的不动。`.claude/harness` 必须复制不能软链：harness-zh 的脚本用 `Path(__file__).resolve().parents[3]` 推算仓库根目录，软链会被解析回主 worktree，导致 worker 读写主 worktree 的文件。
+3. 体积大的只读目录可以放进 `link_paths` 软链。
+4. 复制或软链进来的路径必须被项目 `.gitignore` 忽略，否则 worktree 一开始就是脏的，bmad-build-auto 会拒绝启动。没被忽略时 prepare 直接失败，输出应该加进 `.gitignore` 的行（`GITIGNORE=/<路径>`），lane 记为 held。super-harness 不自己改 `.git/info/exclude`：这个文件所有 worktree 共用，为 lane 加的规则会让主 worktree 里同一路径下用户自己的文件也从 `git status` 里消失。软链要用不带结尾斜杠的规则（`/node_modules`），`node_modules/` 匹配不到软链。`superh.py doctor` 可以在开 lane 之前做这项检查，init 会调用它。
+5. 执行 `prepare_command`（例如安装依赖），最后确认 worktree 干净。
+
+## 7. 合流
+
+### 7.1 为什么用 rebase + ff
+
+harness-zh 的很多地方假定每条 story 的提交在一段连续区间里：`build-verify` 审计 `start..HEAD`，`codex-catchup` 用 `start..done` 作为 review 窗口，`git log start..done` 是 story 的完整提交序列。如果用 merge commit 合流，几条 story 交替合入后，这些区间里会混进别的 story 的提交。
+
+所以合流时把 lane 分支 rebase 到 sprint 分支最新提交上，再 ff 合并。sprint 分支保持线性，每条 story 的提交仍然连成一段，harness-zh 的所有区间语义不变。
+
+### 7.2 tag 搬迁
+
+rebase 会改写提交，lane 里已经打好的 `built`、`followup-start`、`followup` tag 会指向旧提交。integrate 在 rebase 之前给这些 tag 各建一个临时分支，用 `git rebase --update-refs` 让 git 在改写时同步移动这些分支，rebase 结束后把 tag 改指到新位置，删掉临时分支。`start` tag 改指到 rebase 的 onto 提交。这一步需要 git ≥ 2.38。
+
+### 7.3 账本冲突
+
+`build-verify` 允许 bmad-build-auto 在自己的提交里改 `sprint-status.yaml`、`deferred-work.md` 和 `epic-<N>-context.md`，所以几路并行时这三个文件几乎一定会冲突。规则如下（rebase 期间 ours 是 sprint 分支，theirs 是 story 的提交）：
+
+| 文件（仅限 artifacts 目录下一层） | 处理 | 理由 |
+|---|---|---|
+| `sprint-status.yaml` | 取 sprint 分支版本 | 本 story 的状态由紧接着的 build-sync 写成 done；sprint 分支上别的 story 的 done 不能丢 |
+| `epic-<N>-context.md` | 取 sprint 分支版本 | bmad-build 编译出的缓存，下次 build 会重新生成 |
+| `deferred-work.md` | 三方 union 合并 | 追加型账本，两边新增的条目都要留 |
+
+其他文件的冲突一律交给合流冲突子 agent，修不了就留在 conflict 状态等人。rebase 期间禁用 hooks（`core.hooksPath=/dev/null`）：被重放的提交在 lane 里提交时已经过了一遍 pre-commit。
+
+### 7.4 中断后重跑
+
+integrate 的每一步都能重跑，后面步骤依赖的信息都在可能被打断的步骤之前落盘：
+
+- 新的起点 `onto` 和 `integrating` 状态在移动任何 tag、执行 ff 之前写入 lane。没有发生 rebase 时，`onto` 取 lane 分支和 sprint 分支的 merge-base，只记一次，重跑不会重新计算。
+- `harness/<KEY>/start` 只在真的 rebase 过时才移动。
+- lane 的 HEAD 已经包含在 sprint 分支里，说明上一次已经 ff 成功、只是没来得及记录。这时只补记 `merged`，不动任何 tag。
+
+如果用当前的 sprint HEAD 现算起点，ff 之后它就是这条 story 自己的最后一个提交，start tag 一旦被移过去，`start..HEAD` 就成了空区间。
+
+### 7.5 合并前再验一次
+
+rebase 完成后、ff 之前，在 lane worktree 里重跑一次 `harness-commit.py build-verify`。冲突解决可能引入越界改动，这一步把它挡在 sprint 分支外面。不通过时 lane 记为 held，sprint 分支不动。
+
+## 8. 收口
+
+ff 之后，调度者在主 worktree 里按 harness-zh run.md 原文执行 B4 第 0 步（codex-skipped marker）、B4 build-sync、⑤.5 测试，然后 `mark done` 和 `cleanup`。epic 的最后一条 story 收口后，下一轮 tick 给出 `retro`，按 harness-zh 的阶段 ⑥ / ⑥.5 / verdict 门执行。
+
+这几步都要写共享账本，或者需要共享的运行环境（e2e 的端口、数据库），所以全部串行。测试会因此成为瓶颈，这是 v0.1 有意接受的代价。
+
+收口的任何一步都可能被打断，所以调度者不按固定顺序执行，而是每步之前跑一次只读的 `superh.py postmerge <KEY>`，由它根据磁盘上的事实给出下一步：
+
+| 事实 | NEXT |
+|---|---|
+| done tag 不存在，harness-state 为 `sync`（或为 `codex` 且 marker 还没写） | `sync`：按需写 marker，build-sync，commit，打 done tag |
+| done tag 不存在，harness-state 为 `tag-only`（build-sync 已 commit） | `tag` |
+| done tag 存在，测试还没完成 | `test` |
+| done tag 存在，测试已完成（lane 里有 `tested` 检查点，或 HEAD 里已有 `<KEY>-test-result.json` / `skipped-<KEY>-*.md`） | `finish` |
+| 其他 | `halt` |
+
+marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文件弄脏、再被 build-sync 当成新改动提交。build-sync 返回 skip 时照样打 done tag，否则会一直停在 `sync`。
+
+## 9. 失败与恢复
+
+| 情况 | 结果 | 恢复 |
+|---|---|---|
+| worker 报 blocked / failed | 只停这一路 | 接手 session 修好后 `superh retry <KEY>`，worker 按 harness-state 续作 |
+| worker 退出但没有回报 | failed | 看 `logs/<KEY>.attempt-N.stream.jsonl`，然后同上 |
+| 调度者会话结束 | 在跑的 worker 随之结束，显示为 crashed | 下次 `/super-harness:run` 自动 retry 一次 |
+| 配额耗尽 | 不再派发新 lane，等在跑的结束后 halt | 额度恢复后 retry |
+| 合流代码冲突 | conflict，rebase 现场保留在 lane worktree | 子 agent 处理；不行就人工解决冲突并 `git add`，再跑 `/super-harness:run`。tick 发现冲突文件都已解决，会把这一路送回 integrate，由它完成 `rebase --continue` |
+| 合流过程中调度者被打断 | lane 停在 integrating，或 ff 已完成但状态没记下 | 下次 tick 把它送回 integrate，按 §7.4 续上 |
+| prepare 中途被打断（例如 `prepare_command` 运行时会话被关） | lane 停在 preparing | tick 把它放回 launch 列表；prepare 先确认分支没有新提交、没有 harness tag，再清理现场重做；确认不了就记为 held |
+| launch 在两次落盘之间被打断 | phase=launched 但没有本次 attempt 的 proc 记录，显示为 queued | proc 记录写在启动 claude 之前，没有它就说明 worker 从没启动过；launch 直接重新启动 |
+| 收口中途被打断 | lane 停在 merged | 下次 tick 进入 post-merge，`postmerge` 从第一个没完成的步骤继续（§8） |
+| 收口在 sync 步骤里被打断（marker 已写或 build-sync 已暂存，未 commit） | 主 worktree 是脏的 | `start-run` 核对脏文件是否全部属于某个 merged、无 done tag 的 lane 的收口产物（sprint-status、deferred-work、该 lane 的 marker）。是则报 `MAIN_CLEAN=resumable` 放行，重跑 build-sync 时一并提交；混进任何其他文件仍然 halt。⑤.5 测试中途被打断留下的文件范围太宽，不在放行之列 |
+| 补进 lane 的文件没被 .gitignore 忽略 | prepare 失败，lane 记为 held | 按输出的 `GITIGNORE=` 行补 `.gitignore` 并提交，`abandon --yes` 后重新排队 |
+| rebase 后 build-verify 不通过 | held，sprint 分支不动 | 在 lane 里修好后 retry |
+| build-sync halt | 全局 halt | 按 harness-zh §3 halt 模板 |
+| 放弃某一路 | `superh abandon <KEY> --yes`：删 worktree、分支，以及这条 story 没有 done 的 `harness/<KEY>/*` tag | story 回到 backlog，可以重新排队 |
+
+## 10. 与 harness-zh 的接口
+
+super-harness 依赖 harness-zh ≥ 0.2.1 部署在项目里的这些东西：
+
+- `.claude/commands/run.md`：worker 和调度者都按它执行，super-harness 只写覆盖规则；
+- `harness-commit.py build-verify` / `build-sync` 的 `STATUS=` 输出和退出码契约；
+- `harness-state.py` 的续作路由（`next_action_code`）；
+- `harness_config.get_artifacts_root()`、`harness_spec.TERMINAL_STORY_STATUSES`；
+- `harness/<KEY>/{start,built,followup-start,followup,done}` tag 的语义。
+
+harness-zh 改动这些契约时，需要同步检查 super-harness。
+
+## 11. 已知限制
+
+- 依赖信息要靠 sprint-status 的 `depends_on` 或 `deps_overrides`。都没有时默认串行，不会自动推断。
+- 不预测文件级的冲突。两条声明为独立的 story 改到同一段代码时，要到合流时才发现。
+- ⑤.5 测试和 epic retro 串行执行；跨 epic 的并行受 retro 屏障限制，可以关掉 `retro_barrier`，但 harness-zh 的 pre-commit gate ① 仍会按 `retro_gate` 设置拦截。
+- worker 默认用 `bypassPermissions` 无人值守运行。
+- 调度者会话结束会带走在跑的 worker。

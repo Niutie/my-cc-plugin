@@ -32,6 +32,9 @@ jobs:
       - name: Run plugin self-test suite (source-tree only)
         run: bash plugins/harness-zh/scripts/run_all_tests.sh
 
+      - name: Run super-harness dispatcher tests (uses harness-zh source scripts)
+        run: bash plugins/super-harness/scripts/superh_test.sh
+
   bootstrap-tests:
     name: Bootstrap-fixture tests (env-dependent)
     runs-on: ubuntu-latest
