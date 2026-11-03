@@ -1,6 +1,6 @@
 {
   "name": "super-harness",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "BMad-based sprint orchestration for solo-dev + AI workflows (harness-zh merged in since 0.2.0). Runs backlog stories through bmad-build-auto, commit-range audit, optional codex review, follow-up review, ledger sync, tests and epic retro. Two ways to run: /super-harness:run-inline (one story at a time in the current session) or /super-harness:run (parallel: one git worktree + headless claude worker per story, serial merge queue). Also provides init, update, board, run-test, codex-catchup, report-issue, upgrade-deferred-work.",
   "author": {
     "name": "zhenhua zhu"

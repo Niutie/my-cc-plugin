@@ -4,6 +4,29 @@
 
 ---
 
+## v0.2.1 — 2026-11-03 — git hook 不再覆盖项目自己的 pre-commit；e2e 按探测出的包管理器执行
+
+两个问题都是 harness-zh 时期就有的，0.2.0 合并后的 Codex 对抗式 review 指出。
+
+### git hook 覆盖项目原有检查
+
+`install_git_hooks.sh` 遇到内容不同的同名 hook 时，以前一律备份后覆盖。git 不会执行 `.bak` 文件，项目原有的密钥扫描、格式检查因此静默失效。用 husky 的项目会设 `core.hooksPath`，安装脚本本来就会拒装，不受影响；直接写 `.git/hooks/pre-commit` 的工具（例如 Python 的 pre-commit 框架）会中招。
+
+- 现在先看目标 hook 头 5 行有没有 `Harness pre-commit hook` 标记（harness 历代版本的 hook 都有）。有标记说明是旧版 harness hook，照旧备份后升级。
+- 没有标记就保留原 hook，stderr 打 `REFUSED:`，给出两种处理办法：在原 hook 里加一行串接 harness 的检查（失败即拒绝 commit），或者确认不要原 hook 后用 `HARNESS_HOOK_FORCE=1` 覆盖（仍先备份）。
+- 这种情况退出码是 3，和 `core.hooksPath` 拒装同一语义。init 和 update 原本就把 3 当作 WARN，不 halt；两边文档补上了这种情况。
+- 新增 `install_git_hooks_test.sh`（7 项）：首次安装、重复运行、旧版 harness hook 升级、项目 hook 保留、强制覆盖、`core.hooksPath` 拒装，以及 REFUSED 里给出的串接写法确实能在 harness 检查失败时拦下 commit。
+
+### e2e 写死 pnpm
+
+`check_test_harness_env.sh` 从 harness-zh v0.1.20 起按 lockfile 识别 pnpm / yarn / npm / bun，并用对应工具检查 Playwright；`run-test.md` 的 T4 却一直执行 `pnpm e2e`。npm / yarn / bun 项目只要装了 Playwright，探测就会通过，进 T4 后撞上 `pnpm: command not found`，按 run-test §3 第 3 条整条 halt。
+
+- run-test §0 从探测结果读 `package_manager`，存为 `PKG_MGR`。
+- T4 按 `PKG_MGR` 拼命令：`npm run e2e -- --grep <KEY>`（npm 要 `--` 才会把参数转给脚本）、`yarn e2e --grep <KEY>`、`bun run e2e --grep <KEY>`、`pnpm e2e --grep <KEY>`。退出码仍从 `${PIPESTATUS[0]}` 取。
+- 本机用真实 npm 验证了参数透传和退出码；pnpm / yarn / bun 只验证了命令拼接（本机没装）。
+
+---
+
 ## v0.2.0 — 2026-11-02 — 并入 harness-zh，新增单路模式 run-inline
 
 ### 改动

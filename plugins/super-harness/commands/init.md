@@ -415,9 +415,9 @@ HOOKS_EXIT=$?
 echo "HOOKS_EXIT=$HOOKS_EXIT"
 ```
 
-按退出码处理（installer 退出码语义：`0` 成功；`3` = hooksPath 良性拒装；其他非 0 = 真实安装失败）：
+按退出码处理（installer 退出码语义：`0` 成功；`3` = 良性拒装（`core.hooksPath` 已自定义，或目标位置已有项目自己的 hook）；其他非 0 = 真实安装失败）：
 - `HOOKS_EXIT=0` → 进 §A.5
-- `HOOKS_EXIT=3`（用户已设 `core.hooksPath`，installer 拒装避免 silent no-op — 良性）→ 把 installer 的 stderr verbatim 贴给用户作 **WARN**，**不 halt**（资产已部署，hook 拒装不阻断主流程；solo-dev 看 WARN 自决）
+- `HOOKS_EXIT=3`（用户已设 `core.hooksPath`，installer 拒装避免 silent no-op；或 `.git/hooks/` 里已有项目自己的同名 hook，例如 pre-commit 框架写的，installer 不覆盖，免得原有检查失效 — 都是良性）→ 把 installer 的 stderr verbatim 贴给用户作 **WARN**（`REFUSED:` 段里有串接办法和 `HARNESS_HOOK_FORCE=1` 覆盖办法，由用户选），**不 halt**（资产已部署，hook 拒装不阻断主流程；solo-dev 看 WARN 自决）
 - 其他非 0（含 `1` — hook 源目录缺失 / cp、chmod 权限失败等真实安装失败）→ **WARN**（贴 stderr verbatim）+ 引导 solo-dev 自查：`.claude/harness/git-hooks/` 是否完整、目标 hooks 目录权限、磁盘空间；修好后手工重跑 `bash .claude/harness/scripts/install_git_hooks.sh`。**init 对 hook 安装保持 advisory，不 halt**（与 update §7.3 的 halt 规则不同 — init 首跑资产已落地，hook 可事后补装）
 
 #### A.4.b `in_git=no`（当前目录不在任何 git 仓库内）
@@ -539,7 +539,7 @@ printf '%s\n' "$HELPER_GUIDANCE"
   - deferred-work.md: <bootstrapped from template | preserved existing | skipped — parent dir absent>
   - deferred_work_mode: $DW_MODE_RESULT  （仅 deferred-work.md preserved 时有意义；bootstrapped / skipped 时省此行）
   - harness-residue: $HR_RESULT  （sprint-status.yaml 不存在时省此行）
-  - git hooks: <installed / unchanged | WARN: core.hooksPath ...（exit 3 良性拒装）| WARN: 安装失败 exit <N>（见 §A.4.a 自查引导）>
+  - git hooks: <installed / unchanged | WARN: core.hooksPath ... 或 REFUSED: 项目自有 hook（exit 3 良性拒装）| WARN: 安装失败 exit <N>（见 §A.4.a 自查引导）>
   - codex (optional): $CODEX_RESULT
   - BMad runtime: $BMAD_RUNTIME_RESULT
   - 并行调度: $PARALLEL_RESULT

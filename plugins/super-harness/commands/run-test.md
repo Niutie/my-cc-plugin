@@ -49,7 +49,7 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 |---|---|
 | `--story <key>` | 必传；本次目标 story key（一般是 `_bmad-output/implementation-artifacts/<key>.md` 文件名去 `.md`） |
 | `--epic <num>` | 可选；override sprint-status `epic-of <key>` 解析。v1 仅用作 T1 epic-test-design 路径计算 |
-| `--dry-run` | 不实跑 testarch skill / 不实跑 pnpm e2e；仅 echo 计划 + 退出 |
+| `--dry-run` | 不实跑 testarch skill / 不实跑 e2e；仅 echo 计划 + 退出 |
 
 绑定到对话上下文：
 - `KEY` = `--story` 值
@@ -87,15 +87,18 @@ REASON=$(echo "$ENV_JSON" | python3 -c 'import sys,json; print(json.load(sys.std
 # 前端目录：probe JSON 已带 frontend_dir 字段（probe 自己从 harness-project-config.yaml 读，
 # 缺省 console-web）——不要在本文件硬编码目录名
 FRONTEND_DIR=$(echo "$ENV_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["frontend_dir"])')
+# 包管理器：probe 按 lockfile 判定（pnpm / yarn / npm / bun），version_check 也是用它跑的。
+# T4 必须用同一个，否则探测通过的 npm / yarn / bun 项目会在 T4 撞 "pnpm: command not found"。
+PKG_MGR=$(echo "$ENV_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("package_manager") or "pnpm")')
 # e2e spec 子目录（相对 $FRONTEND_DIR）：probe JSON 不含该字段，从 config 读
 # （与 eval_test_stage_triggers.sh / harness-commit.py 的 e2e spec 白名单同源口径）
 source .claude/harness/scripts/read_harness_config.sh
 E2E_SUBDIR=$(read_harness_config_field e2e_test_subdir 'tests/e2e')
 echo "ALL_AVAILABLE=$ALL_AVAILABLE REASON=$REASON"
-echo "FRONTEND_DIR=$FRONTEND_DIR E2E_SUBDIR=$E2E_SUBDIR"
+echo "FRONTEND_DIR=$FRONTEND_DIR E2E_SUBDIR=$E2E_SUBDIR PKG_MGR=$PKG_MGR"
 ```
 
-把 `FRONTEND_DIR` / `E2E_SUBDIR` 绑定到对话上下文——§−1 产出表、§1 T3 prompt、§1 T4 执行块的
+把 `FRONTEND_DIR` / `E2E_SUBDIR` / `PKG_MGR` 绑定到对话上下文——§−1 产出表、§1 T3 prompt、§1 T4 执行块的
 e2e spec 路径全部以这两个值为准（默认 `console-web` + `tests/e2e`）。
 
 **三条分支**（v0.1.19 A 档加入 no-e2e clean skip 分流）：
@@ -106,7 +109,7 @@ e2e spec 路径全部以这两个值为准（默认 `console-web` + `tests/e2e`�
 
 ### 0.2 dry-run 分支
 
-`DRY_RUN == 1` → 输出"本次预期跑 stage T1/T3/T4 + 各自产出路径" 后**直接退出**（不调 testarch skill / 不跑 pnpm）。
+`DRY_RUN == 1` → 输出"本次预期跑 stage T1/T3/T4 + 各自产出路径" 后**直接退出**（不调 testarch skill / 不跑 e2e）。
 
 ---
 
@@ -185,15 +188,24 @@ prompt 核心：
 
 ```bash
 cd "$FRONTEND_DIR"
-pnpm e2e --grep "$KEY" 2>&1 | tee "/tmp/harness-test-sprint-$KEY.log"
-E2E_RC=${PIPESTATUS[0]}   # pnpm 自身的退出码——直接取 $? 拿到的是 pipeline 末端 tee 的退出码（恒 0）
+# 跑项目 package.json 里的 e2e 脚本，用 §0 探测出的包管理器（PKG_MGR）。
+# npm 要用 `--` 才会把 --grep 转给脚本；pnpm / yarn / bun 直接透传。
+case "$PKG_MGR" in
+    npm)  E2E_CMD=(npm run e2e -- --grep "$KEY") ;;
+    yarn) E2E_CMD=(yarn e2e --grep "$KEY") ;;
+    bun)  E2E_CMD=(bun run e2e --grep "$KEY") ;;
+    *)    E2E_CMD=(pnpm e2e --grep "$KEY") ;;
+esac
+echo "E2E_CMD=${E2E_CMD[*]}"
+"${E2E_CMD[@]}" 2>&1 | tee "/tmp/harness-test-sprint-$KEY.log"
+E2E_RC=${PIPESTATUS[0]}   # e2e 命令自身的退出码——直接取 $? 拿到的是 pipeline 末端 tee 的退出码（恒 0）
 cd ..
 echo "E2E_RC=$E2E_RC"
 ```
 
-> **RC 口径**：`E2E_RC` 必须经 `${PIPESTATUS[0]}`（bash 3.2 可用）取 `pnpm e2e` 进程本身的退出码；若本块在 zsh 下执行，等价写法是 `${pipestatus[1]}`。下表的 red / error 行依赖真实 RC——取 tee 的 `$?` 会让两行永远不可达、失败被误判。
+> **RC 口径**：`E2E_RC` 必须经 `${PIPESTATUS[0]}`（bash 3.2 可用）取 e2e 命令进程本身的退出码；若本块在 zsh 下执行，等价写法是 `${pipestatus[1]}`。下表的 red / error 行依赖真实 RC——取 tee 的 `$?` 会让两行永远不可达、失败被误判。
 
-**结果分类**（按 `pnpm e2e` 退出码 + 解析 log）：
+**结果分类**（按 e2e 命令退出码 + 解析 log）：
 
 | Verdict | 触发条件 | 写到 test-result.json |
 |---|---|---|
@@ -227,7 +239,7 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 
 1. testarch skill 子 agent 返回但产物缺失 / 非空校验失败
 2. testarch skill 子 agent 提问回来超过 2 次（重发 "按 answer-policy.md 自决" 不解决）
-3. `pnpm e2e` 命令本身报"command not found" / "module not found" 等环境问题（非测试断言失败）
+3. e2e 命令（`$PKG_MGR` 对应的 `e2e` 脚本）本身报"command not found" / "module not found" / 缺 `e2e` 脚本等环境问题（非测试断言失败）
 4. `harness-commit.py` 返回 STATUS=halt（任一 stage T1/T3/T4）
 5. runtime quota 信号（`hit your limit` / `rate limit` / `usage limit` / `quota` / `reset` 时间）
 
@@ -247,7 +259,7 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 
 ## 4. Sandbox graceful skip 路径
 
-**触发**：`check_test_harness_env.sh` 输出 `all_available=false` **且 `reason` 不为 `"no_e2e_configured"`**（即真探测失败 — 缺 chromium / framework / pnpm / version_check 等；或 e2e_framework 是 Cypress/WebdriverIO/Selenium 等未实现栈）。
+**触发**：`check_test_harness_env.sh` 输出 `all_available=false` **且 `reason` 不为 `"no_e2e_configured"`**（即真探测失败 — 缺 chromium / framework / 包管理器 / version_check 等；或 e2e_framework 是 Cypress/WebdriverIO/Selenium 等未实现栈）。
 
 > v0.1.19 A 档分流：`reason="no_e2e_configured"`（项目自报无 e2e）走 §4.5 clean skip，不再走本节 sandbox-skip 路径。`reason="probe_not_implemented_for_<X>"`（非 Playwright 栈）仍走本节 — 因为 plugin 现有 T3/T4 实现是 Playwright 限定，非 Playwright 栈实质上无法实跑。
 
@@ -289,7 +301,7 @@ v1 单 story 模式：T1 (skip if exists) → T3 → T4 → 退出。批量 / mu
 
 | | §4 sandbox-skip | §4.5 no-e2e clean skip |
 |---|---|---|
-| 触发原因 | 环境探测真失败（缺 chromium / framework / pnpm 等） | 项目主动声明无 e2e |
+| 触发原因 | 环境探测真失败（缺 chromium / framework / 包管理器等） | 项目主动声明无 e2e |
 | 写 `skipped-${KEY}-*.md` 标记 | ✅ 写 | ❌ 不写 |
 | 写 deferred-work `FU-Test-${KEY}-sandbox` | ✅ 写（待 solo-dev 解锁后清） | ❌ 不写 |
 | 改 sprint-status `test_status` 段 | ✅ 写 `sandbox_bound: true` | ❌ 不动 |

@@ -176,9 +176,9 @@ HOOKS_EXIT=$?
 echo "HOOKS_EXIT=$HOOKS_EXIT"
 ```
 
-退出码处理（installer 退出码语义：`0` 成功；`3` = hooksPath 良性拒装；其他非 0 = 真实安装失败）：
+退出码处理（installer 退出码语义：`0` 成功；`3` = 良性拒装（`core.hooksPath` 已自定义，或目标位置已有项目自己的 hook）；其他非 0 = 真实安装失败）：
 - 0 → 进 §6 报告
-- 3（`core.hooksPath` 已自定义，installer 拒装避免 silent no-op — 良性）→ stderr WARN 给用户，不 halt
+- 3（`core.hooksPath` 已自定义，installer 拒装避免 silent no-op；或已有项目自己的同名 hook，installer 不覆盖 — 都是良性）→ stderr WARN 给用户（`REFUSED:` 段的串接 / 覆盖办法原样转告），不 halt
 - 其他非 0（含 1 — hook 源目录缺失 / cp、chmod 权限失败等真实安装失败）→ **halt**（§7.3）+ 贴 stderr verbatim — update 的触发场景 2 正是"项目侧资产被删/改坏"，hook 重装失败必须响亮失败而非伪装成 hooksPath WARN
 
 ## 6. 报告
@@ -224,7 +224,7 @@ echo "HOOKS_EXIT=$HOOKS_EXIT"
 
 1. §1 plugin 路径探测两路 fallback 全 miss → halt + 报错（同 §1 ERROR 块）
 2. §3 deploy_assets.sh `DEPLOY_EXIT ≠ 0` 或 summary 含 `FAILED=`（单文件 cp 失败：permission / 磁盘满 / 源文件缺失）→ halt + 报告失败 src/dst + 已部署计数（partial state；solo-dev 自决继续/回滚）
-3. install_git_hooks.sh exit ≠ 0 且 ≠ 3（真实安装失败：hook 源目录缺失 / cp、chmod 权限失败 / 参数错误 / 内部 bug；exit 3 = hooksPath 良性拒装仅 WARN）→ halt + 贴 stderr verbatim
+3. install_git_hooks.sh exit ≠ 0 且 ≠ 3（真实安装失败：hook 源目录缺失 / cp、chmod 权限失败 / 参数错误 / 内部 bug；exit 3 = 良性拒装（hooksPath 或项目自有 hook）仅 WARN）→ halt + 贴 stderr verbatim
 4. runtime quota 信号 → 与 init / run 同款配额模板
 
 **Halt 模板**：
