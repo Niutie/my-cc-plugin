@@ -83,7 +83,7 @@ if echo "$ADDED_PATHS" | grep -qE "$RETRO_TRIGGER"; then
     RETRO_RC=0
     bash "$RETRO_CHECKER" || RETRO_RC=$?
     if [ "$RETRO_RC" -ne 0 ] && [ "$RETRO_GATE_MODE" != "block" ]; then
-        echo "WARN: 仍有未兑现 dev 类 retro action items（retro_gate=$RETRO_GATE_MODE，不阻 commit；设为 block 才拦截）。明细：bash $RETRO_CHECKER" >&2
+        echo "WARN: 仍有未兑现 dev 类 retro action items（retro_gate=${RETRO_GATE_MODE}，不阻 commit；设为 block 才拦截）。明细：bash $RETRO_CHECKER" >&2
     elif [ "$RETRO_RC" -ne 0 ]; then
         cat >&2 <<'EOF'
 

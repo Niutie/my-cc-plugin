@@ -305,6 +305,11 @@ fi
 # ============================================================================
 # H1 — harness-state state machine
 # ============================================================================
+# BSD sed（macOS）的 `-i` 必须带备份后缀参数，GNU 写法 `sed -i 's/…/'` 会把
+# 脚本当后缀、文件原样不动；改成写临时文件再 mv，两边都能跑。
+flag_followup() {
+    sed 's/^followup_review_recommended: false/followup_review_recommended: true/' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
+}
 code_of() { (cd "$1" && python3 "$HS" "$2" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["next_action_code"])'); }
 dir="$(seed_repo)"
 h_ok=1; h_log=""
@@ -319,7 +324,7 @@ c="$(code_of "$dir" 9-1-foo)"; [ "$c" = codex ] || { h_ok=0; h_log+=" codex:$c";
 mkdir -p "$dir/_bmad/custom"
 printf '[[workflow.review_layers]]\nid = "codex-cross-model"\nname = "Codex"\ninstruction = "run codex"\n' > "$dir/_bmad/custom/bmad-build-auto.toml"
 c="$(code_of "$dir" 9-1-foo)"; [ "$c" = sync ] || { h_ok=0; h_log+=" sync:$c"; }
-sed -i 's/^followup_review_recommended: false/followup_review_recommended: true/' "$dir/$ART/spec-9-1-foo.md"
+flag_followup "$dir/$ART/spec-9-1-foo.md"
 (cd "$dir" && git add -A && git commit -q -m flag)
 c="$(code_of "$dir" 9-1-foo)"; [ "$c" = followup ] || { h_ok=0; h_log+=" followup:$c"; }
 (cd "$dir" && git tag harness/9-1-foo/followup)
@@ -452,7 +457,7 @@ fi
 dir="$(seed_repo)"
 mkdir -p "$dir/_bmad/custom"
 printf '[[workflow.review_layers]]\nid = "codex-x"\ninstruction = "x"\n' > "$dir/_bmad/custom/bmad-build-auto.toml"
-(cd "$dir" && write_spec "$dir" done '' '' && sed -i 's/^followup_review_recommended: false/followup_review_recommended: true/' "$ART/spec-9-1-foo.md" \
+(cd "$dir" && write_spec "$dir" done '' '' && flag_followup "$ART/spec-9-1-foo.md" \
    && echo y >> src/a.py && git add -A && git commit -q -m feat && git tag harness/9-1-foo/built && git tag harness/9-1-foo/followup-start)   # git add -A also tracks the _bmad/custom toml
 c_a="$(code_of "$dir" 9-1-foo)"
 (cd "$dir" && echo z >> src/a.py && git add -A && git commit -q -m "review pass")

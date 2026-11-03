@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # release_check — pre-tag / pre-publish gate for the super-harness plugin.
 #
-# 校验五件 things：
+# 校验六件 things：
 #   (1) 版本一致性（四处）：plugin.json（SoT）=== marketplace.json 里 super-harness 的
 #       version === README 版本表（根 README 顶部 plugin 表 + 插件 README Versioning 表首行）===
 #       changelog.md 头条 `## vX.Y.Z` 版本号。前两处防 0.1.16 / 0.1.26 那种漂移再发生
@@ -20,6 +20,9 @@
 #       harness-commit.py / harness-state.py 工作区 100755→100644 丢位，index 仍
 #       755，git add 后会把 644 写进 index 破坏部署侧调用）。sourceable lib
 #       （只被 source / import、从不直接执行）走显式豁免名单。
+#   (6) shell 脚本里 `$VAR` 不得紧贴非 ASCII 字符（如 `$MODE，`）。macOS 的
+#       bash 3.2 在 UTF-8 locale 下会把多字节字符的字节读进变量名，`set -u`
+#       时直接 unbound variable 退出；要写成 `${VAR}，`。
 #
 # 不需要外部依赖：jq / python3 即可（python3 配合 PyYAML；缺 PyYAML 时 fall back 到
 # 仅做 frontmatter 是否 well-fenced 的最低检查 + WARN）。
@@ -35,6 +38,7 @@
 #   4  — 流水线手册（pipeline.md / run-inline.md / run.md）出现指令性『主 agent set 兜底』回流
 #   5  — upgrade-deferred-work.md heredoc 与 deferred-work.md.template 漂移
 #   6  — scripts/ 下带 shebang 的非豁免文件缺可执行位
+#   7  — shell 脚本出现 `$VAR` 紧贴非 ASCII 字符（bash 3.2 变量名误读）
 #   1  — 内部错误（找不到 marketplace.json / plugin.json / README / changelog / template）
 
 set -euo pipefail
@@ -371,6 +375,48 @@ if [ "$X_FAIL" -gt 0 ]; then
     exit 6
 fi
 echo "  ✓ all shebang scripts executable (exempt sourceable libs: $X_EXEMPT)"
+
+# ============================================================================
+# Gate 6: `$VAR` immediately followed by a non-ASCII byte (bash 3.2 / macOS)
+# ============================================================================
+#
+# macOS 系统 bash 3.2 判断变量名字符时按 locale 的 isalnum 逐字节看，UTF-8 下
+# 0x80 以上的字节也算合法，于是 `"retro_gate=$RETRO_GATE_MODE，不阻"` 被读成
+# 变量 `RETRO_GATE_MODE\xef\xbc\x8c…`，`set -u` 下 unbound variable 退出 1。
+# Linux bash 5 不受影响，ubuntu CI 看不见，只能靠这里静态拦。扫描范围：scripts/
+# 与 git-hooks/ 下的 shell 文件（*.sh 或 sh/bash shebang），跳过整行注释。
+
+echo "==> Gate 6: no \$VAR glued to a non-ASCII character in shell scripts"
+
+HOOKS_DIR="${HOOKS_DIR:-$SCRIPTS_DIR/../git-hooks}"
+MB_HITS="$(python3 - "$SCRIPTS_DIR" "$HOOKS_DIR" <<'PYEOF'
+import os, re, sys
+pat = re.compile(rb'\$[A-Za-z_][A-Za-z0-9_]*[\x80-\xff]')
+for d in sys.argv[1:]:
+    if not os.path.isdir(d):
+        continue
+    for name in sorted(os.listdir(d)):
+        path = os.path.join(d, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, 'rb') as fh:
+            data = fh.read()
+        first = data.split(b'\n', 1)[0]
+        if not (name.endswith('.sh') or re.match(rb'#!.*\b(ba)?sh\b', first)):
+            continue
+        for no, line in enumerate(data.split(b'\n'), 1):
+            if line.lstrip().startswith(b'#'):
+                continue
+            if pat.search(line):
+                print('%s:%d' % (os.path.relpath(path, os.path.dirname(d.rstrip('/'))), no))
+PYEOF
+)"
+if [ -n "$MB_HITS" ]; then
+    printf '%s\n' "$MB_HITS" | sed 's/^/  ✗ /' >&2
+    echo "  ✗ \$VAR glued to a non-ASCII character — write \${VAR} (bash 3.2 reads the bytes as part of the name)" >&2
+    exit 7
+fi
+echo "  ✓ no \$VAR glued to non-ASCII characters"
 
 echo "==> All gates passed"
 exit 0

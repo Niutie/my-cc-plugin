@@ -4,6 +4,21 @@
 
 ---
 
+## v0.2.2 — 2026-11-03 — macOS bash 3.2 下 pre-commit gate ① 不再误拦
+
+### hook 在 warn 模式下也拒 commit
+
+`git-hooks/pre-commit` 打 WARN 的那行写的是 `retro_gate=$RETRO_GATE_MODE，不阻`。macOS 自带的 bash 3.2 在 UTF-8 locale 下会把全角逗号的字节也读进变量名，hook 开着 `set -u`，于是报 unbound variable，退出码 1。结果是：只要 sprint-status 里还有待兑现的 dev 类 retro 项，新建 story spec 的 commit 在 macOS 上一律被拒，`retro_gate` 设成 warn 或者不设都没用。Linux 的 bash 5 不受影响。
+
+- 改成 `${RETRO_GATE_MODE}`。`extract_d_decisions.sh` 第 54 行有同样的写法（`$sharded_path（`），一并改掉。
+- `release_check.sh` 新增 Gate 6：`scripts/` 和 `git-hooks/` 下的 shell 文件里，`$VAR` 后面直接跟非 ASCII 字符就报错，退出码 7。整行注释不查。ubuntu CI 看不出这类问题，macOS CI 也只覆盖有测试走到的路径，所以单独做静态检查。
+
+### build_pipeline_test.sh 在 macOS 上的另外两项失败
+
+H1、N4 用了 `sed -i 's/…/' 文件`。BSD sed 把 `-i` 的下一个参数当备份后缀，文件没有被改，`followup_review_recommended` 一直是 false。改为写临时文件再 `mv`。这两项只是测试写法的问题，不影响插件行为。
+
+---
+
 ## v0.2.1 — 2026-11-03 — git hook 不再覆盖项目自己的 pre-commit；e2e 按探测出的包管理器执行
 
 两个问题都是 harness-zh 时期就有的，0.2.0 合并后的 Codex 对抗式 review 指出。
