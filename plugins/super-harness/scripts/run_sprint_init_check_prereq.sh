@@ -93,7 +93,7 @@ if [ ! -f "$ROOT/$SPRINT_STATUS_REL" ]; then
     MISSING_SPRINT_STATUS="true"
 fi
 
-# JSON stdout (一行 — 与 check_test_harness_env.sh 风格一致)
+# JSON stdout (一行)
 json_array() {
     local out="["
     local first=1

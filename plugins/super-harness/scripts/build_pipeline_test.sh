@@ -567,17 +567,31 @@ dir="$(seed_repo)"
     echo '{}' > "$ART/test_artifacts/9-2-bar-test-result.json"
     echo x > "$ART/notes/spec-9-2-bar.md"
     echo '{}' > "$ART/test_artifacts/9-1-foo-test-result.json"
+    # 0.3.0: no stage owns test_artifacts/ any more — even this story's own
+    # file is an unexpected artifact
     echo y >> src/a.py
     git add -A; git commit -q -m feat
 )
 ex=0; out="$(cd "$dir" && python3 "$HC" build-verify 9-1-foo 2>&1)" || ex=$?
 rm -rf "$dir"
-if [ "$ex" = 1 ] && printf '%s' "$out" | grep -qx "CROSS_STORY=$ART/test_artifacts/9-2-bar-test-result.json" \
+if [ "$ex" = 1 ] && printf '%s' "$out" | grep -qx "UNEXPECTED_ARTIFACT=$ART/test_artifacts/9-2-bar-test-result.json" \
    && printf '%s' "$out" | grep -qx "UNEXPECTED_ARTIFACT=$ART/notes/spec-9-2-bar.md" \
-   && ! printf '%s' "$out" | grep -q "test_artifacts/9-1-foo-test-result.json"; then
+   && printf '%s' "$out" | grep -qx "UNEXPECTED_ARTIFACT=$ART/test_artifacts/9-1-foo-test-result.json"; then
     pass "C2 nested artifact isolation in build-verify"
 else
     fail "C2" "exit=$ex out=$out"
+fi
+
+# C2b — 0.3.0 removed the test-harness stages; harness-commit must reject them
+rejected=0
+for st in 5-5 T1 T3 T4; do
+    ex=0; python3 "$HC" "$st" 9-1-foo >/dev/null 2>&1 || ex=$?
+    [ "$ex" = 2 ] && rejected=$((rejected + 1))
+done
+if [ "$rejected" = 4 ]; then
+    pass "C2b retired stages 5-5/T1/T3/T4 rejected by argparse"
+else
+    fail "C2b" "rejected=$rejected/4"
 fi
 
 # C3 — build-sync: failed deferred import leaves sprint-status untouched; an

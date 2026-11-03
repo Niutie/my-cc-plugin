@@ -9,14 +9,12 @@ hand-walk the rules every commit.
 Usage:
     python3 .claude/harness/scripts/harness-commit.py <stage> <key> [--epic <num>] [--dry-run]
 
-stage ∈ {1, 2, 3, 4, 5, 5-5, 5-fallback, 6, 6-5, 6-done, T1, T3, T4}
+stage ∈ {1, 2, 3, 4, 5, 5-fallback, 6, 6-5, 6-done}
 
 Stage taxonomy:
     1..5 / 5-fallback / 6 / 6-5 / 6-done — run-sprint pipeline (story dev → epic retro)
-    5-5                                  — run-sprint stage 5.5 test-harness invocation
-                                            (atdd + e2e per-story; sandbox graceful skip)
-    T1 / T3 / T4                         — run-test-sprint independent stages
-                                            (epic test-design / atdd / e2e automate)
+    (0.3.0 removed the test-harness stages 5-5 / T1 / T3 / T4 together with
+    /super-harness:run-test; test_artifacts/ is no longer a recognized output.)
 
 Behavior:
     1. List worktree changes (git status --porcelain -uall -z; -uall expands
@@ -464,100 +462,6 @@ BLACKLIST_PATTERNS.append(
     (_BMAD_OUTPUT_PREFIX + ".harness-logs/**")
     if _BMAD_OUTPUT_PREFIX else "_bmad-output/.harness-logs/**"
 )
-
-# --- Test artifact regex (chore: codex review F1 fix, 2026-05-04) ---
-#
-# Matches `_bmad-output/implementation-artifacts/test_artifacts/<filename>`
-# (one segment under test_artifacts/; spec.ts files live in console-web/tests/
-# e2e/ and are out of scope here). Group(1) is the filename.
-#
-# F1 enforces 4 legal name shapes for every test artifact path AND requires
-# the `<key>` / `<epic>` prefix to match the current commit's KEY / EPIC arg.
-# Closes the cross-story bypass codex flagged: previously test_artifacts/*
-# fell through to project-code bucket with no key-prefix check, so a path
-# like `test_artifacts/<other-key>.atdd-checklist.md` could be silently
-# committed under the current story.
-TEST_ARTIFACTS_DIR = ARTIFACTS_DIR + "test_artifacts/"
-TEST_ARTIFACT_RE = re.compile(r"^" + re.escape(TEST_ARTIFACTS_DIR) + r"(.+)$")
-
-
-def classify_test_artifact(filename, key, epic):
-    """Validate `<filename>` (the part after test_artifacts/) against the 4
-    legal patterns and the required key/epic prefix.
-
-    Returns one of:
-        ("ok",  <pattern-tag>)            — accepted; tag identifies which shape matched
-        ("wrong_key", <pattern-tag>)      — shape valid but key/epic prefix mismatches
-        ("unexpected", None)              — shape doesn't match any of the 4 patterns
-
-    Pattern tags: "atdd-checklist" / "test-result" / "epic-test-design" / "skipped".
-    """
-    # Order matters: check the most-specific prefixes first so greedy `.+`
-    # captures don't swallow a sibling pattern's suffix.
-    # Pattern 3: epic-<EPIC>-test-design.md  (EPIC arg validates, not key)
-    m = re.fullmatch(r"epic-([0-9A-Za-z._-]+)-test-design\.md", filename)
-    if m:
-        if epic and m.group(1) == epic:
-            return ("ok", "epic-test-design")
-        return ("wrong_key", "epic-test-design")
-    # Pattern 4: skipped-<KEY>-<YYYY-MM-DD>.md
-    m = re.fullmatch(r"skipped-(.+)-(\d{4}-\d{2}-\d{2})\.md", filename)
-    if m:
-        if m.group(1) == key:
-            return ("ok", "skipped")
-        return ("wrong_key", "skipped")
-    # Pattern 1: <KEY>.atdd-checklist.md
-    m = re.fullmatch(r"(.+)\.atdd-checklist\.md", filename)
-    if m:
-        if m.group(1) == key:
-            return ("ok", "atdd-checklist")
-        return ("wrong_key", "atdd-checklist")
-    # Pattern 2: <KEY>-test-result.json
-    m = re.fullmatch(r"(.+)-test-result\.json", filename)
-    if m:
-        if m.group(1) == key:
-            return ("ok", "test-result")
-        return ("wrong_key", "test-result")
-    return ("unexpected", None)
-
-
-# --- F2 worktree clean check (chore: codex review F2 fix, 2026-05-04) ---
-#
-# Stages 5-5 / T1 / T3 / T4 had `project_code: True` so the classifier
-# silently let any non-artifact path through — meaning a dirty worktree
-# (e.g. epic-4 in-progress changes) could be swept into a test-harness
-# commit. F2 restricts these stages' project bucket to:
-#   - test_artifacts/<key>-* (already validated by F1 above)
-#   - test_artifacts/epic-<epic>-test-design.md (T1 only — schema-checked)
-#   - test_artifacts/skipped-<key>-<date>.md
-#   - ${E2E_SPEC_PREFIX}<key>* (the e2e spec dir, out of artifacts root)
-# Anything else → halt DIRTY_WORKTREE= with explicit guidance to commit/stash.
-TEST_HARNESS_STAGES = ("5-5", "T1", "T3", "T4")
-
-# Review 2026-06-10 finding #9: E2E_SPEC_PREFIX used to be the hardcoded
-# constant "console-web/tests/e2e/" while check_test_harness_env.sh /
-# eval_test_stage_triggers.sh already read `frontend_dir` / `e2e_test_subdir`
-# from harness-project-config.yaml (the v0.1.18+ portability contract). On
-# projects with frontend_dir != console-web that mismatch made the F2 check
-# halt (DIRTY_WORKTREE) on the project's REAL e2e spec dir. Derive the prefix
-# from the same config getters; fall back to the original default when the
-# deployed harness_config.py predates the getters (asset version skew) or
-# config reading fails for any reason — fail-open, aligned with the
-# harness_config fallback policy.
-try:
-    from harness_config import get_e2e_test_subdir, get_frontend_dir  # noqa: E402
-    E2E_SPEC_PREFIX = f"{get_frontend_dir()}/{get_e2e_test_subdir()}/"
-except Exception:  # ImportError on stale deployed harness_config.py, etc.
-    E2E_SPEC_PREFIX = "console-web/tests/e2e/"
-
-
-def is_e2e_spec_for_key(path, key):
-    """Return True if `path` is a ${E2E_SPEC_PREFIX}<key>* file."""
-    if not path.startswith(E2E_SPEC_PREFIX):
-        return False
-    suffix = path[len(E2E_SPEC_PREFIX):]
-    # Allow either `<key><whatever>` or `<key>/<file>` (subdirs under the key).
-    return suffix.startswith(key)
 
 # --- Story status reader (used by dev-result / review-findings consistency check) ---
 #
@@ -1008,107 +912,6 @@ STAGES = {
         "validate_review":  False,
         "suggest_tag":      None,
     },
-    # ----------------------------------------------------------------------
-    # Test harness stages (chore C-bootstrap; F1+F2 fixes 2026-05-04):
-    #
-    # `5-5` is run-sprint stage 5.5 — the test harness embed point right after
-    # bmad-code-review completes and before retrospective triggers. Allowed
-    # outputs are the union of T3 + T4 since stage 5.5 may invoke both atdd
-    # (red-phase scaffold) and e2e (actual run) in one shot when env permits.
-    #
-    # `T1` / `T3` / `T4` are independent stages used by `/super-harness:run-test`
-    # (the dedicated test orchestrator). They ALSO emit through this commit
-    # helper for path-whitelist symmetry with the run-sprint pipeline.
-    #
-    # Path classification (post-F1): `test_artifacts/<filename>` paths get
-    # validated by `classify_test_artifact()` BEFORE the regular classifier
-    # runs (see main()). The validator enforces 4 legal filename shapes
-    # (`<key>.atdd-checklist.md` / `<key>-test-result.json` /
-    # `epic-<epic>-test-design.md` / `skipped-<key>-<date>.md`) AND requires
-    # the embedded key/epic to match the current commit's KEY / EPIC arg.
-    # Failures halt with CROSS_STORY= or UNEXPECTED_ARTIFACT= — closing the
-    # bypass codex flagged where mis-keyed test_artifacts/ paths could slip
-    # into project-code bucket.
-    #
-    # Worktree cleanliness (post-F2): on the four test-harness stages,
-    # `check_worktree_clean()` restricts the project bucket to test_artifacts/
-    # <key>-* and console-web/tests/e2e/<key>* paths only; any unrelated
-    # in-progress code change halts with DIRTY_WORKTREE= and tells solo-dev
-    # to commit/stash first (no auto-stash — see chore spec §Boundaries).
-    "5-5": {
-        # Stage 5-5 has three legitimate branches (chore-harness-epic-4-
-        # orchestration-observations T2.3 — back-compat fallback path):
-        #   (a) worktree clean → STATUS=skip (the new default — run-test-sprint
-        #       internally commits via T3+T4, leaving nothing for 5-5).
-        #   (b) worktree has stage 5.5 expected products (test-result.json /
-        #       skipped-*.md / sprint-status test_status updates / deferred-
-        #       work.md FU-Test rows) → STATUS=ok (the legacy path, kept for
-        #       direct callers that bypass run-test-sprint internal commits).
-        #   (c) worktree has paths outside the test-harness whitelist
-        #       (F2 §4.25 in main()) → STATUS=halt with DIRTY_WORKTREE=.
-        # Branch (a) is now the default after T2.1 rewires run-sprint stage
-        # 5.5 to review-only; branch (b) is kept so the 5-5 command signature
-        # stays stable for any cron / external automation that already runs it.
-        "story_md":         False,
-        "story_json":       [],
-        "story_codex":      False,
-        "global_files":     ["sprint-status.yaml", "deferred-work.md"],
-        "epic_retro":       False,
-        "project_code":     True,
-        "commit_msg":       "test({key}): atdd + e2e (run-sprint stage 5.5)",
-        "skip_if_empty":    True,
-        "validate_dev":     False,
-        "validate_review":  False,
-        "suggest_tag":      None,
-    },
-    "T1": {
-        "story_md":         False,
-        "story_json":       [],
-        "story_codex":      False,
-        "global_files":     ["sprint-status.yaml"],
-        "epic_retro":       False,
-        "project_code":     True,
-        "commit_msg":       "test(epic-{epic}): test-design",
-        "skip_if_empty":    True,
-        "validate_dev":     False,
-        "validate_review":  False,
-        "suggest_tag":      None,
-    },
-    "T3": {
-        "story_md":         False,
-        "story_json":       [],
-        "story_codex":      False,
-        "global_files":     ["sprint-status.yaml"],
-        "epic_retro":       False,
-        "project_code":     True,
-        "commit_msg":       "test({key}): atdd red-phase scaffold",
-        "skip_if_empty":    False,
-        "validate_dev":     False,
-        "validate_review":  False,
-        "suggest_tag":      None,
-    },
-    "T4": {
-        # T4 commit_msg suffix "(run-sprint stage 5.5)" is unconditional —
-        # see chore-harness-epic-4-orchestration-observations T2.2: stage 5.5
-        # is the only invocation path that produces T4 commits in run-sprint
-        # pipeline; suffix lets `git log --grep "stage 5.5"` find them stably
-        # whether invoked via /super-harness:run-test --story (standalone) or via
-        # pipeline stage 5.5 spawn (run-inline / run). Standalone-only invocations do not
-        # generate run-sprint commits — keeping the suffix is harmless noise
-        # and the grep stability requirement trumps the "looks misleading"
-        # cost (Q3 RESOLVED 2026-05-04).
-        "story_md":         False,
-        "story_json":       [],
-        "story_codex":      False,
-        "global_files":     ["sprint-status.yaml", "deferred-work.md"],
-        "epic_retro":       False,
-        "project_code":     True,
-        "commit_msg":       "test({key}): atdd + e2e (run-sprint stage 5.5)",
-        "skip_if_empty":    False,
-        "validate_dev":     False,
-        "validate_review":  False,
-        "suggest_tag":      None,
-    },
 }
 
 
@@ -1186,7 +989,7 @@ def _sync_sprint_status_for_stage(stage, key, epic):
         if epic:
             transitions.append((f"epic-{epic}-retrospective", "done"))
             transitions.append((f"epic-{epic}", "done"))
-    # stage 6-5 / 6-done / 1 / 3 / 4 / 5-fallback / 5-5 / T1 / T3 / T4 → no-op
+    # stage 6-5 / 6-done / 1 / 3 / 4 / 5-fallback → no-op
 
     # Review 2026-06-10 finding #77 — two-pass read-then-set:
     #
@@ -2485,9 +2288,8 @@ def classify(path, key, epic, spec, cross_story_allowlist=None):
     See harness-changelog 2026-05-01 §J.
 
     Review 2026-06-10 finding #32: any path under ARTIFACTS_DIR that is
-    neither a direct-child md/json/yaml/yml (ARTIFACT_RE) nor under
-    test_artifacts/ (validated separately by the F1 gate, step 3.5) is an
-    unexpected artifact — previously such paths (e.g. a nested
+    not a direct-child md/json/yaml/yml (ARTIFACT_RE) is an
+    unexpected artifact (0.3.0: test_artifacts/ included — no stage owns it) — previously such paths (e.g. a nested
     `implementation-artifacts/notes/<other-story>.md`) fell through to the
     project-code bucket and were silently committed under the current story,
     bypassing artifact classification AND cross-story isolation.
@@ -2496,9 +2298,9 @@ def classify(path, key, epic, spec, cross_story_allowlist=None):
         if is_expected_artifact(path, key, epic, spec, cross_story_allowlist):
             return "expected"
         return "unexpected_artifact"
-    if path.startswith(ARTIFACTS_DIR) and not TEST_ARTIFACT_RE.match(path):
-        # In the artifacts tree but not a recognized artifact shape and not a
-        # test artifact (those passed F1 already) → never project code (#32).
+    if path.startswith(ARTIFACTS_DIR):
+        # In the artifacts tree but not a recognized artifact shape → never
+        # project code (#32).
         return "unexpected_artifact"
     if spec["project_code"]:
         return "project"
@@ -2729,19 +2531,10 @@ def run_build_verify(key, base=None):
             halts.append(f"OUT_OF_SCOPE_BMAD={p}")
             continue
         # Nested paths under the artifacts dir: cross_story_ok only judges direct
-        # children, so apply the same two rules the staging pipeline uses —
-        # test_artifacts/ files must carry this story's key/epic (F1), anything
-        # else nested is an unexpected artifact (review 2026-06-10 #32).
+        # children; anything nested is an unexpected artifact, same rule as the
+        # staging pipeline (review 2026-06-10 #32).
         if p.startswith(ARTIFACTS_DIR) and not ARTIFACT_RE.match(p):
-            tm = TEST_ARTIFACT_RE.match(p)
-            if tm:
-                verdict, _tag = classify_test_artifact(tm.group(1), key, harness_spec.epic_of_key(key))
-                if verdict == "wrong_key":
-                    halts.append(f"CROSS_STORY={p}")
-                elif verdict != "ok":
-                    halts.append(f"UNEXPECTED_ARTIFACT={p}")
-            else:
-                halts.append(f"UNEXPECTED_ARTIFACT={p}")
+            halts.append(f"UNEXPECTED_ARTIFACT={p}")
             continue
         if not cross_story_ok(p, key, harness_spec.epic_of_key(key), cross_allowlist):
             halts.append(f"CROSS_STORY={p}")
@@ -2800,7 +2593,7 @@ def main():
         _run_seed_simulation(epic)
         sys.exit(0)
 
-    if args.stage in ("6", "6-5", "6-done", "T1", "retro-fulfill") and not epic:
+    if args.stage in ("6", "6-5", "6-done", "retro-fulfill") and not epic:
         emit("STATUS=halt")
         emit(f"REASON=stage {args.stage} requires --epic")
         sys.exit(1)
@@ -3094,39 +2887,6 @@ def main():
         emit("CHANGED_ALL=" + "; ".join(p for _, p in paths))
         sys.exit(1)
 
-    # 3.5 — test_artifact validation (chore: codex F1 fix, 2026-05-04)
-    # Every path under _bmad-output/implementation-artifacts/test_artifacts/
-    # must match one of 4 legal filename shapes AND embed the current KEY/EPIC.
-    # Closes the cross-story bypass: previously test_artifacts/* fell through
-    # to project bucket without key-prefix enforcement.
-    test_artifact_unexpected = []
-    test_artifact_wrong_key = []
-    for _, p in paths:
-        m = TEST_ARTIFACT_RE.match(p)
-        if not m:
-            continue
-        status, _tag = classify_test_artifact(m.group(1), key, epic)
-        if status == "ok":
-            continue
-        if status == "wrong_key":
-            test_artifact_wrong_key.append(p)
-        else:  # "unexpected"
-            test_artifact_unexpected.append(p)
-    if test_artifact_unexpected:
-        emit("STATUS=halt")
-        emit("REASON=test_artifacts/ filename does not match any of the 4 legal shapes (F1)")
-        for p in test_artifact_unexpected:
-            emit(f"UNEXPECTED_ARTIFACT={p}")
-        emit("CHANGED_ALL=" + "; ".join(p for _, p in paths))
-        sys.exit(1)
-    if test_artifact_wrong_key:
-        emit("STATUS=halt")
-        emit(f"REASON=test_artifacts/ key/epic prefix does not match KEY={key} EPIC={epic or '(none)'} (F1)")
-        for p in test_artifact_wrong_key:
-            emit(f"CROSS_STORY={p}")
-        emit("CHANGED_ALL=" + "; ".join(p for _, p in paths))
-        sys.exit(1)
-
     # 4 — classify
     expected = []
     unexpected_artifacts = []
@@ -3158,29 +2918,6 @@ def main():
             emit(f"FORBIDDEN={p}")
         emit("CHANGED_ALL=" + "; ".join(p for _, p in paths))
         sys.exit(1)
-
-    # 4.25 — worktree-clean check on test-harness stages (chore: codex F2 fix, 2026-05-04)
-    # On stages 5-5/T1/T3/T4 the project bucket is restricted to test artifacts
-    # for this KEY plus the e2e spec dir. Anything else means a dirty worktree
-    # (likely epic-N in-progress code) and we halt rather than auto-stage —
-    # solo-dev must commit/stash unrelated changes before re-invoking.
-    if args.stage in TEST_HARNESS_STAGES and project:
-        dirty = []
-        for p in project:
-            if TEST_ARTIFACT_RE.match(p):
-                # Already validated by F1 above — key prefix is correct.
-                continue
-            if is_e2e_spec_for_key(p, key):
-                continue
-            dirty.append(p)
-        if dirty:
-            emit("STATUS=halt")
-            emit(f"REASON=worktree contains paths outside the stage {args.stage} test-harness whitelist (F2)")
-            for p in dirty:
-                emit(f"DIRTY_WORKTREE={p}")
-            emit(f"GUIDANCE=stages {'/'.join(TEST_HARNESS_STAGES)} only commit test_artifacts/<key>-* and {E2E_SPEC_PREFIX}<key>* paths; commit or stash unrelated changes before re-invoking (no auto-stash by design — see chore-harness-codex-review-fixes-2026-05-04 §Boundaries)")
-            emit("CHANGED_ALL=" + "; ".join(p for _, p in paths))
-            sys.exit(1)
 
     # 4.5 — schema gates (dev-result.json on stage 2, review-findings.json on stage 5)
     schema_errors = []

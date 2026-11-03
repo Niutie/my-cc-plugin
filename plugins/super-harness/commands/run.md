@@ -1,5 +1,5 @@
 ---
-description: 多路并行跑 sprint：按 depends_on 挑出可并行的 story，每条 story 开一个独立 worktree + headless claude worker 跑流水线的 B0-B3，主 worktree 串行合流并执行 build-sync、测试和 epic retro
+description: 多路并行跑 sprint：按 depends_on 挑出可并行的 story，每条 story 开一个独立 worktree + headless claude worker 跑流水线的 B0-B3，主 worktree 串行合流（可选合流验证）并执行 build-sync 和 epic retro
 argument-hint: '[--slots <N>] [--dry-run]'
 allowed-tools: Bash, Read, Write, Agent, AskUserQuestion
 ---
@@ -8,7 +8,7 @@ allowed-tools: Bash, Read, Write, Agent, AskUserQuestion
 
 你是调度者。你不写业务代码，也不直接运行 bmad-build-auto。你要做的是：挑出可以启动的 story、开 lane、启动 worker、等待、合流、收口，并且只在需要人处理时打扰用户。
 
-单条 story 的步骤都写在流水线手册 `.claude/harness/pipeline.md` 里。B0-B3（build、外部 codex、follow-up review）由 worker 在自己的 worktree 里按其中的「lane 模式」完成；B4 及以后（build-sync、⑤.5 测试、⑥ retro）由你在主 worktree 里按完成顺序逐条执行，做法是其中的「调度模式」。开始前先 Read 一遍 pipeline.md。
+单条 story 的步骤都写在流水线手册 `.claude/harness/pipeline.md` 里。B0-B3（build、外部 codex、follow-up review）由 worker 在自己的 worktree 里按其中的「lane 模式」完成；B4 及以后（build-sync、⑥ retro）由你在主 worktree 里按完成顺序逐条执行，做法是其中的「调度模式」。开始前先 Read 一遍 pipeline.md。
 
 想在当前会话里一条一条直接跑、看清每一步（调试、优化流水线时），用 `/super-harness:run-inline`。
 
@@ -87,7 +87,7 @@ python3 .claude/harness/scripts/superh.py tick
 python3 .claude/harness/scripts/superh.py integrate <KEY>
 ```
 
-脚本会把 lane 分支 rebase 到 sprint 分支最新提交上，自动消解账本类冲突（`sprint-status.yaml` 和 `epic-N-context.md` 取 sprint 分支版本，`deferred-work.md` 做 union 合并），把 `harness/<KEY>/{start,built,followup-start,followup}` 这几个 tag 搬到 rebase 之后的提交上，在 lane worktree 里重跑 `build-verify`，最后 ff 合并进主 worktree。
+脚本会把 lane 分支 rebase 到 sprint 分支最新提交上，自动消解账本类冲突（`sprint-status.yaml` 和 `epic-N-context.md` 取 sprint 分支版本，`deferred-work.md` 做 union 合并），把 `harness/<KEY>/{start,built,followup-start,followup}` 这几个 tag 搬到 rebase 之后的提交上，在 lane worktree 里重跑 `build-verify`。`parallel.yaml` 配了 `verify_command`、并且这一路确实被 rebase 过时，接着在 lane worktree 里跑它（输出 `VERIFY=passed|failed|skipped-unset|skipped-not-rebased`）。都通过后 ff 合并进主 worktree。
 
 - 退出码 0：记下输出里的 `CODEX_SKIP_REASON=`、`FOLLOWUP_NOTE=`，以及 `BUILD_VERIFY<<` 段里的 `BASELINE_REVISION=`，进入 §4。输出里有 `RECOVERED=already-merged` 时，说明上一次合流已经 ff 成功、只是没记下来，照样进入 §4；有 `WARN=` 行时把它转告用户。
 - 退出码 3（`STATUS=conflict`）：派一个合流冲突子 agent。
@@ -97,6 +97,7 @@ python3 .claude/harness/scripts/superh.py integrate <KEY>
   4. 否则重跑 `SH integrate <KEY>`。退出码 0 进入 §4；再次返回 3 时不再派第二个子 agent，告诉用户，回到 §1。
 - 退出码 1：
   - `REASON` 说的是主 worktree 不干净或不在 sprint 分支：全局 halt（§8）。
+  - `VERIFY=failed`：合流后的代码没通过 `verify_command`，这一路记为 held，sprint 分支没有被改动。把 `REASON=` 和 `VERIFY_OUTPUT<<` 段贴给用户，回到 §1，不要自己修，也不要自动重试。用户在 lane worktree 里修好并 commit 后，重跑 `SH integrate <KEY>` 即可（integrate 接受因验证失败挂起的 lane），下一轮 tick 不会自动把它送回合流。
   - 其他情况（例如 rebase 之后 build-verify 不通过）：这一路已经记为 held，sprint 分支没有被改动。把输出贴给用户，回到 §1。
 
 ## 4. 收口（主 worktree 串行执行）
@@ -107,13 +108,12 @@ python3 .claude/harness/scripts/superh.py integrate <KEY>
 python3 .claude/harness/scripts/superh.py postmerge <KEY>
 ```
 
-它只读，按磁盘上的事实（done tag、harness-state、测试产物、检查点）给出 `NEXT=`。按 `NEXT` 做对应的一步，做完再执行一次 `postmerge`，直到 `NEXT=finish`：
+它只读，按磁盘上的事实（done tag、harness-state）给出 `NEXT=`。按 `NEXT` 做对应的一步，做完再执行一次 `postmerge`，直到 `NEXT=finish`：
 
 | NEXT | 做什么 |
 |---|---|
 | `sync` | 1. `MARKER=write` 时，按 P§1 B2.1 a) 的格式写 `<KEY>.codex-skipped.json`：reason 取 `CODEX_SKIP_REASON=`，`BASE` 取 integrate 输出的 `BASELINE_REVISION`，没有就取 `git rev-parse harness/<KEY>/start`。`MARKER=present` 或 `none` 时不要写，也不要重写已有的 marker。<br>2. 按 P§1 B4 执行 `harness-commit.py build-sync <KEY>`：STATUS=ok 时 commit，然后立刻 `git tag harness/<KEY>/done`；STATUS=skip 时不 commit，但同样立刻打这个 tag（否则 `postmerge` 会一直停在 `sync`）。然后输出 deferred-work 趋势。`STATUS=halt` 时全局 halt（§8）：这时主 worktree 可能有已 stage 的改动，继续合流只会把问题叠上去。 |
 | `tag` | build-sync 已经 commit，只差 tag：`git tag harness/<KEY>/done` |
-| `test` | 按 P§1 阶段 ⑤.5 派 run-test 子 agent，做 sanity gate（测试红不算 halt，和 inline 模式一致）。gate 通过后执行 `SH mark <KEY> --step tested` |
 | `finish` | `SH mark <KEY> --phase done`，然后 `SH cleanup <KEY>`。给用户一行进度：`<KEY> 已完成（M/N），在跑 <running 数> 路`；`FOLLOWUP_NOTE=` 非空时作为第二行附上 |
 | `halt` | 全局 halt（§8），贴出 `REASON=` 和 `HARNESS_STATE_RAW=` |
 
@@ -157,7 +157,7 @@ retro 期间其他 lane 照常在各自的 worktree 里运行，不受影响。
 |---|---|
 | `check_bmad_runtime.sh` 失败 | 贴 `REMEDIATION=` 行 |
 | tick 的 `problems` 非空，或 integrate 报主 worktree 不干净、不在 sprint 分支 | 贴原文 |
-| §4 的 build-sync / 5-5 等 `harness-commit.py` 退出码 1 | 按 P§3 的 halt 模板 |
+| §4 的 build-sync 等 `harness-commit.py` 退出码 1 | 按 P§3 的 halt 模板 |
 | §4 的 `postmerge` 给出 `NEXT=halt`，或报 done tag 不在 sprint 分支上 | 贴脚本输出 |
 | 配额耗尽（`quota_hold` 且没有在跑的 lane） | 按 P§3 halt 模板的选项 5 说明；恢复后执行 `SH retry <KEY>`，再重新执行本命令 |
 | retro verdict 为 rejected | 按 P§1「verdict 门」 |

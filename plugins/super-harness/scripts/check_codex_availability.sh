@@ -40,7 +40,7 @@ fi
 # stderr regex) catches auth/quota at first invocation.
 #
 # review #56：binary_path 不再裸插值进 JSON（路径含 `"` / `\` 时输出坏 JSON，
-# 下游 json.load 直接炸）。与 check_test_harness_env.sh v0.1.21 fix #2 对齐用
+# 下游 json.load 直接炸）。用
 # python3 json.dumps；python3 不在场时退化到 sed 转义 `\` 和 `"`（输出仍合法）。
 if command -v python3 >/dev/null 2>&1; then
     python3 -c 'import json, sys

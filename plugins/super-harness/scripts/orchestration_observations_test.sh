@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # chore-harness-epic-4-orchestration-observations — self-test
 #
-# 26 fixtures across 4 task groups (T1=14 / T2=3 / T3=4 / T4=5):
+# 23 fixtures across 3 task groups (T1=14 / T3=4 / T4=5):
 #
 #   T1 — sprint-status auto-sync + retro_action_items seed + chore_spec fill
 #     T1.f1  stage 2 sync sets KEY=review + idempotent rerun no-op (#77 two-pass)
@@ -20,10 +20,7 @@
 #     T1.f13 blacklist: business "credentials" names PASS, real cred files BLOCK (#2)
 #     T1.f14 absent retro_action_items: parent auto-bootstraps at EOF, no halt (#6)
 #
-#   T2 — stage 5.5 commit message suffix unification
-#     T2.f1  T4 STAGES commit_msg含 "(run-sprint stage 5.5)"
-#     T2.f2  5-5 STAGES commit_msg含 "(run-sprint stage 5.5)"
-#     T2.f3  commands/run-test.md（源树）含 "(run-sprint stage 5.5)" 后缀
+#   T2 — （0.3.0 删除：原 stage 5.5 commit message 后缀断言，测试阶段已去掉）
 #
 #   T3 — harness-state.py --resume-prompt --stage 2 增强字段
 #     T3.f1  worktree landing summary helper exposes "worktree 落地清单"（真 git fixture）
@@ -800,40 +797,6 @@ if [[ $RC -eq 0 ]] && \
 else
     fail "T1.f14 — parent auto-bootstrap (rc=$RC merged=$MERGED yaml=$YAML_OK out=$OUT err=$(cat "$F14_ERR" 2>/dev/null))"
     cat "${SS}"
-fi
-
-# ============================================================================
-# T2 — stage 5.5 commit message suffix unification
-# ============================================================================
-
-echo ""
-echo "=== T2 group (3 fixtures) — stage 5.5 commit message suffix ==="
-
-# T2.f1 — T4 stage commit_msg has suffix
-T4_MATCH=$(awk '/"T4":/,/^    \}/' "${SCRIPT_DIR}/harness-commit.py" | grep -c 'atdd + e2e (run-sprint stage 5.5)' || true)
-if [[ "$T4_MATCH" -ge 1 ]]; then
-    pass "T2.f1 — T4 STAGES.commit_msg 含 \"(run-sprint stage 5.5)\""
-else
-    fail "T2.f1 — T4 commit_msg suffix missing"
-fi
-
-# T2.f2 — 5-5 stage commit_msg has suffix
-F55_MATCH=$(awk '/"5-5":/,/^    \}/' "${SCRIPT_DIR}/harness-commit.py" | grep -c 'atdd + e2e (run-sprint stage 5.5)' || true)
-if [[ "$F55_MATCH" -ge 1 ]]; then
-    pass "T2.f2 — 5-5 STAGES.commit_msg 含 \"(run-sprint stage 5.5)\""
-else
-    fail "T2.f2 — 5-5 commit_msg suffix missing"
-fi
-
-# T2.f3 — run-test.md T4 row in expected-output table has suffix.
-# Source-tree-direct (finding #12): grep the plugin source commands/run-test.md
-# next to this script — the ${REPO_ROOT}/.claude/commands/ deployed copy does
-# not exist in the source tree (only /super-harness:init materializes it).
-RTS_TABLE_MATCH=$(grep -c "atdd + e2e (run-sprint stage 5.5)" "${SCRIPT_DIR}/../commands/run-test.md" || true)
-if [[ "$RTS_TABLE_MATCH" -ge 1 ]]; then
-    pass "T2.f3 — commands/run-test.md 含 \"(run-sprint stage 5.5)\" 后缀"
-else
-    fail "T2.f3 — commands/run-test.md suffix missing"
 fi
 
 # ============================================================================

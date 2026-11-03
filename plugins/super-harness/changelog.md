@@ -4,6 +4,43 @@
 
 ---
 
+## v0.3.0 — 2026-11-03 — 去掉 ⑤.5 测试阶段和 /super-harness:run-test；并行合流加验证门
+
+### 为什么删
+
+⑤.5 在实际项目里几乎没起过作用。unified_agent_gateway 配的是 `e2e_framework: 'none'`，48 条 story 跑下来没有一条测试 commit，每条 story 都起一个子 agent，进去走 clean skip 就退出。配了 Playwright 的项目也拦不住什么：T4 红了只往 deferred-work 写一条 `FU-Test-*-failing`，阶段 ⑥ 照常走；环境不全时走 sandbox skip，同样只记 FU。ATDD 红相脚本放在 story 已经 done 之后才写，顺序也是反的。
+
+单元测试和集成测试其实一直在 B1 里跑：bmad-build-auto 的 spec 有 `## Verification` 段并实跑，step-03 的 Matrix Test Audit 要求 I/O 矩阵每一行都有跑通的测试，step-04 有 verification-gap 审查层。e2e 和验收测试交给下游测试团队。
+
+### 删掉的东西
+
+- `commands/run-test.md`、`test-stage-triggers.yaml`、`scripts/eval_test_stage_triggers.sh`、`scripts/check_test_harness_env.sh`、`scripts/bootstrap_test_harness.sh`，以及它们的测试和 `harness_commit_isolation_test.sh`。
+- `harness-commit.py` 的 `5-5`、`T1`、`T3`、`T4` 四个 stage，以及 F1（test_artifacts 文件名白名单）和 F2（测试 stage 的工作区检查）。`test_artifacts/` 下的文件现在和其它嵌套路径一样按预期外 artifact 处理。
+- `harness_config.py` 的 `get_frontend_dir()`、`get_e2e_test_subdir()`，已经没有调用方。
+- `superh.py postmerge` 不再给出 `NEXT=test`，`superh.py mark --step tested` 删除。
+- `harness-project-config.yaml` 的 `e2e_framework`、`extra.e2e_test_subdir` 退役。已有项目里留着不影响，没有代码再读它们。
+- deferred-work 不再产生 `FU-Test-*`。schema 里的 `test-harness` bucket 保留，用来识别老账本里的历史条目。
+
+升级的项目跑一次 `/super-harness:update` 即可：上面这些文件在旧 manifest 里、不在新的部署集里，manifest 对账会把它们备份后删除。
+
+### 新增：合流验证门（仅 /super-harness:run）
+
+并行模式下，两条 lane 各自是绿的，合到一起可能就红了。原来干净的 rebase 只重跑 `build-verify`，它只做提交审计，不跑测试；只有出现冲突时，merge-fix 子 agent 才会跑验证命令。
+
+- `parallel.yaml` 新增 `verify_command`（`sh -c`，在 lane worktree 里执行，环境变量同 `prepare_command`）和 `verify_timeout_sec`（默认 1800）。
+- `superh.py integrate` 在 rebase 完成、`build-verify` 通过之后、ff 合并之前跑它。这时 lane 的代码和合流后的 sprint 分支完全一样。没被 rebase 的 lane 跳过，代码没变，B1 已经验过。没配置也跳过。输出 `VERIFY=passed|failed|skipped-unset|skipped-not-rebased`。
+- 失败时这一路记为 held（`hold_kind: verify`），sprint 分支不动，输出带 `VERIFY_OUTPUT<<` 段。看板的接手提示改成「在 lane worktree 里修好并 commit，再跑 integrate」。`integrate` 接受这种 held 的 lane，重跑会再验一次。
+- inline 模式不加这一步：一次只跑一条 story，B1 就在同一棵树上验过。
+
+### 测试
+
+- `superh_test.sh` 新增 V1 到 V6：没 rebase 跳过、验证失败挂起且 sprint 分支不动、接手提示、修好后重跑合入。M3、M8 改为打完 done tag 直接 `finish`。
+- `build_pipeline_test.sh` C2 改为 test_artifacts 一律 `UNEXPECTED_ARTIFACT`；新增 C2b，确认 `5-5`、`T1`、`T3`、`T4` 被 argparse 拒绝。
+- `deploy_assets_purge_test.sh` 新增 T7b：旧项目里的 `test-stage-triggers.yaml` 和测试阶段脚本在升级时被清掉。
+- `orchestration_observations_test.sh` 去掉 T2 组（stage 5.5 commit message）。它不再读源码树的 `commands/`，CI 部署版测试里对它的排除一并去掉。
+
+---
+
 ## v0.2.2 — 2026-11-03 — macOS bash 3.2 下 pre-commit gate ① 不再误拦
 
 ### hook 在 warn 模式下也拒 commit

@@ -2,9 +2,9 @@
 """superh — super-harness 并行调度 CLI（/super-harness:run 用）。
 
 单条 story 的流水线写在 .claude/harness/pipeline.md：B0-B3 由 worker 在独立
-worktree 里按 lane 模式执行，B4 及之后（build-sync / 测试 / retro）由主 worktree
+worktree 里按 lane 模式执行，B4 及之后（build-sync / retro）由主 worktree
 的调度者串行执行。本脚本负责调度层所有确定性的部分：就绪判定、worktree 准备、
-worker 进程启动、合流（rebase + 账本冲突自动消解 + tag 搬迁 + ff 合并）、看板。
+worker 进程启动、合流（rebase + 账本冲突自动消解 + tag 搬迁 + 合流验证 + ff 合并）、看板。
 
 状态存放在 `$(git rev-parse --git-common-dir)/super-harness/`，不进 git，所有
 worktree 看到的是同一份。每个文件只有一个写入者：
@@ -25,9 +25,10 @@ worktree 看到的是同一份。每个文件只有一个写入者：
                             调度者用 Bash run_in_background 调它
     report <KEY> --status S worker 回报结果（ready / blocked / failed / quota）
     integrate <KEY>         rebase 到 sprint 分支 → 账本冲突自动消解 → 搬 tag →
-                            worktree 内 build-verify → ff 合并进主 worktree
-    postmerge <KEY>         只读：已合入的 lane 收口还差哪一步（NEXT=sync / tag / test / finish）
-    mark <KEY> --phase P    调度者推进 phase（done / held）；--step tested 记录测试检查点
+                            worktree 内 build-verify → verify_command（rebase 过才跑）→
+                            ff 合并进主 worktree
+    postmerge <KEY>         只读：已合入的 lane 收口还差哪一步（NEXT=sync / tag / finish）
+    mark <KEY> --phase P    调度者推进 phase（done / held）
     retry <KEY>             worker 失败后重新排队（保留 worktree，续作）
     cleanup <KEY>           done 之后删 worktree 与分支
     abandon <KEY> --yes     放弃本路：删 worktree / 分支 / 未 done 的 harness tag
@@ -68,6 +69,8 @@ DEFAULT_CONFIG = {
     "link_paths": [],
     "prepare_command": "",
     "prepare_timeout_sec": 600,
+    "verify_command": "",
+    "verify_timeout_sec": 1800,
     "worker_permission_mode": "bypassPermissions",
     "worker_model": "",
     "claude_bin": "claude",
@@ -483,7 +486,7 @@ def lane_stage(ctx, lane) -> tuple[str, str]:
     if phase == "held":
         return "held", lane.get("hold_reason", "")
     if phase in ("integrating", "merged"):
-        return "integrating", "合流中" if phase == "integrating" else "已合入 sprint 分支，待 build-sync / 测试"
+        return "integrating", "合流中" if phase == "integrating" else "已合入 sprint 分支，待 build-sync"
     if phase == "preparing":
         return "queued", "prepare 中断，待重做（prepare 会先清理现场）"
     proc = read_json(ctx.lane_path(key, "proc"))
@@ -509,6 +512,9 @@ def resume_hint(ctx, lane) -> str:
     proc = read_json(ctx.lane_path(lane["key"], "proc")) or {}
     sid = proc.get("session_id")
     wt = lane.get("worktree", "")
+    if lane.get("phase") == "held" and lane.get("hold_kind") == "verify":
+        return (f"cd {wt}，修好 verify_command 报的问题并 commit，"
+                f"再回主 worktree 跑 python3 .claude/harness/scripts/superh.py integrate {lane['key']}")
     if sid:
         return f"cd {wt} && claude --resume {sid}"
     return f"cd {wt} && claude"
@@ -1093,7 +1099,30 @@ def _build_verify(wt: Path, key: str):
     return bv.returncode, (bv.stdout + bv.stderr).strip()
 
 
-def _print_merged(ctx, lane, bv_out, recovered=False):
+def _run_verify(ctx, lane, wt: Path) -> dict:
+    """Run parallel.yaml `verify_command` in the lane worktree, whose tree now
+    equals the sprint branch after the ff. Lanes that were not rebased keep the
+    tree B1 already verified, so they are skipped."""
+    cmd = str(ctx.config.get("verify_command") or "").strip()
+    if not cmd:
+        return {"status": "skipped-unset"}
+    if not lane.get("rebased"):
+        return {"status": "skipped-not-rebased"}
+    env = dict(os.environ, SUPERH_KEY=lane["key"], SUPERH_WORKTREE=str(wt), SUPERH_MAIN_ROOT=str(ctx.root))
+    timeout = int(ctx.config.get("verify_timeout_sec") or 1800)
+    try:
+        pr = subprocess.run(["sh", "-c", cmd], cwd=wt, env=env, capture_output=True, text=True,
+                            timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        out = ((e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""))
+        return {"status": "failed", "detail": f"verify_command 超时（{timeout}s）", "output": out[-4000:]}
+    if pr.returncode != 0:
+        return {"status": "failed", "detail": f"verify_command exit={pr.returncode}",
+                "output": (pr.stdout + pr.stderr)[-4000:]}
+    return {"status": "passed"}
+
+
+def _print_merged(ctx, lane, bv_out, recovered=False, verify=""):
     key = lane["key"]
     res = read_json(ctx.lane_path(key, "result")) or {}
     start = git(["rev-parse", "--verify", "--quiet", f"refs/tags/harness/{key}/start^{{commit}}"],
@@ -1101,6 +1130,8 @@ def _print_merged(ctx, lane, bv_out, recovered=False):
     print("STATUS=ok")
     if recovered:
         print("RECOVERED=already-merged（上次合流已 ff 进 sprint 分支，但没来得及记录；本次只补记状态，不动 tag）")
+    if verify:
+        print(f"VERIFY={verify}")
     print(f"MERGED_HEAD={lane['merged_head']}")
     print(f"START={start}")
     print(f"CODEX_SKIP_REASON={res.get('codex_skip_reason', '')}")
@@ -1123,13 +1154,17 @@ def cmd_integrate(ctx, a):
         sprint HEAD (which, after a completed ff, is the story's own last commit);
       - `harness/<KEY>/start` only moves when a rebase actually rewrote the lane;
       - a lane whose head is already contained in the sprint branch was ff-merged by
-        an earlier run that died before recording it: only the state is recorded."""
+        an earlier run that died before recording it: only the state is recorded.
+
+    A lane held because verify_command failed is accepted again: the person fixes
+    it in the lane worktree, commits, and re-runs integrate."""
     key = a.key
     lane = ctx.lane(key)
     if not lane:
         die(f"lane {key} 不存在")
     stage, _ = lane_stage(ctx, lane)
-    if lane.get("phase") not in ("integrating", "conflict") and stage != "ready":
+    verify_held = lane.get("phase") == "held" and lane.get("hold_kind") == "verify"
+    if lane.get("phase") not in ("integrating", "conflict") and stage != "ready" and not verify_held:
         die(f"lane {key} 当前阶段 {stage}，只有 worker 回报 ready 的 lane 能合流")
     sb = lane["sprint_branch"]
     head, dirty = main_status(ctx)
@@ -1229,6 +1264,7 @@ def cmd_integrate(ctx, a):
     if rc != 0:
         lane["phase"] = "held"
         lane["hold_reason"] = "合流 rebase 后 build-verify 不通过"
+        lane.pop("hold_kind", None)
         ctx.save_lane(lane)
         print("STATUS=halt")
         print("REASON=rebase 后在 lane worktree 内重跑 build-verify 不通过；sprint 分支未改动")
@@ -1236,6 +1272,23 @@ def cmd_integrate(ctx, a):
         print(bv_out)
         print(">>")
         return 1
+    verify = _run_verify(ctx, lane, wt)
+    if verify["status"] == "failed":
+        lane["phase"] = "held"
+        lane["hold_kind"] = "verify"
+        lane["hold_reason"] = f"合流后验证不通过（{verify['detail']}）"
+        ctx.save_lane(lane)
+        print("STATUS=halt")
+        print(f"REASON={lane['hold_reason']}；sprint 分支未改动")
+        print("VERIFY=failed")
+        print(f"WORKTREE={wt}")
+        print(f"HINT=在 lane worktree 里修好并 commit，然后重跑 superh.py integrate {key}")
+        print("VERIFY_OUTPUT<<")
+        print(verify["output"])
+        print(">>")
+        return 1
+    lane.pop("hold_kind", None)
+    lane.pop("hold_reason", None)
     mr = git(["merge", "--ff-only", branch], cwd=ctx.root)
     if mr.returncode != 0:
         # integrating stays routable: the next tick sends it back here and the
@@ -1245,7 +1298,7 @@ def cmd_integrate(ctx, a):
     lane["merged_head"] = git(["rev-parse", "HEAD"], cwd=ctx.root).stdout.strip()
     lane["merged_at"] = now_iso()
     ctx.save_lane(lane)
-    _print_merged(ctx, lane, bv_out)
+    _print_merged(ctx, lane, bv_out, verify=verify["status"])
     return 0
 
 
@@ -1253,18 +1306,6 @@ def cmd_integrate(ctx, a):
 
 def _artifact_rel(ctx, name: str) -> str:
     return f"{ctx.artifacts_rel().rstrip('/')}/{name}"
-
-
-def _tests_recorded_in_head(ctx, key: str) -> bool:
-    """⑤.5 leaves a committed result (`<KEY>-test-result.json`) or a sandbox-skip
-    report (`skipped-<KEY>-*.md`) under test_artifacts/ (run-test T4)."""
-    d = _artifact_rel(ctx, "test_artifacts")
-    r = git(["ls-tree", "-r", "--name-only", "HEAD", "--", d], cwd=ctx.root)
-    for p in r.stdout.splitlines():
-        name = os.path.basename(p)
-        if name == f"{key}-test-result.json" or (name.startswith(f"skipped-{key}-") and name.endswith(".md")):
-            return True
-    return False
 
 
 def cmd_postmerge(ctx, a):
@@ -1291,7 +1332,6 @@ def cmd_postmerge(ctx, a):
                    cwd=ctx.root).stdout.strip()
     if done_sha and not _is_ancestor(ctx, done_sha, "HEAD"):
         die(f"harness/{key}/done 指向的提交不在 sprint 分支上（{done_sha[:12]}），需要人工核对")
-    tested = bool(lane.get("tested")) or _tests_recorded_in_head(ctx, key)
     hs = subprocess.run(["python3", ".claude/harness/scripts/harness-state.py", key, "--json"],
                         cwd=ctx.root, capture_output=True, text=True)
     try:
@@ -1299,7 +1339,7 @@ def cmd_postmerge(ctx, a):
     except ValueError:
         code = None
     if done_sha:
-        nxt = "finish" if tested else "test"
+        nxt = "finish"
     elif code == "tag-only":
         nxt = "tag"
     elif code == "sync" or (code == "codex" and marker_state == "write"):
@@ -1312,7 +1352,6 @@ def cmd_postmerge(ctx, a):
     print(f"MARKER={marker_state}")
     print(f"CODEX_SKIP_REASON={reason}")
     print(f"DONE_TAG={done_sha or 'none'}")
-    print(f"TESTED={'yes' if tested else 'no'}")
     print(f"HARNESS_STATE={code}")
     print(f"FOLLOWUP_NOTE={res.get('followup_note', '')}")
     if nxt == "halt":
@@ -1325,21 +1364,15 @@ def cmd_mark(ctx, a):
     lane = ctx.lane(a.key)
     if not lane:
         die(f"lane {a.key} 不存在")
-    if a.step == "tested":
-        if lane.get("phase") != "merged":
-            die(f"lane {a.key} phase={lane.get('phase')}，只有 merged 的 lane 能记 tested")
-        lane["tested"] = now_iso()
-        ctx.save_lane(lane)
-        print("STATUS=ok")
-        return 0
     if not a.phase:
-        die("mark 需要 --phase 或 --step")
+        die("mark 需要 --phase")
     if a.phase == "done":
         if "done" not in harness_tags(ctx).get(a.key, set()):
             die(f"harness/{a.key}/done tag 不存在，不能标 done")
     lane["phase"] = a.phase
     if a.phase == "held":
         lane["hold_reason"] = a.reason or "调度者挂起"
+        lane.pop("hold_kind", None)
     if a.reason:
         lane.setdefault("notes", []).append(f"{a.phase}: {a.reason}")
     ctx.save_lane(lane)
@@ -1360,6 +1393,7 @@ def cmd_retry(ctx, a):
         die("这一路卡在 prepare 阶段，retry 不会重跑 prepare；修好原因后 abandon --yes 再重新 prepare")
     lane["phase"] = "prepared"
     lane.pop("hold_reason", None)
+    lane.pop("hold_kind", None)
     lane.setdefault("notes", []).append(f"retry after {stage}")
     ctx.save_lane(lane)
     print("STATUS=ok")
@@ -1549,7 +1583,6 @@ def main(argv=None) -> int:
     p = sub.add_parser("mark")
     p.add_argument("key")
     p.add_argument("--phase", choices=["done", "held"])
-    p.add_argument("--step", choices=["tested"], help="记录收口检查点（⑤.5 测试已完成）")
     p.add_argument("--reason", default="")
     p = sub.add_parser("abandon"); p.add_argument("key"); p.add_argument("--yes", action="store_true")
     a = ap.parse_args(argv)

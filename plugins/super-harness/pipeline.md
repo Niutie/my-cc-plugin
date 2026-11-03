@@ -4,9 +4,9 @@
 
 | 模式 | 谁在读 | 负责的步骤 |
 |---|---|---|
-| inline | `/super-harness:run-inline` 的主 agent，在用户当前会话里 | 全部：§0.A.0、B0 到 B4、⑤.5、⑥、⑥.5、verdict 门、§2 收尾提醒 |
+| inline | `/super-harness:run-inline` 的主 agent，在用户当前会话里 | 全部：§0.A.0、B0 到 B4、⑥、⑥.5、verdict 门、§2 收尾提醒 |
 | lane | `/super-harness:run` 起的 worker，一个 headless `claude -p` 进程，在自己的 git worktree 里 | 只到 B3。B3 完成（或按条件跳过）就回报，然后结束 |
-| 调度 | `/super-harness:run` 的调度者，在主 worktree 里 | lane 合流之后的 B4、⑤.5，epic 收尾的 ⑥、⑥.5，以及 §0.A.0 |
+| 调度 | `/super-harness:run` 的调度者，在主 worktree 里 | lane 合流之后的 B4，epic 收尾的 ⑥、⑥.5，以及 §0.A.0 |
 
 正文里标着「lane 模式」「inline 模式」「调度模式」的段落只对该模式生效；没有标注的步骤，各模式做法相同。lane 模式的回报命令和占位符写在 worker prompt（`.claude/harness/prompts/worker.md`）里。
 
@@ -22,7 +22,7 @@
 
 **例外：配额耗尽**。runtime quota 信号在结构化层不可见，**仍然要扫文本**：`hit your limit` / `rate limit` / `usage limit` / `quota` / `reset` 时间提示 → halt + 用 §3 配额模板（选项 5）。**B2 codex 例外**：codex subagent 的 quota/auth 命中**不 halt**，走 §B2.1 skip+marker 路径。
 
-> **关于 git index**：bmad-build-auto 自己 commit；harness 自己的 commit（B2 的 3/4、B4、测试、retro）一律经 `harness-commit.py` 预先 stage。主 agent 任何时候都不自己 `git add`。
+> **关于 git index**：bmad-build-auto 自己 commit；harness 自己的 commit（B2 的 3/4、B4、retro）一律经 `harness-commit.py` 预先 stage。主 agent 任何时候都不自己 `git add`。
 
 **(b) 代答政策**：用户授权你在循环中替他回答所有 BMad / Codex 子 agent 的问询。通用决策原则在 `.claude/harness/answer-policy.md`，项目语境由 `harness-prompt-suffix.py` 从 harness-project-config.yaml 读出并内联进 prompt 后缀。
 
@@ -46,7 +46,7 @@
 | 谁 commit | 哪些阶段 | 主 agent 怎么守门 |
 |---|---|---|
 | bmad-build-auto 自己（Finalize 步骤） | B1 build、B3 follow-up | 事后跑 `harness-commit.py build-verify $KEY`：审计 `harness/$KEY/start..HEAD` 区间的每个路径（凭据黑名单 / `_bmad-output` 越界 / 跨 story 隔离）+ spec 终态 + 工作区干净 |
-| 主 agent 经 `harness-commit.py` | B2 `3` / `4`、B4 `build-sync`、⑤.5 `5-5`、⑥ `6` / `6-5` / `6-done`、§0.A.0 `retro-fulfill` | 脚本列变更 → 黑名单 → 跨 story 隔离 → 按 stage 预期产出分类 → `git add --` → sanity check；主 agent 只按退出码 commit |
+| 主 agent 经 `harness-commit.py` | B2 `3` / `4`、B4 `build-sync`、⑥ `6` / `6-5` / `6-done`、§0.A.0 `retro-fulfill` | 脚本列变更 → 黑名单 → 跨 story 隔离 → 按 stage 预期产出分类 → `git add --` → sanity check；主 agent 只按退出码 commit |
 
 `harness-commit.py` 退出码：
 - **0（STATUS=ok）**：脚本已 stage 好，输出 `SUGGEST_COMMIT_MSG=`（和可能的 `SUGGEST_TAG=`）。主 agent 用 HEREDOC + `Co-Authored-By:` 行 `git commit`，用脚本建议的 message；有 `SUGGEST_TAG` 就**立即** `git tag`。
@@ -116,7 +116,7 @@ stdout 每个待兑现 dev 项一行 `ITEM<TAB><epic-N-retro><TAB><CODE><TAB><st
 | `followup` | §1 B3（`followup-start` tag 已存在时不要重打，直接 dispatch，bmad-build-auto 按 spec status 续跑） |
 | `followup-verify` | §1 B3 的"验收"一步（follow-up 已经跑完，**不要**再 dispatch B3） |
 | `sync` | §1 B4 |
-| `tag-only` | `git tag harness/<KEY>/done`，进 ⑤.5 / ⑥ 判断 |
+| `tag-only` | `git tag harness/<KEY>/done`，进 ⑥ 判断 |
 | `blocked` | halt：bmad-build-auto 已 HALT blocked，把 spec `## Auto Run Result`（或还没有 spec 时的 `bmad-build-auto-result-*.md`）里的 Status / blocking condition 贴给用户 |
 | `blocked-dirty` | 按 `next_action` 文本：B2 的 3/4 产物已落地 → 验收 + commit 后再切入 |
 | `done` | 不该续作；inline 模式按 `run-inline` §0.A 跑下一条 |
@@ -139,7 +139,6 @@ B2 fix 续作时 prompt 头部拼 `python3 .claude/harness/scripts/harness-state
 | B2 `3` `story($KEY): codex adversarial review report` | 主 agent | **仅** `$KEY.codex-review.md`（catchup 时另含 `$KEY.codex-skipped.resolved.json`） |
 | B2 `4` `story($KEY): apply codex review fixes` | 主 agent | 项目代码 + spec（`### Codex Review Handling (Stage 3)` 段）+ `deferred-work.md` |
 | B4 `build-sync` `story($KEY): sync sprint status & deferred ledger` | 主 agent | `sprint-status.yaml`（$KEY → done；epic backlog → in-progress）+ `deferred-work.md`（spec `deferred:` 导入的 `FU-<X.Y>.B<n>`）+ `$KEY.codex-skipped.json`（如有）。无变更 → STATUS=skip，仍打 done tag |
-| ⑤.5 `5-5` / 测试 T1/T3/T4 | 主 agent / run-test 子 agent | `test_artifacts/$KEY-test-result.json` 或 `test_artifacts/skipped-$KEY-*.md` + `<frontend_dir>/<e2e_test_subdir>/$KEY*.spec.ts` + `sprint-status.yaml` + `deferred-work.md`（详 [`run-test.md`](run-test.md)） |
 | ⑥ `6` `epic($EPIC): retrospective` | 主 agent | `epic-${EPIC}-retro-*.md` + `sprint-status.yaml` + `deferred-work.md` |
 | ⑥.5 `6-5` `chore(retro-c$EPIC): process residue → N chore specs` | 主 agent | `chore-retro-c${EPIC}-<code>-<slug>.md` × N + `sprint-status.yaml`（仅 retro_action_items 子段） |
 | ⑥ `6-done` `epic($EPIC): mark done` | 主 agent | **仅** `sprint-status.yaml` |
@@ -161,7 +160,7 @@ B2 fix 续作时 prompt 头部拼 `python3 .claude/harness/scripts/harness-state
 
 - inline 模式：TaskCreate 任务标 `in_progress`。
 - lane 模式：先跑一次 `bash .claude/harness/scripts/check_bmad_runtime.sh`，`STATUS=fail` 时回报 `blocked`，把 `REMEDIATION=` 行写进 halt 文本。`CODEX_IN_BUILD=` 的取值记下来，B2 要用。
-- **工作区必须干净**（每条 story 都查，不只启动时；lane 模式查的是自己的 worktree）：`git status --porcelain` 非空 → halt。上一条 story 的 ⑤.5 / ⑥ 残留、用户在两条 story 之间的改动都会让 bmad-build-auto 在 step-01 直接 HALT。
+- **工作区必须干净**（每条 story 都查，不只启动时；lane 模式查的是自己的 worktree）：`git status --porcelain` 非空 → halt。上一条 story 的 ⑥ 残留、用户在两条 story 之间的改动都会让 bmad-build-auto 在 step-01 直接 HALT。
 - **打 start tag**（撤回点，必须在 dispatch 之前）：`git tag harness/$KEY/start`
   - 任何阶段想整条撤回：`git reset --hard harness/$KEY/start`。
   - **tag 已存在**（续作场景没走 `--continue`；lane 模式下就是 worker 被重新启动）→ 不 halt：调 `harness-state.py $KEY`，按 §0.B 表切入。inline 模式只有 `next_action_code == "done"` 才 halt（sprint-status 有脏数据）；lane 模式按 §0.B 末尾的规则回报 `ready`。
@@ -436,30 +435,13 @@ fi
 
 `git log --oneline harness/$KEY/start..harness/$KEY/done` 即本 story 完整提交序列。inline 模式：TaskCreate 任务标 `completed`。
 
-### 阶段 ⑤.5（条件触发）：Test Harness Invocation
+### 测试由谁负责
 
-B4 完成（sprint-status `$KEY` = done）后、阶段 ⑥ 判断之前，自动调用 `/super-harness:run-test` 跑本 story 的 atdd + e2e。触发评估在 run-test 内部完成（`eval_test_stage_triggers.sh` 读 `test-stage-triggers.yaml` + `harness-project-config.yaml`），本阶段只负责调用 + sanity gate。
+B4 之后直接进阶段 ⑥ 的判断，流水线里没有单独的测试阶段（0.3.0 删除了原来的 ⑤.5 和 `/super-harness:run-test`）。
 
-1. spawn：
-
-   ```
-   Agent({
-     subagent_type: "general-purpose",
-     description: "Test sprint <KEY>",
-     prompt: <以下 prompt>
-   })
-   ```
-
-   > 请直接调用 /super-harness:run-test --story $KEY。这是 run-sprint stage 5.5 自动触发，必须以 non-interactive 模式运行（任何 <ask> 节点都不要发问，按 `.claude/harness/answer-policy.md` 自决）。
-   >
-   > subagent 内部走 T3 + T4 双 commit（commit message 含 "(run-sprint stage 5.5)" 后缀）；sandbox graceful skip 路径内部写 skipped-*.md + 跑 T4 commit。完成后停止，主 agent 只会跑 5-5 做 sanity gate（期待 STATUS=skip）。
-   >
-   > **任务追踪工具禁令（issue #9）**：禁止调用 TaskCreate / TaskUpdate / TaskList 等任务管理工具——sprint 任务清单由主 orchestrator 独占维护。你的进度只通过最终返回 message 汇报。
-
-2. **验收**：`test_artifacts/$KEY-test-result.json` 或 `test_artifacts/skipped-$KEY-*.md` 至少一个存在；都没有 → halt。
-3. **5-5 sanity gate**：`python3 .claude/harness/scripts/harness-commit.py 5-5 $KEY`：期望 STATUS=skip；STATUS=ok（中断遗留的旧路径）→ 用 SUGGEST_COMMIT_MSG commit；STATUS=halt → §3。
-
-测试失败 ≠ halt：verdict=red 只写 deferred-work `FU-Test-$KEY-failing` + result.json，阶段 ⑥ 照常触发。
+- 单元测试和集成测试由 B1 的 bmad-build-auto 负责：spec 的 `## Verification` 段列出验证命令并实跑，step-03 的 Matrix Test Audit 要求 I/O 矩阵每一行都有跑通的测试，step-04 的 verification-gap 审查层专门找没有测试兜住的行为变更。
+- `/super-harness:run` 并行模式多一道合流验证：`parallel.yaml` 配了 `verify_command` 时，`superh.py integrate` 在 lane 被 rebase 到 sprint 分支最新提交之后、ff 合并之前跑它，失败就把这一路挂起，sprint 分支不动（`run` §3）。inline 模式一次只跑一条 story，B1 就在同一棵树上验过，不需要这一步。
+- e2e 和验收测试不在 harness 范围内，交给下游测试团队。
 
 ### 阶段 ⑥（条件触发）：Epic Retrospective
 
@@ -473,7 +455,7 @@ fi
 
 （`epic-all-done` 把 `done`、`wont-do`、`cancelled` 都算终态。）
 
-当前 story 不是该 epic 最后一条 → 跳过本阶段。inline 模式在每条 story 的 ⑤.5 之后做这个判断。调度模式不在单条 story 收口时判断，等 `superh.py tick` 给出 `retro` 再对该 epic 执行本阶段。
+当前 story 不是该 epic 最后一条 → 跳过本阶段。inline 模式在每条 story 的 B4 之后做这个判断。调度模式不在单条 story 收口时判断，等 `superh.py tick` 给出 `retro` 再对该 epic 执行本阶段。
 
 **retro 用的 `KEY`**（inline 模式的 retro-only 启动、调度模式都按这条取）：Read `sprint-status.yaml` 的 `development_status:`，在 `${EPIC}-` 开头的 key 里按 yaml 顺序取最后一条 status=done 的，再用 `sprint-status.py epic-of $KEY` 验证等于 `$EPIC`。**禁止**传空串或编造 key（`harness-commit.py` 的 key 位参必填）。
 
@@ -597,7 +579,7 @@ halt 的落地方式按模式不同：inline 模式打印下面的 halt 模板�
 | `run-inline` §0.A 工作区不干净且没有 in-flight story | halt |
 | 子 agent 返回缺 `git status --porcelain` 自报段 | 不 halt，主 agent 自己跑一次交叉核对；发现子 agent 改了它没声称改过的文件 → halt |
 | `RETRO_VERDICT=rejected` 且 `EPIC_WONT_DO=none`，并且是 inline 模式 `LOOP_SCOPE=all` 或调度模式 | halt，不进下一个 epic |
-| 单条 story 主步骤（B1 / B2.2 / B2.3 / B3）累计 dispatch > 5 个子 agent（4 个 + 至多 1 次中断重启）。⑤.5 / ⑥ / ⑥.5 / §0.A.0 不计入，各有上限：⑤.5 每 story 1 个；⑥ / ⑥.5 每 epic 各 1 个（另允许至多 1 次额外重启，配额重启与 ⑥ 瞬态重试合计）；§0.A.0 每个 dev 项 1 个 | halt |
+| 单条 story 主步骤（B1 / B2.2 / B2.3 / B3）累计 dispatch > 5 个子 agent（4 个 + 至多 1 次中断重启）。⑥ / ⑥.5 / §0.A.0 不计入，各有上限：⑥ / ⑥.5 每 epic 各 1 个（另允许至多 1 次额外重启，配额重启与 ⑥ 瞬态重试合计）；§0.A.0 每个 dev 项 1 个 | halt |
 | 想第二次进入"B2 修复 → B3 review"循环 | halt（每条 story 只有一次外部修复 + 一轮 follow-up） |
 | 同一 subagent 连续 2 次发问 | halt |
 

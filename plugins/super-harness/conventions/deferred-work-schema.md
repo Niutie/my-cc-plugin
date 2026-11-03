@@ -116,7 +116,7 @@ pending ──→ in-progress ──→ partial ──→ resolved
 | `v2.0+` | 更远期真增量 | ✅（与 v1.0+ 合并）|
 | `sandbox` | sandbox-bound——当前执行环境无法完成、需操作员在非受限环境复跑（模板项目示例：docker daemon-locked 操作） | ✅（threshold 25）|
 | `cross-story` | 待下游 Story 自然消化（明确指向 Story X.Y） | ❌（计 open 但不算债）|
-| `test-harness` | FU-Test-* 测试 harness 流水线产物 | ❌（独立命名空间）|
+| `test-harness` | legacy：FU-Test-* 条目，由 0.3.0 之前的测试阶段（已移除）写入。0.3.0 起不再产生新条目，保留枚举值只为识别老账本 | ❌（独立命名空间）|
 | `other` | 客户反馈触发 / 历史 stale-residual / 未明确分类 | ❌（计 open 不算债）|
 
 > v1.0+ / v2.0+ threshold 合并为 30 — 历史 §1 表已是合并口径，schema 沿用。

@@ -40,11 +40,11 @@
                      ▼
             合流（调度者，串行）
    superh integrate：rebase 到 sprint 分支 → 账本冲突自动消解 → 搬 tag
-                     → lane 内 build-verify → ff 合并
+                     → lane 内 build-verify → verify_command（按需）→ ff 合并
    代码冲突 → 合流冲突子 agent（prompts/merge-fix.md）→ 修不了就留给人
                      ▼
             收口（调度者，串行，主 worktree）
-   B4 build-sync → ⑤.5 run-test → done tag → cleanup
+   B4 build-sync → done tag → cleanup
    epic 全部 done → ⑥ retro / ⑥.5
 ```
 
@@ -91,7 +91,7 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 |---|---|---|
 | done / abandoned | phase 为 done / abandoned | |
 | conflict | phase = conflict（rebase 停在代码冲突上） | 是 |
-| held | phase = held（prepare 失败、rebase 后 build-verify 不通过、调度者挂起） | 是 |
+| held | phase = held（prepare 失败、rebase 后 build-verify 或 verify_command 不通过、调度者挂起） | 是 |
 | integrating | phase 为 integrating / merged | |
 | queued | phase 为 preparing / prepared，或这一次 attempt 还没有 proc 记录 | |
 | working | proc 没有退出码，pid 存活 | |
@@ -161,11 +161,19 @@ integrate 的每一步都能重跑，后面步骤依赖的信息都在可能被�
 
 rebase 完成后、ff 之前，在 lane worktree 里重跑一次 `harness-commit.py build-verify`。冲突解决可能引入越界改动，这一步把它挡在 sprint 分支外面。不通过时 lane 记为 held，sprint 分支不动。
 
+build-verify 只审计提交区间，不跑测试。两条 lane 各自在 B1 里测试通过，合在一起仍可能出问题，所以 build-verify 通过后还有一道合流验证门：`parallel.yaml` 配了 `verify_command` 时，integrate 在 lane worktree 里用 `sh -c` 跑它（超时取 `verify_timeout_sec`，默认 1800 秒；环境变量 `SUPERH_KEY`、`SUPERH_WORKTREE`、`SUPERH_MAIN_ROOT`）。这时 lane 的树就是 ff 之后 sprint 分支的树。
+
+- 只在这一路确实被 rebase 到更新的 sprint 提交上时才跑。没 rebase 的 lane 树没变，B1 已经测过。
+- 输出 `VERIFY=passed|failed|skipped-unset|skipped-not-rebased`。
+- 失败时 lane 记为 held，sprint 分支不动。在 lane worktree 里修好并 commit，再跑 `superh.py integrate <KEY>`。integrate 接受因验证失败而 held 的 lane，重新走 build-verify 和验证。
+
+inline 模式没有这道门：B1 就在 sprint 分支那棵树上跑，测试已经覆盖。
+
 ## 8. 收口
 
-ff 之后，调度者在主 worktree 里按 pipeline.md 的调度模式执行 B4 第 0 步（codex-skipped marker）、B4 build-sync、⑤.5 测试，然后 `mark done` 和 `cleanup`。epic 的最后一条 story 收口后，下一轮 tick 给出 `retro`，按 pipeline.md 的阶段 ⑥ / ⑥.5 / verdict 门执行。
+ff 之后，调度者在主 worktree 里按 pipeline.md 的调度模式执行 B4 第 0 步（codex-skipped marker）、B4 build-sync，然后 `mark done` 和 `cleanup`。epic 的最后一条 story 收口后，下一轮 tick 给出 `retro`，按 pipeline.md 的阶段 ⑥ / ⑥.5 / verdict 门执行。
 
-这几步都要写共享账本，或者需要共享的运行环境（e2e 的端口、数据库），所以全部串行。测试会因此成为瓶颈，这是 v0.1 有意接受的代价。
+这几步都要写共享账本，所以全部串行。0.3.0 之前这里还有 ⑤.5 测试阶段（已移除），基本测试改由 B1 和 §7.5 的合流验证门负责。
 
 收口的任何一步都可能被打断，所以调度者不按固定顺序执行，而是每步之前跑一次只读的 `superh.py postmerge <KEY>`，由它根据磁盘上的事实给出下一步：
 
@@ -173,8 +181,7 @@ ff 之后，调度者在主 worktree 里按 pipeline.md 的调度模式执行 B4
 |---|---|
 | done tag 不存在，harness-state 为 `sync`（或为 `codex` 且 marker 还没写） | `sync`：按需写 marker，build-sync，commit，打 done tag |
 | done tag 不存在，harness-state 为 `tag-only`（build-sync 已 commit） | `tag` |
-| done tag 存在，测试还没完成 | `test` |
-| done tag 存在，测试已完成（lane 里有 `tested` 检查点，或 HEAD 里已有 `<KEY>-test-result.json` / `skipped-<KEY>-*.md`） | `finish` |
+| done tag 存在 | `finish` |
 | 其他 | `halt` |
 
 marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文件弄脏、再被 build-sync 当成新改动提交。build-sync 返回 skip 时照样打 done tag，否则会一直停在 `sync`。
@@ -192,9 +199,10 @@ marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文�
 | prepare 中途被打断（例如 `prepare_command` 运行时会话被关） | lane 停在 preparing | tick 把它放回 launch 列表；prepare 先确认分支没有新提交、没有 harness tag，再清理现场重做；确认不了就记为 held |
 | launch 在两次落盘之间被打断 | phase=launched 但没有本次 attempt 的 proc 记录，显示为 queued | proc 记录写在启动 claude 之前，没有它就说明 worker 从没启动过；launch 直接重新启动 |
 | 收口中途被打断 | lane 停在 merged | 下次 tick 进入 post-merge，`postmerge` 从第一个没完成的步骤继续（§8） |
-| 收口在 sync 步骤里被打断（marker 已写或 build-sync 已暂存，未 commit） | 主 worktree 是脏的 | `start-run` 核对脏文件是否全部属于某个 merged、无 done tag 的 lane 的收口产物（sprint-status、deferred-work、该 lane 的 marker）。是则报 `MAIN_CLEAN=resumable` 放行，重跑 build-sync 时一并提交；混进任何其他文件仍然 halt。⑤.5 测试中途被打断留下的文件范围太宽，不在放行之列 |
+| 收口在 sync 步骤里被打断（marker 已写或 build-sync 已暂存，未 commit） | 主 worktree 是脏的 | `start-run` 核对脏文件是否全部属于某个 merged、无 done tag 的 lane 的收口产物（sprint-status、deferred-work、该 lane 的 marker）。是则报 `MAIN_CLEAN=resumable` 放行，重跑 build-sync 时一并提交；混进任何其他文件仍然 halt |
 | 补进 lane 的文件没被 .gitignore 忽略 | prepare 失败，lane 记为 held | 按输出的 `GITIGNORE=` 行补 `.gitignore` 并提交，`abandon --yes` 后重新排队 |
 | rebase 后 build-verify 不通过 | held，sprint 分支不动 | 在 lane 里修好后 retry |
+| rebase 后 `verify_command` 不通过 | held，sprint 分支不动 | 在 lane worktree 里修好并 commit，重跑 `superh integrate <KEY>`（retry 会重启 worker，而 worker 看到状态已是 sync 会直接回报 ready，修不了测试） |
 | build-sync halt | 全局 halt | 按 pipeline.md §3 halt 模板 |
 | 放弃某一路 | `superh abandon <KEY> --yes`：删 worktree、分支，以及这条 story 没有 done 的 `harness/<KEY>/*` tag | story 回到 backlog，可以重新排队 |
 
@@ -214,6 +222,8 @@ marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文�
 
 - 依赖信息要靠 sprint-status 的 `depends_on` 或 `deps_overrides`。都没有时默认串行，不会自动推断。
 - 不预测文件级的冲突。两条声明为独立的 story 改到同一段代码时，要到合流时才发现。
-- ⑤.5 测试和 epic retro 串行执行；跨 epic 的并行受 retro 屏障限制，可以关掉 `retro_barrier`，但 pre-commit gate ① 仍会按 `retro_gate` 设置拦截。
+- epic retro 串行执行；跨 epic 的并行受 retro 屏障限制，可以关掉 `retro_barrier`，但 pre-commit gate ① 仍会按 `retro_gate` 设置拦截。
 - worker 默认用 `bypassPermissions` 无人值守运行。
 - 调度者会话结束会带走在跑的 worker。
+- `verify_command` 在合流队列里串行执行，跑多久合流就卡多久。全量测试很慢的项目，建议只放合流最容易打破的那部分（编译、类型检查、核心包的单测）。
+- 合流验证门只看 `verify_command` 的退出码，不区分不稳定的测试和真失败。偶发失败时直接重跑 `superh.py integrate <KEY>` 即可。

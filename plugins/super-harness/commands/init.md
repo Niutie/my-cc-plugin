@@ -1,5 +1,5 @@
 ---
-description: super-harness 项目 bootstrap — 投递 plugin 资产到 .claude/harness/ + 装 git hooks + 检查并行调度前置条件；若 BMad planning artifacts 已齐则继续从中提取 16 字段填 harness-project-config.yaml（merge 模式；--dry-run 预览；--force 覆盖二次确认）。从 harness-zh 迁移过来的项目也跑这个
+description: super-harness 项目 bootstrap — 投递 plugin 资产到 .claude/harness/ + 装 git hooks + 检查并行调度前置条件；若 BMad planning artifacts 已齐则继续从中提取字段填 harness-project-config.yaml（merge 模式；--dry-run 预览；--force 覆盖二次确认）。从 harness-zh 迁移过来的项目也跑这个
 argument-hint: '[--dry-run | --force | --merge]'
 allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 ---
@@ -15,7 +15,7 @@ allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 4. plugin 升级后（**建议改用** `/super-harness:update` —— 只刷资产不动 yaml）
 5. 从 harness-zh 迁移过来（项目里已有 `.claude/harness/` 和 `harness-project-config.yaml`）：yaml、tag、sprint 状态都原样沿用；§A.2 的 purge 会清掉 harness-zh 以前复制进 `.claude/commands/` 的命令副本（先备份）。跑完提示用户 `/plugin uninstall harness-zh`，两个 plugin 都往 `.claude/harness/` 写资产，留着旧的会在下次 `/harness-zh:update` 时把资产刷回旧版
 
-**与流水线（`pipeline.md`）/ `/super-harness:run-test` 共享的行为契约**：
+**与流水线（`pipeline.md`）共享的行为契约**：
 
 - **代答政策**：本命令不调度 BMad/codex 子 agent，直接由主 agent 操作文件系统 + 读 BMad markdown + 写 yaml；无 prompt 后缀注入步骤。决策若不显然 → 按 `.claude/harness/answer-policy.md` 自决，不发问。
 - **进度可视化**：**全流程只建一个任务**：TaskCreate `Harness Init: <项目根目录名>`（§A.0 启动时建 + in_progress；§0.1 不再新建，只 TaskUpdate 追加 MODE；§6 完成或 §A.7 早结束时 completed）。任务名用项目根目录名（§A.0 时点 `project_display_name` 尚未提取，不可用）。
@@ -106,7 +106,6 @@ mkdir -p .claude/harness/{scripts,prompts,conventions,prompt-suffixes,git-hooks}
 | `$PLUGIN_ROOT/architecture-parallel.md` | `.claude/harness/architecture-parallel.md` |
 | `$PLUGIN_ROOT/answer-policy.md` | `.claude/harness/answer-policy.md` |
 | `$PLUGIN_ROOT/changelog.md` | `.claude/harness/changelog.md` |
-| `$PLUGIN_ROOT/test-stage-triggers.yaml` | `.claude/harness/test-stage-triggers.yaml` |
 | `$PLUGIN_ROOT/scripts/*` | `.claude/harness/scripts/`（含并行调度 CLI `superh.py`） |
 | `$PLUGIN_ROOT/prompts/*` | `.claude/harness/prompts/`（worker / 合流冲突子 agent 的 prompt 模板） |
 | `$PLUGIN_ROOT/conventions/*` | `.claude/harness/conventions/` |
@@ -603,7 +602,7 @@ printf '%s\n' "$HELPER_GUIDANCE"
 
 ### 0.1 TaskUpdate 标注模式（复用 §A.0 任务 — 不新建）
 
-对 §A.0 已建的 `Harness Init: <项目根目录名>` 任务跑 `TaskUpdate`：description 追加 `MODE=<mode>; 16 字段从 BMad → yaml 同步`（任务保持 `in_progress`）。**不要**再 TaskCreate 第二个任务 — 全流程单任务，§6 / §A.7 / halt 收尾都只标这一个。
+对 §A.0 已建的 `Harness Init: <项目根目录名>` 任务跑 `TaskUpdate`：description 追加 `MODE=<mode>; BMad 字段 → yaml 同步`（任务保持 `in_progress`）。**不要**再 TaskCreate 第二个任务 — 全流程单任务，§6 / §A.7 / halt 收尾都只标这一个。
 
 ---
 
@@ -628,12 +627,14 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 **NICE-TO-HAVE**（缺则 WARN 不阻流；相关字段用 fallback）：
 - `_bmad-output/planning-artifacts/product-brief*.md`（glob — 上游会带项目名后缀；缺则 §2 字段 1/15 用 prd.md 兜底）
-- 若 architecture sharded：`architecture/i18n.md` / `architecture/nfrs.md` / `architecture/proxy*.md` / `architecture/testing-strategy.md`
+- 若 architecture sharded：`architecture/i18n.md` / `architecture/nfrs.md` / `architecture/proxy*.md`
 - 若 architecture 单文件：上述内容作为章节嵌入 `architecture.md`，§2 提取时按章节标题 grep 即可
 
 ---
 
-## 2. BMad artifacts 字段提取（16 字段映射表）
+## 2. BMad artifacts 字段提取（字段映射表）
+
+编号沿用 1-16。0.3.0 起 5 号 `e2e_framework`、7 号 `extra.e2e_test_subdir` 随测试阶段一起退役，不再提取也不再写入，实际提取 14 个字段。已有项目 yaml 里的这两个字段留着不会被读，可以手动删掉。
 
 按下表逐字段读 BMad markdown + 用**语义检索**（Q1）提取值。**不**依赖固定锚点（如 `## Frontend`）—— BMad-generated markdown 段标题 / 段位置不严格固定（中英文 / 编号前缀 / 同义词都可能漂移）。LLM 用 Read 工具读对应文件全文 + 按"提取语义提示"找信息。
 
@@ -657,9 +658,9 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 | 2 | `container_orchestrator` | `architecture/tech-stack.md` 或 `architecture.md §tech-stack` | 找容器编排技术（docker-compose / k8s / podman / nerdctl-compose） | `'docker-compose'` + WARN |
 | 3 | `frontend_framework` | `architecture/tech-stack.md` 或 `architecture.md §tech-stack` | 找前端框架（Next.js / SvelteKit / Remix / Astro 含版本） | `'TODO: frontend framework'` + WARN |
 | 4 | `backend_languages` (list) | `architecture/tech-stack.md` 或 `architecture.md §tech-stack` | 找后端语言列表（Go / Python / TypeScript / Rust 含版本） | `['TypeScript']` + WARN |
-| 5 | `e2e_framework` | `architecture/tech-stack.md` 或 `architecture.md §testing-strategy` | 找端到端测试框架（Playwright / Cypress / WebdriverIO / 'none' for 纯后端项目） | **条件 fallback**（v0.1.19）：若字段 6 `frontend_dir` 也提取失败 / fallback 到 `'frontend'` → fallback `'none'` + INFO（纯后端项目正常状态，不 WARN）；否则 fallback `'Playwright'` + WARN |
+| 5 | ~~`e2e_framework`~~ | — | 0.3.0 起退役，不再提取 | — |
 | 6 | `extra.frontend_dir` | `architecture/repo-structure.md` 或 `architecture.md §repo-structure` | 找前端代码顶层目录名 | `'frontend'` + WARN |
-| 7 | `extra.e2e_test_subdir` | `architecture/repo-structure.md` 或 `testing-strategy.md` | 找 e2e 测试目录路径（相对前端目录或仓库根） | `'tests/e2e'` + WARN |
+| 7 | ~~`extra.e2e_test_subdir`~~ | — | 0.3.0 起退役，不再提取 | — |
 | 8 | `extra.container_count` | `architecture/tech-stack.md` 或 `deploy/` 段 | 找服务容器数量（整数） | `0` + WARN |
 | 9 | `extra.i18n_locales` (list) | `architecture/i18n.md`（NICE-TO-HAVE） | 找前端国际化语种代码列表（zh-CN / en-US 等） | `['en-US']` + WARN |
 | 10 | `extra.routing_pattern` | `architecture/i18n.md` 或 `architecture/tech-stack.md`（NICE-TO-HAVE） | 找路由模式描述（"Next.js i18n routing" 等） | `''` + WARN |
@@ -673,21 +674,13 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 **提取协议**：
 - 用 Read 工具读 BMad source 文件全文（每条 source 至多读一次，缓存到工作记忆）
 - 对每个字段：在文件内容中按"提取语义提示"找信息；找到 → 记入 `EXTRACTED[<key>] = <value>`；找不到 → 记入 `WARN[<key>] = "BMad source <path> 未发现 <语义>; using fallback"`
-- 提取完所有 16 字段后进 §3
+- 提取完所有字段（5、7 号已退役，跳过）后进 §3
 - **禁止**：不写 grep/awk/sed 解析 BMad markdown（脆弱；spec Boundaries "Never"）
 
 **字段 15-16 特殊语义**（2026-05-05 加 — L1+L2 yaml-driven 注入）：
 - 字段 15（project_context）由 `harness-prompt-suffix.py` 在 prompt 注入时内联到代答政策块；缺失会导致 subagent 决策时缺项目语境（fallback 为通用决策原则）
 - 字段 16（fullstack_review_steps）由 `harness-prompt-suffix.py` stage 2 渲染为 dev-story Q6 sub-bullet 注入到 dev subagent；list 为空时 Q6 整段降级跳过（不阻流）
 - 这两字段 fallback 不阻 init / sprint，但实际跑 dev / review 时建议补全（subagent 决策质量与字段完整度强相关）
-
-**字段 5 (e2e_framework) 的条件 fallback 语义**（v0.1.19 A 档新增）：
-- 提取顺序保证字段 6 (frontend_dir) 必须先于字段 5 计算或在字段 5 计算时可访问，因为字段 5 fallback 依赖字段 6 结果
-- 若 BMad 提取到具体值（"Playwright" / "Cypress" / "WebdriverIO" / "Selenium" / "none"）→ 直接采用（不 WARN）
-- 若 BMad 未发现 e2e 框架信息：
-  - 字段 6 也未发现 frontend_dir（fallback 到 `'frontend'`）→ 推断"纯后端项目"，fallback `e2e_framework: 'none'` + INFO（不 WARN，因为是正常状态）
-  - 字段 6 发现具体 frontend_dir 但 e2e 框架未提及 → fallback `'Playwright'` + WARN（默认假设 Playwright，让 solo-dev review）
-- 这个条件 fallback 解 v0.1.18 之前的 sandbox-skip 污染（纯后端项目被 fallback 到 'Playwright' → probe → 全 skip → deferred-work 鬼影累积）
 
 ---
 
@@ -698,7 +691,7 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 - yaml 已设 → 不动（merge 语义）
 - yaml 未设 → 写默认 `'_bmad-output/implementation-artifacts'`
 
-### 3.2 path_classifiers（基于 §2 提取的 frontend_dir + backend_modules + e2e_test_subdir）
+### 3.2 path_classifiers（基于 §2 提取的 frontend_dir + backend_modules）
 
 按下面模板生成 list of {label, regex}。`<frontend_dir>` 等占位符按 §2 字段值代入；任一上游字段缺失 → 留 `harness-project-config.yaml` Aegis 默认 11 条 + WARN（spec I/O Matrix 表第 9 行 fallback 行为）。
 
@@ -737,7 +730,7 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 **Java 行特殊点**：默认输出 Maven 命令 `mvn -B test`（`-B` = batch / non-interactive），inline comment 提示 Gradle 用户改成 `./gradlew test`。模板**不**自动检测 `pom.xml` vs `build.gradle`（避免误判多模块项目；solo-dev 跑完 init 后按需手工调一次即可）。
 
-`backend_modules` 为空 → 把 `<backend_modules[0]>` 替换为 `.` （仓库根）。`frontend_dir` 为空 / `e2e_framework` = `'none'` → 把整行 `pnpm --filter <frontend_dir> ...` **删除**（保留单一后端 line；混入 pnpm 命令会让纯后端项目 dev subagent 报 cmd not found）。
+`backend_modules` 为空 → 把 `<backend_modules[0]>` 替换为 `.` （仓库根）。`frontend_dir` 为空，或者 §2 没在 BMad 里找到前端目录（字段 6 用的是 fallback `'frontend'`）→ 把整行 `pnpm --filter <frontend_dir> ...` **删除**（保留单一后端 line；混入 pnpm 命令会让纯后端项目 dev subagent 报 cmd not found）。
 
 ---
 
@@ -749,7 +742,7 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 ### 4.2 计算 diff
 
-对 §2 + §3 算出的 19 个字段（16 BMad-sourced + 3 派生），对比 yaml 既有值：
+对 §2 + §3 算出的 17 个字段（14 BMad-sourced + 3 派生），对比 yaml 既有值：
 - **既有 = 提取值** → no-op
 - **既有 = 空 / 未设** → mark "to-fill"（merge 模式 + force 模式都写）
 - **既有 = 非空 + 提取值 != 既有**：
@@ -839,7 +832,7 @@ stdout 报告（按下表结构）：
 ```
 ✅ /super-harness:init 完成
 
-【写入字段】<N>/16 BMad 字段 + <M>/3 派生字段
+【写入字段】<N>/14 BMad 字段 + <M>/3 派生字段
   - project_display_name: '<value>'
   - container_orchestrator: '<value>'
   - ...
@@ -860,6 +853,9 @@ stdout 报告（按下表结构）：
     /super-harness:run-inline --dry-run   预览单路计划；去掉 --dry-run 在当前会话里一条一条跑
     /super-harness:run --dry-run          预览哪些 story 会并行；并行配置在 .claude/harness/parallel.yaml（先看 max_slots 和 no_deps_policy）
     /super-harness:board                  并行跑起来之后看各路状态
+
+  并行模式建议在 .claude/harness/parallel.yaml 配 verify_command（例如 go test ./... && pnpm test），
+  lane 合入 sprint 分支前会先在合流后的代码上跑一遍；不配就跳过这道检查。
 ```
 
 **`--dry-run` 模式报告**（无写入）：
@@ -880,115 +876,16 @@ stdout 报告（按下表结构）：
 提示：去掉 --dry-run 跑可写入 will-write 字段；加 --force 可覆盖 will-overwrite 字段（需二次确认）
 ```
 
-### 6.5 测试运行时探测（advisory — 不阻 init）
-
-写入字段后跑一次环境探测，让 solo-dev 在 init 当下就知道 e2e 测试能不能实跑（避免 `/super-harness:run-test` 静默走 sandbox graceful skip 路径，几条 story 跑下来才发现 test_status 全 skip）。
-
-**触发条件**：`--dry-run` 模式 → **跳过本节**（避免在不写文件的 dry-run 路径里执行环境侧效应）。
-
-**步骤**：
-
-1. 跑探测：
-
-   ```bash
-   bash .claude/harness/scripts/check_test_harness_env.sh
-   ```
-
-2. 解析 stdout JSON：`runtime_ready` / `framework_installed` / `chromium_installed` / `frontend_dir` / `e2e_framework` / `package_manager` / `reason`。
-
-3. 按结果分支。**判定优先级（自上而下，第一个命中即停）：(a) → (b) → (e) → (c) → (d)**。
-   其中 (e) 必须先于 (c)/(d) 判定：probe JSON 的 `frontend_dir` 字段恒非空（探测脚本对
-   未配置值回填 fallback `console-web`），若直接按 (c)/(d) 自身条件判，yaml 未填
-   `extra.frontend_dir` 的项目会误入 (c)/(d)，错过 (e) 的「先填 frontend_dir」引导：
-
-   **(a) `runtime_ready=true`** → emit 一行：
-
-   ```
-   【测试运行时】✓ ready（探测目录：${frontend_dir}, pkg manager：${package_manager}）— /super-harness:run-test 可实跑 e2e
-   ```
-
-   **(b) `runtime_ready=false`** + `e2e_framework='none'`（或 reason="no_e2e_configured"）→ emit hint：
-
-   ```
-   【测试运行时】⏸ 跳过探测：项目自报 e2e_framework='none'（纯后端 / 无 e2e）
-     /super-harness:run-test 会走 §4.5 clean skip，不污染 deferred-work
-   ```
-
-   **(c) `runtime_ready=false`** + `e2e_framework` ∈ {`Cypress`/`WebdriverIO`/`Selenium`/其它非空非 Playwright} → emit WARN：
-
-   ```
-   【测试运行时】⚠️ probe 未实现 — e2e_framework='${e2e_framework}'
-     plugin 当前 T3/T4 stages 是 Playwright-coded；本栈走 sandbox-skip + informative reason。
-     如需 ${e2e_framework} 支持，请提 feature request；或临时把 e2e_framework 改 'none' 跳过 e2e 流水线。
-   ```
-
-   **(d) `runtime_ready=false`** + `frontend_dir` 非空 + `e2e_framework='Playwright'`（默认或显式）→ emit WARN 多行（按缺失维度 + 检测到的 pkg manager tailored）：
-
-   ```
-   【测试运行时】⚠️ 未就绪 — /super-harness:run-test 会走 sandbox graceful skip
-                                 直到补齐（test_status 全 skip 的根因）
-     探测目录：${frontend_dir}
-     pkg manager（按 lockfile 检测）：${package_manager}
-     缺失维度：${reason 内 missing 列表，逐条人话化}
-       - framework 缺          → 前端依赖未装
-       - chromium 缺           → Playwright 浏览器二进制未装
-       - version_check 缺      → @playwright/test 包损坏 / 与 playwright.config.ts 不兼容
-
-     修复（在仓库根跑）— 按 ${package_manager} 选对应命令组：
-
-     pnpm 项目：
-       cd ${frontend_dir}
-       pnpm install
-       pnpm exec playwright install --with-deps chromium
-       pnpm exec playwright --version       # 验证
-
-     yarn 项目：
-       cd ${frontend_dir}
-       yarn install
-       yarn exec playwright install --with-deps chromium
-       yarn exec playwright --version
-
-     npm 项目：
-       cd ${frontend_dir}
-       npm install
-       npx playwright install --with-deps chromium
-       npx playwright --version
-
-     bun 项目：
-       cd ${frontend_dir}
-       bun install
-       bun x playwright install --with-deps chromium
-       bun x playwright --version
-
-     修复完跑探测确认：
-       bash .claude/harness/scripts/check_test_harness_env.sh
-       # 期望 "runtime_ready": true
-   ```
-
-   **(e) yaml `extra.frontend_dir` 为空字符串 / probe 回填了 fallback 'console-web' 但该目录不存在** → emit hint：
-
-   ```
-   【测试运行时】⏸ 探测跳过 — extra.frontend_dir 未填 / 项目无前端目录
-     如本项目无前端 e2e 测试需求，可忽略本提示（atdd / e2e stage 会按
-     sandbox graceful skip 处理）。
-     如有前端需求，先把 .claude/harness/harness-project-config.yaml 的
-     extra.frontend_dir 填好（如 'web' / 'frontend' / 'console-web'），
-     然后单独跑：
-       bash .claude/harness/scripts/check_test_harness_env.sh
-   ```
-
-**为什么不 halt**：init 的核心承诺是"asset 投递 + yaml 字段提取"，测试运行时是 solo-dev 自己机器侧的事；探测失败应作为"第一时间被告知"的 advisory，不阻断 init 流程。solo-dev 看到 WARN 后自决何时装 playwright（CI 环境 / 上 docker / 真机器都有不同节奏）。
-
 完成后把 TaskCreate 任务标 `completed`，退出码 0。
 
 ---
 
 ## 7. 死循环 / 失控防护
 
-下列**任一**命中立即 halt + 用户介入（与 `pipeline.md` §3 / `/super-harness:run-test` §3 同款模板）：
+下列**任一**命中立即 halt + 用户介入（与 `pipeline.md` §3 同款模板）：
 
 1. helper `run_sprint_init_check_prereq.sh` 退出码非 0/2/3（参数错误 / 内部异常）
-2. BMad markdown 提取语义后 `EXTRACTED[<key>]` 仍为空对**所有 16 字段** → 怀疑 BMad 产物为空文件 / 损坏 → halt + 提示用户检查 `_bmad-output/planning-artifacts/`
+2. BMad markdown 提取语义后 `EXTRACTED[<key>]` 仍为空对**所有字段** → 怀疑 BMad 产物为空文件 / 损坏 → halt + 提示用户检查 `_bmad-output/planning-artifacts/`
 3. yaml 写入后 `harness_config.py` smoke test exit ≠ 0（yaml 语法破坏）→ rollback + halt
 4. `simulate_clone_test.sh` exit ≠ 0 → rollback + halt
 5. runtime quota 信号（`hit your limit` / `rate limit` 等）— 与 `pipeline.md` §3 同款配额专属模板

@@ -1,6 +1,6 @@
 ---
 description: 自动收集 plugin 版本 / 当前 sprint+story 状态 / halt 现场等上下文，用 gh CLI 直接给 Niutie/my-cc-plugin 提 GitHub issue。halt 时提完会附一个临时绕过方案。
-argument-hint: '[--type bug|feature|halt|other] [--story KEY] [--epic N] [--halt-stage N] [--halt-command run|run-test|init|update|upgrade-deferred-work]'
+argument-hint: '[--type bug|feature|halt|other] [--story KEY] [--epic N] [--halt-stage N] [--halt-command run|run-inline|init|update|upgrade-deferred-work]'
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
@@ -10,7 +10,7 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
 
 **触发场景**：
 
-1. **halt 时**：`/super-harness:run-inline` / `run` / `run-test` / `init` 等任一命令进入 §3 halt 模板"待用户决断"页面，用户怀疑这是 plugin 缺陷而非项目侧问题 — 选项 6 引导跑本命令
+1. **halt 时**：`/super-harness:run-inline` / `run` / `init` 等任一命令进入 §3 halt 模板"待用户决断"页面，用户怀疑这是 plugin 缺陷而非项目侧问题 — 选项 6 引导跑本命令
 2. **阶段收尾随手**：sprint / 单 story 跑完后用户回想到刚才哪一段不顺手 — 主动跑本命令
 3. **ad-hoc 反馈**：用户日常使用时发现任何 plugin 行为/文档/脚本问题，随时跑
 
@@ -34,7 +34,7 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
 | `--type` | `bug` / `feature` / `halt` / `other` | issue 类型（label） |
 | `--story` | story KEY，如 `1-3-login-flow` | 当前 story 上下文 |
 | `--epic` | epic 编号 | 当前 epic 上下文 |
-| `--halt-command` | `run` / `run-test` / `init` / `update` / `upgrade-deferred-work` / `other` | halt 来自哪个命令 |
+| `--halt-command` | `run` / `run-inline` / `init` / `update` / `upgrade-deferred-work` / `other` | halt 来自哪个命令 |
 | `--halt-stage` | 阶段编号（如 `2` / `5` / `T3` / `A.3.d`） | halt 在哪个 stage |
 | `--halt-reason` | 一句话现场摘要 | halt 触发条件 / 报错关键句 |
 

@@ -99,7 +99,6 @@ mkdir -p .claude/harness/{scripts,prompts,conventions,prompt-suffixes,git-hooks}
 | `$PLUGIN_ROOT/architecture-parallel.md` | `.claude/harness/architecture-parallel.md` |
 | `$PLUGIN_ROOT/answer-policy.md` | `.claude/harness/answer-policy.md` |
 | `$PLUGIN_ROOT/changelog.md` | `.claude/harness/changelog.md` |
-| `$PLUGIN_ROOT/test-stage-triggers.yaml` | `.claude/harness/test-stage-triggers.yaml` |
 | `$PLUGIN_ROOT/scripts/*` | `.claude/harness/scripts/` |
 | `$PLUGIN_ROOT/prompts/*` | `.claude/harness/prompts/` |
 | `$PLUGIN_ROOT/conventions/*` | `.claude/harness/conventions/` |
@@ -109,6 +108,8 @@ mkdir -p .claude/harness/{scripts,prompts,conventions,prompt-suffixes,git-hooks}
 | `$PLUGIN_ROOT/templates/parallel.yaml` | `.claude/harness/parallel.yaml`（仅当不存在；有 super-harness 0.1.0 的 `.claude/super-harness/config.yaml` 时原样搬过来，stderr 打 `migrated:`，§6 报告里转告用户；不进 manifest） |
 
 slash 命令不再复制进 `.claude/commands/`（见 init §A.2）。harness-zh 时代留下的副本在旧 manifest 里，本节的 purge 会备份后删除。
+
+0.3.0 起测试阶段整体移除，`test-stage-triggers.yaml`、`scripts/eval_test_stage_triggers.sh`、`scripts/check_test_harness_env.sh`、`scripts/bootstrap_test_harness.sh` 不再分发。老项目里的这些副本记在旧 manifest 里，本节的 purge 会备份后删除，并列入 §6 的 purged 清单。项目 `test_artifacts/` 目录下已有的测试产物不在 manifest 里，不会被动。
 
 （`prompt-templates/` 已停止分发 — 4 个模板停留在 pre-schema-v1 语义且无任何运行时引用；
 老项目残留副本会被本节 manifest purge 自动清理 + 列入 §6 purged 清单。）

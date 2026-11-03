@@ -8,13 +8,12 @@
 #     $REPO_ROOT/.claude/harness/scripts/，源树/CI 跑不了）
 #   - F1 不再断言 live 项目 config（'11 entries' 魔数绑定真实项目内容）；
 #     改为 fixture 写死的完整 config，全 4 fixture 自包含
-#   - 新增 get_frontend_dir / get_e2e_test_subdir 断言（Phase A finding #9
-#     新 getter：显式值 + 缺省 fallback 两路）
+#   - 0.3.0：get_frontend_dir / get_e2e_test_subdir 随测试阶段一起删除，
+#     对应断言去掉；bash 侧 read_harness_config_field frontend_dir 仍保留断言
 #
 # 4 fixtures × (Python + bash)：
 #   1. 完整 yaml（全字段填满）       → 全字段读出 + 0 WARN
-#   2. 缺字段 (artifacts_root unset) → fallback to default + WARN；
-#      frontend_dir/e2e_test_subdir 静默 fallback（console-web / tests/e2e）
+#   2. 缺字段 (artifacts_root unset) → fallback to default + WARN
 #   3. yaml 文件缺失                  → fallback to default + WARN
 #   4. yaml 含自定义 artifacts_root   → 真用新值
 
@@ -88,12 +87,10 @@ container_orchestrator: 'docker-compose'
 frontend_framework: 'Next.js'
 backend_languages:
   - 'TypeScript'
-e2e_framework: 'Playwright'
 artifacts_root: '_bmad-output/implementation-artifacts'
 
 extra:
   frontend_dir: 'webapp'
-  e2e_test_subdir: 'e2e/specs'
   path_classifiers:
     - label: 'backend source'
       regex: '^api/'
@@ -114,9 +111,6 @@ assert_contains "$F1_PY" "_bmad-output/implementation-artifacts" "F1.py"
 assert_contains "$F1_PY" "path_classifiers: 2 entries" "F1.py"
 assert_contains "$F1_PY" "go vet ./api/..." "F1.py"
 assert_contains "$F1_PY" "fullstack_review_steps: 1 entries" "F1.py"
-# Phase A 新 getter（finding #9）：显式配置值读出
-assert_contains "$F1_PY" "frontend_dir: webapp" "F1.py"
-assert_contains "$F1_PY" "e2e_test_subdir: e2e/specs" "F1.py"
 assert_not_contains "$F1_PY" "WARN" "F1.py"
 
 F1_SH="$(bash -c "source '$F1_HELPER_DIR/read_harness_config.sh' && echo \"ART=\$HARNESS_ARTIFACTS_ROOT\" && echo \"FD=\$(read_harness_config_field frontend_dir console-web)\"" 2>&1)"
@@ -135,7 +129,6 @@ container_orchestrator: 'docker-compose'
 frontend_framework: 'Next.js'
 backend_languages:
   - 'TypeScript'
-e2e_framework: 'Playwright'
 extra:
   container_count: 3
 YAML
@@ -143,10 +136,6 @@ YAML
 F2_PY="$(python3 "$F2_HELPER_DIR/harness_config.py" 2>&1)"
 assert_contains "$F2_PY" "WARN [harness_config]: artifacts_root not set" "F2.py"
 assert_contains "$F2_PY" "_bmad-output/implementation-artifacts" "F2.py"
-# Phase A 新 getter：未配置时静默 fallback（quiet — 不应有专属 WARN）
-assert_contains "$F2_PY" "frontend_dir: console-web" "F2.py"
-assert_contains "$F2_PY" "e2e_test_subdir: tests/e2e" "F2.py"
-assert_not_contains "$F2_PY" "WARN [harness_config]: 'frontend_dir'" "F2.py"
 
 F2_SH="$(bash -c "source '$F2_HELPER_DIR/read_harness_config.sh' 2>&1; echo \"ART=\$HARNESS_ARTIFACTS_ROOT\"" 2>&1)"
 assert_contains "$F2_SH" "WARN [read_harness_config]: artifacts_root not set" "F2.sh"

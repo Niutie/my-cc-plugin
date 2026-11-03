@@ -12,6 +12,8 @@
 #   L*  prepare + launch + report 全链路，lane 阶段推导
 #   I*  两路并行合流：第一路 ff，第二路 rebase + 账本冲突自动消解 + tag 搬迁 +
 #       worktree 内 build-verify
+#   V*  合流验证门：没 rebase 的 lane 跳过；rebase 过的 lane 验证失败 → held、
+#       sprint 分支不动；在 lane 里修好并 commit 后重跑 integrate 合入
 #   C*  真代码冲突 → exit 3 → 人工解决后 integrate 续跑
 #   X*  mark / cleanup / abandon
 #
@@ -209,8 +211,13 @@ TICK="$($SH tick)"
 
 echo "== I: integrate"
 OLD_BUILT_BETA="$(git rev-parse harness/1-2-beta/built)"
+# verify gate: passes only once beta's lane carries the "fixed" commit (see V*)
+cat >> .claude/harness/parallel.yaml <<'EOF2'
+verify_command: 'grep -q fixed "$SUPERH_WORKTREE/src/1-2-beta.txt"'
+EOF2
 OUT="$($SH integrate 1-1-alpha)"; RC=$?
 [ $RC -eq 0 ] && ok "I1 alpha integrates (ff)" || { bad "I1 rc=$RC"; echo "$OUT"; }
+echo "$OUT" | grep -qx 'VERIFY=skipped-not-rebased' && ok "V1 lane not rebased → verify skipped" || { bad "V1"; echo "$OUT"; }
 [ "$(git rev-parse HEAD)" = "$(git rev-parse story/1-1-alpha)" ] && ok "I2 sprint branch fast-forwarded" || bad "I2"
 # R: the dispatcher died after the ff but before recording `merged` (no-rebase path).
 # Worst case: nothing about the merge was persisted. A re-run must not move start.
@@ -229,15 +236,24 @@ python3 .claude/harness/scripts/harness-commit.py build-sync 1-1-alpha > "$TMP/b
 if [ $BS -eq 0 ]; then git commit -qm "story(1-1-alpha): sync sprint status & deferred ledger"; fi
 [ "$(PM 1-1-alpha)" = "tag" ] && ok "M2 committed but untagged → tag (no second build-sync)" || bad "M2 $($SH postmerge 1-1-alpha)"
 git tag harness/1-1-alpha/done
-[ "$(PM 1-1-alpha)" = "test" ] && ok "M3 tagged → test" || bad "M3"
-mkdir -p "$ART/test_artifacts" && echo '{"verdict":"green"}' > "$ART/test_artifacts/1-1-alpha-test-result.json"
-git add "$ART/test_artifacts" && git commit -qm "test(1-1-alpha): atdd + e2e (run-sprint stage 5.5)"
-[ "$(PM 1-1-alpha)" = "finish" ] && ok "M4 committed test result counts as tested (no checkpoint needed)" || bad "M4"
+[ "$(PM 1-1-alpha)" = "finish" ] && ok "M3 tagged → finish (no test step)" || bad "M3 $($SH postmerge 1-1-alpha)"
 [ "$($SH mark 1-1-alpha --phase done | head -1)" = "STATUS=ok" ] && ok "I4 mark done after done tag" || bad "I4"
 grep -A1 '1-1-alpha:' "$ART/sprint-status.yaml" | grep -q 'status: done' && ok "I5 build-sync set alpha done" || { bad "I5"; cat "$TMP/bs.out"; }
 
+SPRINT_BEFORE="$(git rev-parse HEAD)"
 OUT="$($SH integrate 1-2-beta)"; RC=$?
-[ $RC -eq 0 ] && ok "I6 beta integrates after rebase" || { bad "I6 rc=$RC"; echo "$OUT"; }
+[ $RC -eq 1 ] && echo "$OUT" | grep -qx 'VERIFY=failed' && echo "$OUT" | grep -q '^REASON=合流后验证不通过' \
+    && ok "V2 rebased lane fails verify_command → halt" || { bad "V2 rc=$RC"; echo "$OUT"; }
+[ "$(git rev-parse HEAD)" = "$SPRINT_BEFORE" ] && ok "V3 sprint branch untouched on verify failure" || bad "V3"
+[ "$($SH board --json | jget '[x["stage"] for x in d if x["key"]=="1-2-beta"][0]')" = "held" ] \
+    && ok "V4 lane held" || bad "V4"
+$SH tick | jget 'd["attention"]' | grep -q 'superh.py integrate 1-2-beta' \
+    && ok "V5 takeover hint says fix, commit, re-run integrate" || { bad "V5"; $SH tick; }
+WT_BETA="$TMP/wt/1-2-beta"
+echo fixed >> "$WT_BETA/src/1-2-beta.txt" && git -C "$WT_BETA" commit -qam "fix(1-2-beta): make verify pass"
+OUT="$($SH integrate 1-2-beta)"; RC=$?
+[ $RC -eq 0 ] && ok "I6 beta integrates after rebase + fix" || { bad "I6 rc=$RC"; echo "$OUT"; }
+echo "$OUT" | grep -qx 'VERIFY=passed' && ok "V6 verify passes after the fix" || { bad "V6"; echo "$OUT"; }
 echo "$OUT" | grep -q 'NOTE=auto-resolved: .*sprint-status.yaml' && ok "I7 sprint-status conflict auto-resolved" || { bad "I7"; echo "$OUT"; }
 echo "$OUT" | grep -q 'NOTE=auto-resolved: .*deferred-work.md (union' && ok "I8 deferred-work union-merged" || bad "I8"
 grep -q 'FU-1-1-alpha.A1' "$ART/deferred-work.md" && grep -q 'FU-1-2-beta.A1' "$ART/deferred-work.md" \
@@ -245,7 +261,7 @@ grep -q 'FU-1-1-alpha.A1' "$ART/deferred-work.md" && grep -q 'FU-1-2-beta.A1' "$
 NEW_BUILT_BETA="$(git rev-parse harness/1-2-beta/built)"
 [ "$NEW_BUILT_BETA" != "$OLD_BUILT_BETA" ] && git merge-base --is-ancestor "$NEW_BUILT_BETA" HEAD \
     && ok "I10 built tag carried onto rebased commit" || bad "I10"
-[ "$(git rev-parse harness/1-2-beta/start)" = "$(git rev-parse 'story/1-2-beta~1')" ] \
+[ "$(git rev-parse harness/1-2-beta/start)" = "$(git rev-parse 'story/1-2-beta~2')" ] \
     && ok "I11 start tag moved to rebase base" || bad "I11"
 [ -z "$(git branch --list 'super-harness-tmp/*')" ] && ok "I12 temp branches removed" || bad "I12"
 grep -A1 '1-1-alpha:' "$ART/sprint-status.yaml" | grep -q 'status: done' && ok "I13 sprint branch ledger kept alpha=done" || bad "I13"
@@ -281,9 +297,7 @@ grep -q '^STATUS=ok' "$TMP/bs2.out" && [ -z "$(git status --porcelain)" ] \
     && ok "W4 re-running build-sync absorbs the leftovers and commits" || { bad "W4"; cat "$TMP/bs2.out"; }
 git ls-files --error-unmatch "$MK" >/dev/null 2>&1 && ok "M7 build-sync commits the marker" || bad "M7"
 git tag harness/1-2-beta/done
-[ "$(PM 1-2-beta)" = "test" ] && ok "M8 marker + tag done → test" || bad "M8"
-$SH mark 1-2-beta --step tested >/dev/null
-[ "$(PM 1-2-beta)" = "finish" ] && ok "M9 tested checkpoint → finish" || bad "M9"
+[ "$(PM 1-2-beta)" = "finish" ] && ok "M8 marker + tag done → finish" || bad "M8"
 $SH mark 1-2-beta --phase done >/dev/null
 
 echo "== C: code conflict"

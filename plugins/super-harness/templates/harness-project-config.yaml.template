@@ -12,18 +12,16 @@
 #      §A.5 检测齐 → 进 §0+ 字段提取，自动写入 11 描述字段 + 3 派生字段
 #   ② 手填：直接编辑本文件填值（或在 init 完后微调 BMad 提取结果）
 #
-# extra: map 给项目特定字段；eval_test_stage_triggers.sh 引用 ${frontend_dir} /
-# ${e2e_test_subdir} 等键替换 test-stage-triggers.yaml 内占位符。
+# extra: map 放项目特定字段，harness 文档和脚本按 ${key} 引用。
+#
+# 0.3.0 起 e2e_framework 和 extra.e2e_test_subdir 两个字段退役（测试阶段已移除），
+# 老项目里留着也不会被读，可以手动删掉。
 
-# ============ 5 必填字段（init §2 BMad 提取或手填）============
+# ============ 必填字段（init §2 BMad 提取或手填）============
 project_display_name: ''         # e.g., 'Aegis AI Audit'
 container_orchestrator: ''       # docker-compose / k8s / podman / nerdctl-compose
 frontend_framework: ''           # e.g., 'Next.js 16' / 'SvelteKit 2' / 'Remix 2' / 'Astro 4'
 backend_languages: []            # e.g., ['Go 1.23', 'Python 3.12', 'TypeScript', 'Rust 1.85']
-e2e_framework: ''                # Playwright / Cypress / WebdriverIO / Selenium / 'none'
-                                 # 'none' = 纯后端 / 无 e2e 项目；让 /super-harness:run-test 走
-                                 # §4.5 clean skip（不写 skipped report、不污染 deferred-work）。
-                                 # Playwright 之外目前 T3/T4 仍是 Playwright-coded，会走 §4 sandbox-skip。
 
 # Artifact 输出根目录（init §3.1 派生；默认 '_bmad-output/implementation-artifacts'）
 artifacts_root: ''
@@ -46,9 +44,8 @@ retro_gate: 'warn'
 # extra — 项目特定扩展字段（任何 harness 文档 / 评估脚本可引用 ${key}）
 # ============================================================================
 extra:
-  # frontend / e2e 路径（test-stage-triggers.yaml 占位用；init §2 字段 6/7）
+  # 前端目录（init §2 字段 6；path_classifiers 和 Q6 全栈追溯用；纯后端项目留空）
   frontend_dir: ''               # 前端代码顶层目录名，e.g. 'console-web'
-  e2e_test_subdir: ''            # e2e 测试目录路径，e.g. 'tests/e2e'
 
   # 容器栈规模（init §2 字段 8）
   container_count: 0             # docker-compose / k8s 服务容器数量

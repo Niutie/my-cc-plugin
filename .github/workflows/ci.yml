@@ -108,21 +108,12 @@ jobs:
         working-directory: ${{ env.FIXTURE_DIR }}
         run: |
           set -uo pipefail
-          # Exclusions (each must state why + where the test IS gated):
-          #   orchestration_observations_test.sh — T2.f3 greps the plugin
-          #     SOURCE tree (${SCRIPT_DIR}/../commands/run-test.md by design);
-          #     the deployed layout carries no commands/ at all (slash commands
-          #     are served by the plugin), so it can only run source-tree.
-          #     It is source-tree green and gated by the source-tests job.
+          # No exclusions: orchestration_observations_test.sh used to be
+          # source-tree-only because T2.f3 grepped commands/run-test.md; that
+          # fixture went away with the test stage in 0.3.0.
           FAILED=0
           for t in .claude/harness/scripts/*_test.sh; do
             name="$(basename "$t")"
-            case "$name" in
-              orchestration_observations_test.sh)
-                echo "SKIP $name (source-tree-only; gated by source-tests job)"
-                continue
-                ;;
-            esac
             log="$RUNNER_TEMP/$name.log"
             if bash "$t" >"$log" 2>&1; then
               echo "PASS $name"

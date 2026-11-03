@@ -15,7 +15,7 @@
 #   - HARNESS_DEFERRED_WORK_PATH                   — env var, absolute deferred-work.md path
 #
 # Fallback: missing field / file → use hardcoded default + stderr WARN. Aligned
-# with eval_test_stage_triggers.sh fail_open_default precedent.
+# (fail-open: callers never break on a bad config).
 #
 # Note on `set` flags:
 #   This file is `source`d by other scripts. We do NOT enable `set -e` here
@@ -52,7 +52,7 @@ _DEFAULT_HARNESS_ARTIFACTS_ROOT="_bmad-output/implementation-artifacts"
 #   (1) 去 inline 注释：非引号 scalar 截到第一个 #；引号 scalar 找 closing 引号、
 #       其后是 # 注释才截（引号内 # 保留）
 #   (2) 引号剥离改成 single OR double 二选一的成对剥离（不两轮都剥；
-#       v0.1.21 check_test_harness_env.sh 同款修补）
+#       v0.1.21 测试环境探针同款修补，该探针 0.3.0 已删除）
 _rhc_strip_yaml_value() {
     local val="$1"
     # 去首尾空白

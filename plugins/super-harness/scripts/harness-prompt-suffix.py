@@ -108,7 +108,7 @@ ANSWER_POLICY_BLOCK = f"""**代答政策**：本次任务以非交互模式运�
 
 # Issue #9 finding 2 (v0.1.39) — subagents polluting the orchestrator's task
 # list. Observed in an epic-6 run: stage-2 dev / stage-5 bmad-review /
-# stage-5.5 run-test subagents flipped/created/deleted the MAIN agent's
+# stage-5.5 run-test subagents (stage removed in 0.3.0) flipped/created/deleted the MAIN agent's
 # sprint tasks (at one point wiping the entire task list). Task tracking is
 # the orchestrator's exclusive responsibility (pipeline.md §−1 (c)); subagents
 # report progress only through the artifact channels their prompt defines.
@@ -307,7 +307,7 @@ NO_PROCESS_MARKER_STAGES = {"2"}
 FIX_MARKER_STAGES = {"4", "chore"}
 
 # Issue #9 finding 2 — task-tools ban on every stage. The observed polluters
-# were stages 2/4/5(+run-test), but any subagent with tool access can trash
+# were stages 2/4/5 (+run-test, removed in 0.3.0), but any subagent with tool access can trash
 # the orchestrator's task list — same all-stages posture as GIT_STATUS_STAGES.
 TASK_TOOLS_BAN_STAGES = {"1", "2", "3", "4", "5", "6", "chore"}
 

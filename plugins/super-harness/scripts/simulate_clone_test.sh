@@ -11,7 +11,7 @@
 #      + scripts/prompt_template_lib.sh 被投递
 #   5. assert 0 残留旧路径（_bmad/scripts/ / _bmad/customizations/ / _bmad/templates/ /
 #      _bmad/git-hooks/ / .claude/scripts/ / .claude/harness-architecture.md / .claude/answer-policy.md）
-#   6. 跑 eval_test_stage_triggers.sh + assert JSON 合理
+#   6. （0.3.0 删除：原 eval_test_stage_triggers.sh 断言）
 #   7. 跑 install_git_hooks.sh + assert hook 装上（worktree 兼容）
 #   8. assert harness 元文档零 Aegis 硬编码（grep "Aegis AI Audit" 命中 0）
 #   9. assert ${project_display_name} 占位符存在
@@ -121,35 +121,7 @@ if [ -n "$LEFTOVER_HITS" ]; then
 fi
 echo "    ✓ 0 处残留旧路径"
 
-# ---- step 5: 临时 spec.md（无 NFR / trace 关键词 — 走 baseline path） ----
-SPEC="$TMPDIR/_bmad-output/implementation-artifacts/sample-story.md"
-echo "# Sample story for simulate clone test" > "$SPEC"
-
-# ---- step 6: 跑 eval 脚本，断言 JSON ----
-echo ""
-echo "==> eval_test_stage_triggers.sh"
-cd "$TMPDIR"
-EVAL_OUT="$(bash .claude/harness/scripts/eval_test_stage_triggers.sh sample-story \
-    _bmad-output/implementation-artifacts/sample-story.md 2>/dev/null)"
-echo "    eval JSON: $EVAL_OUT"
-
-if ! printf '%s' "$EVAL_OUT" | grep -q '"reason": "real_eval"'; then
-    echo "FAIL: eval did not return real_eval reason — got: $EVAL_OUT" >&2
-    exit 3
-fi
-if ! printf '%s' "$EVAL_OUT" | grep -qE '"t3":[[:space:]]*true'; then
-    echo "FAIL: eval JSON missing t3=true (per_story triggers) — got: $EVAL_OUT" >&2
-    exit 4
-fi
-if ! printf '%s' "$EVAL_OUT" | grep -qE '"t4":[[:space:]]*true'; then
-    echo "FAIL: eval JSON missing t4=true — got: $EVAL_OUT" >&2
-    exit 5
-fi
-if ! printf '%s' "$EVAL_OUT" | grep -qE '"teach":[[:space:]]*false'; then
-    echo "FAIL: eval JSON teach should be false (manual_only) — got: $EVAL_OUT" >&2
-    exit 6
-fi
-echo "    ✓ eval JSON 合理（real_eval / t3=true / t4=true / teach=false）"
+# ---- step 5/6（0.3.0 删除）：原先在这里跑 eval_test_stage_triggers.sh，测试阶段已去掉 ----
 
 # ---- step 7: 跑 install_git_hooks（在 git 仓库 init 后） ----
 echo ""

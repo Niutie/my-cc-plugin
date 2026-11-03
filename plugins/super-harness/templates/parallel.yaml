@@ -39,6 +39,15 @@ link_paths: []
 prepare_command: ''
 prepare_timeout_sec: 600
 
+# 合流验证命令（sh -c），例如 'go test ./... && pnpm --filter web test'。
+# integrate 把 lane rebase 到 sprint 分支最新提交、build-verify 通过之后，在 lane
+# worktree 里跑一次，这时 lane 的代码和合流后的 sprint 分支一模一样。失败时这一路
+# 记为 held，sprint 分支不动；在 lane worktree 里修好并 commit，再重跑 integrate。
+# 没有被 rebase 的 lane 不跑（代码没变，B1 已经验过）。留空 = 不验证。
+# 环境变量同 prepare_command。lane 用 link_paths 软链了依赖目录时，命令里别写会改动它的步骤。
+verify_command: ''
+verify_timeout_sec: 1800
+
 # worker（headless claude -p）的权限模式。无人值守需要 bypassPermissions；
 # 改成更严格的模式时，worker 会在需要授权的地方失败退出。
 worker_permission_mode: bypassPermissions

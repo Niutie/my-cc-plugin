@@ -1,5 +1,5 @@
 ---
-description: 单路、在当前会话里直接跑 sprint：主 agent 按 pipeline.md 一条一条推进 backlog story（bmad-build-auto 规划+实现+review → 外部 codex review/fix（按需）→ follow-up review（按需）→ build-sync → 测试 → epic retro），每一步都在当前会话可见，适合调试和优化流水线
+description: 单路、在当前会话里直接跑 sprint：主 agent 按 pipeline.md 一条一条推进 backlog story（bmad-build-auto 规划+实现+review → 外部 codex review/fix（按需）→ follow-up review（按需）→ build-sync → epic retro），每一步都在当前会话可见，适合调试和优化流水线
 argument-hint: '[--story [<key>] | --epic [<num>] | --continue | --dry-run]'
 allowed-tools: Bash, Read, Edit, Write, Agent, Task, AskUserQuestion
 ---
@@ -8,11 +8,11 @@ allowed-tools: Bash, Read, Edit, Write, Agent, Task, AskUserQuestion
 
 你是这个循环的**主 orchestrator**。当用户触发 `/super-harness:run-inline`，你在当前会话里按顺序推进 story，直到 `sprint-status.yaml` 中再无 `backlog` story（或达到参数限定的范围）为止。**禁止并行**多条 story；同一时刻最多一条 story 在流水线里。需要并行时用 `/super-harness:run`。
 
-**先 Read `.claude/harness/pipeline.md`**。单条 story 的每一步（B0 到 B4、⑤.5、⑥、⑥.5、verdict 门）、行为契约、halt 规则都写在那里，你按其中「inline 模式」的做法执行。本文件只管启动、选 story 和主循环。
+**先 Read `.claude/harness/pipeline.md`**。单条 story 的每一步（B0 到 B4、⑥、⑥.5、verdict 门）、行为契约、halt 规则都写在那里，你按其中「inline 模式」的做法执行。本文件只管启动、选 story 和主循环。
 
 引用约定：带 `P` 前缀的章节（`P§−1`、`P§0.A.0`、`P§0.B`、`P§1 B1`、`P§3`）指 pipeline.md，不带前缀的指本文件。
 
-> **流水线背景（BMad 6.11+）**：BMad 6.11 把 `bmad-create-story` / `bmad-dev-story` 合并成 `bmad-build` / `bmad-build-auto`，6.12 默认不再安装旧 skill。现在每条 story 的「规划 → 实现 → 多层对抗 review → commit」由**一次** `bmad-build-auto` 跑完（P§1 B1），harness 负责它前后的事：事前清 retro 阻塞、注入 deferred 待办，事后审计 commit 区间、补外部 codex（项目没把 codex 挂进 build 时）、按需追加一轮 follow-up review、同步 sprint-status 与 deferred ledger，然后跑测试、epic retro、retro 残余处理。旧流水线启动、尚未完成的 story 见 P§1.L。
+> **流水线背景（BMad 6.11+）**：BMad 6.11 把 `bmad-create-story` / `bmad-dev-story` 合并成 `bmad-build` / `bmad-build-auto`，6.12 默认不再安装旧 skill。现在每条 story 的「规划 → 实现 → 多层对抗 review → commit」由**一次** `bmad-build-auto` 跑完（P§1 B1），harness 负责它前后的事：事前清 retro 阻塞、注入 deferred 待办，事后审计 commit 区间、补外部 codex（项目没把 codex 挂进 build 时）、按需追加一轮 follow-up review、同步 sprint-status 与 deferred ledger，然后做 epic retro 和 retro 残余处理。测试由 bmad-build-auto 在实现阶段跑，流水线没有单独的测试阶段（P§1「测试由谁负责」）。旧流水线启动、尚未完成的 story 见 P§1.L。
 
 ---
 
@@ -88,13 +88,13 @@ worktree **可以**不干净。
 # 顶层 dry-run 分支
 if LOOP_SCOPE == "dry-run":
   跑 check_bmad_runtime.sh 并显示结果
-  按目标范围枚举每条预期会跑的 story，每条输出一行：B1 → [B2 若 CODEX_IN_BUILD=none] → [B3 按需] → B4 → ⑤.5 → [⑥]
+  按目标范围枚举每条预期会跑的 story，每条输出一行：B1 → [B2 若 CODEX_IN_BUILD=none] → [B3 按需] → B4 → [⑥]
   不调任何子 agent、不 commit
   退出
 
 if LOOP_SCOPE == "single-epic" and 已走 §0.C: 跑阶段 ⑥ + ⑥.5；退出
-if LOOP_SCOPE == "continue-single": 按 P§0.B 切入点跑 $TARGET_KEY 剩余步骤（含触发的 ⑤.5 / ⑥）；退出
-if LOOP_SCOPE == "single-story": 跑 $TARGET_KEY 的 B0…B4（含触发的 ⑤.5 / ⑥）；退出
+if LOOP_SCOPE == "continue-single": 按 P§0.B 切入点跑 $TARGET_KEY 剩余步骤（含触发的 ⑥）；退出
+if LOOP_SCOPE == "single-story": 跑 $TARGET_KEY 的 B0…B4（含触发的 ⑥）；退出
 
 # 默认循环（all 或 single-epic 且该 epic 仍有 backlog）
 loop:
@@ -110,7 +110,7 @@ loop:
     if 无 backlog: break
 
   if next_key 属于一个新 epic（与上一条不同）: 重跑 P§0.A.0（新 epic 起跑前清 retro dev 阻塞）
-  跑 P§1 的 B0…B4、⑤.5
+  跑 P§1 的 B0…B4
   跑 ⑥ / ⑥.5（仅当它是该 epic 最后一条且 retro 未 done）
   if RETRO_VERDICT == "rejected" and EPIC_WONT_DO == "none" and LOOP_SCOPE == "all": halt（见 P§1「verdict 门」）
   回报一行进度（"M/N 完成 (LOOP_SCOPE=<value>)"）

@@ -79,7 +79,9 @@ cd "$DEST_ROOT"
 # .claude/harness/prompt-templates/* 由下方 manifest purge 对账自动清掉：
 # 它们在 OLD manifest 里、不在新部署集里 → DEPLOY_PURGE=1 时成为 purge
 # candidates（备份后删除）。
-REQUIRED_TOP_FILES=(pipeline.md architecture.md architecture-parallel.md answer-policy.md changelog.md test-stage-triggers.yaml)
+# 0.3.0：test-stage-triggers.yaml 和测试阶段脚本随 ⑤.5 一起删除，老项目里的副本
+# 同样靠 manifest purge 清掉。
+REQUIRED_TOP_FILES=(pipeline.md architecture.md architecture-parallel.md answer-policy.md changelog.md)
 SUBDIRS=(scripts prompts conventions prompt-suffixes git-hooks templates)
 
 # Ensure target dirs exist

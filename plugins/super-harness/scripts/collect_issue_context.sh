@@ -7,7 +7,7 @@
 #       --type bug|feature|halt|other \
 #       --description "one-line summary" \
 #       [--story <key>] [--epic <num>] \
-#       [--halt-command run|run-test|init|update|upgrade-deferred-work|other] \
+#       [--halt-command run|run-inline|init|update|upgrade-deferred-work|other] \
 #       [--halt-stage <N>] [--halt-reason "现场一句话"] \
 #       [--reproduction-file <path>]    # optional file with reproduction notes
 #

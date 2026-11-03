@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """harness_config — read harness-project-config.yaml without yaml lib dep.
 
-Hand-rolled minimal YAML parser (与 sprint-status.py / eval_test_stage_triggers.sh 同手法)
+Hand-rolled minimal YAML parser (与 sprint-status.py 同手法)
 supporting the subset our config uses:
 - top-level scalar:           `artifacts_root: '_bmad-output/...'`
 - extra: map with nested:     `extra:\n  frontend_dir: 'console-web'`
@@ -17,8 +17,7 @@ supporting the subset our config uses:
           pnpm --filter ...
 
 Fallback policy: missing field / missing file / parse error → return hardcoded
-default + stderr WARN. Never raise. Aligned with eval_test_stage_triggers.sh
-fail_open_default precedent.
+default + stderr WARN. Never raise.
 
 Usage:
     from harness_config import (
@@ -27,8 +26,6 @@ Usage:
         get_deferred_work_path,
         get_path_classifiers,
         get_verification_commands,
-        get_frontend_dir,
-        get_e2e_test_subdir,
     )
 """
 from __future__ import annotations
@@ -109,13 +106,6 @@ _DEFAULT_PROJECT_CONTEXT = (
 # fullstack_review_steps fallback：空 list（对应 dev-story Q6 的"项目无新审计字段
 # 全栈追溯链"语义；新项目按本表 yaml 字段填即可）。
 _DEFAULT_FULLSTACK_REVIEW_STEPS: list[dict[str, str]] = []
-# frontend_dir / e2e_test_subdir fallback（review 2026-06-10 finding #9）：
-# 与 check_test_harness_env.sh（v0.1.18 起读 frontend_dir，缺省 'console-web'）
-# 和 eval_test_stage_triggers.sh（read_project_field e2e_test_subdir 'tests/e2e'）
-# 的既有缺省值逐字一致。bash 侧缺省时静默 fallback（不 WARN）——多数项目就用
-# 默认布局，每次 commit 都 WARN 只会制造噪音；这里保持同一语义。
-_DEFAULT_FRONTEND_DIR = "console-web"
-_DEFAULT_E2E_TEST_SUBDIR = "tests/e2e"
 
 
 def _warn(msg: str) -> None:
@@ -422,31 +412,6 @@ def get_fullstack_review_steps() -> list[dict[str, str]]:
     return out
 
 
-def get_frontend_dir() -> str:
-    """Return the project's frontend package dir (repo-root relative, outer
-    slashes stripped). Lookup order matches the bash readers
-    (check_test_harness_env.sh / eval_test_stage_triggers.sh): top-level
-    `frontend_dir`, then `extra.frontend_dir`, else 'console-web'. Quiet
-    fallback — no WARN (most projects legitimately use the default layout).
-
-    Review 2026-06-10 finding #9: harness-commit.py's E2E_SPEC_PREFIX is
-    derived from this + get_e2e_test_subdir() so the commit-time F2 whitelist
-    finally agrees with the env probe / trigger eval config source."""
-    val, _source = _cli_get("frontend_dir", _DEFAULT_FRONTEND_DIR)
-    val = val.strip().strip("/")
-    return val or _DEFAULT_FRONTEND_DIR
-
-
-def get_e2e_test_subdir() -> str:
-    """Return the e2e spec subdir under frontend_dir (outer slashes stripped).
-    Lookup order matches eval_test_stage_triggers.sh: top-level
-    `e2e_test_subdir`, then `extra.e2e_test_subdir`, else 'tests/e2e'.
-    Quiet fallback — see get_frontend_dir()."""
-    val, _source = _cli_get("e2e_test_subdir", _DEFAULT_E2E_TEST_SUBDIR)
-    val = val.strip().strip("/")
-    return val or _DEFAULT_E2E_TEST_SUBDIR
-
-
 def _cli_get(key: str, default: str | None = None) -> tuple[str, str]:
     """CLI --get <key> implementation. Returns (value, source) where source is
     one of 'top', 'extra', 'default', 'missing'. Looks up:
@@ -549,8 +514,6 @@ def _cli_main(argv: list[str]) -> int:
         print(f"fullstack_review_steps: {len(get_fullstack_review_steps())} entries")
         for step in get_fullstack_review_steps()[:3]:
             print(f"  - ({step['label']}) {step['file_path']}")
-        print(f"frontend_dir: {get_frontend_dir()}")
-        print(f"e2e_test_subdir: {get_e2e_test_subdir()}")
         return 0
 
     parser.print_help()

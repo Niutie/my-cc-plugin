@@ -50,15 +50,14 @@ printf 'arch v1\n'       > "$PLUGIN/architecture.md"
 printf 'arch-par v1\n'   > "$PLUGIN/architecture-parallel.md"
 printf 'policy v1\n'     > "$PLUGIN/answer-policy.md"
 printf 'changelog v1\n'  > "$PLUGIN/changelog.md"
-printf 'triggers: {}\n'  > "$PLUGIN/test-stage-triggers.yaml"
 printf 'tool a\n'        > "$PLUGIN/scripts/tool_a.sh"
 printf 'old tool\n'      > "$PLUGIN/scripts/old_tool.sh"
 printf 'conv\n'          > "$PLUGIN/conventions/conv.md"
 printf 'cmd\n'           > "$PLUGIN/commands/foo.md"     # must NOT be deployed
 printf 'max_slots: 2\n'  > "$PLUGIN/templates/parallel.yaml"
-# 10 manifest-owned files (6 top + 2 scripts + 1 conventions + 1 templates);
+# 9 manifest-owned files (5 top + 2 scripts + 1 conventions + 1 templates);
 # a fresh deploy also installs .claude/harness/parallel.yaml (counted in
-# installed=, but never in the manifest) → installed=11.
+# installed=, but never in the manifest) → installed=10.
 
 # run_deploy <purge:0|1> <dest> → fills $OUT (stdout) / $ERR (stderr) / $RC
 run_deploy() {
@@ -80,8 +79,8 @@ run_deploy() {
 # ============================================================================
 run_deploy 0 "$DEST"
 if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | \
-       grep -qx "deploy: installed=11 unchanged=0 updated=0 purged=0"; then
-    ok "T1 fresh deploy: rc=0, installed=11 (10 manifest + parallel.yaml)"
+       grep -qx "deploy: installed=10 unchanged=0 updated=0 purged=0"; then
+    ok "T1 fresh deploy: rc=0, installed=10 (9 manifest + parallel.yaml)"
 else
     bad "T1 fresh deploy: rc=$RC out='$OUT' err='$ERR'"
 fi
@@ -91,8 +90,8 @@ if [ -f "$MANIFEST" ] \
    && grep -qx ".claude/harness/pipeline.md" "$MANIFEST" \
    && ! grep -q "commands/" "$MANIFEST" \
    && ! grep -qx ".claude/harness/parallel.yaml" "$MANIFEST" \
-   && [ "$(grep -c . "$MANIFEST")" = 10 ]; then
-    ok "T1 manifest written with all 10 deployed paths (no commands, no parallel.yaml)"
+   && [ "$(grep -c . "$MANIFEST")" = 9 ]; then
+    ok "T1 manifest written with all 9 deployed paths (no commands, no parallel.yaml)"
 else
     bad "T1 manifest wrong: $(cat "$MANIFEST" 2>/dev/null)"
 fi
@@ -103,8 +102,8 @@ fi
 cp "$MANIFEST" "$WORKDIR/manifest.t1"
 run_deploy 0 "$DEST"
 if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | \
-       grep -qx "deploy: installed=0 unchanged=10 updated=0 purged=0"; then
-    ok "T2 idempotent rerun: unchanged=10, nothing reinstalled"
+       grep -qx "deploy: installed=0 unchanged=9 updated=0 purged=0"; then
+    ok "T2 idempotent rerun: unchanged=9, nothing reinstalled"
 else
     bad "T2 rerun: rc=$RC out='$OUT'"
 fi
@@ -135,7 +134,7 @@ printf 'user-authored\n' > "$DEST/.claude/commands/user-own.md"   # never in man
 rm "$PLUGIN/scripts/old_tool.sh"
 run_deploy 1 "$DEST"
 if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | \
-       grep -qx "deploy: installed=0 unchanged=9 updated=0 purged=1"; then
+       grep -qx "deploy: installed=0 unchanged=8 updated=0 purged=1"; then
     ok "T3 purge run: purged=1"
 else
     bad "T3 purge run: rc=$RC out='$OUT' err='$ERR'"
@@ -272,10 +271,21 @@ mkdir -p "$DEST3/.claude/harness" "$DEST3/.claude/commands"
 printf 'old harness-zh run\n'  > "$DEST3/.claude/commands/run.md"
 printf 'old harness-zh init\n' > "$DEST3/.claude/commands/init.md"
 printf 'my own command\n'      > "$DEST3/.claude/commands/mine.md"
+# 0.3.0 upgrade: test-stage assets deployed by older versions are purged too
+mkdir -p "$DEST3/.claude/harness/scripts"
+printf 'triggers: {}\n'  > "$DEST3/.claude/harness/test-stage-triggers.yaml"
+printf 'old probe\n'     > "$DEST3/.claude/harness/scripts/check_test_harness_env.sh"
 printf '%s\n' .claude/commands/init.md .claude/commands/run.md .claude/harness/architecture.md \
+    .claude/harness/test-stage-triggers.yaml .claude/harness/scripts/check_test_harness_env.sh \
     > "$DEST3/.claude/harness/.deploy-manifest.txt"
 run_deploy 1 "$DEST3"
-if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | grep -q "purged=2" \
+if [ "$RC" = 0 ] && [ ! -f "$DEST3/.claude/harness/test-stage-triggers.yaml" ] \
+   && [ ! -f "$DEST3/.claude/harness/scripts/check_test_harness_env.sh" ]; then
+    ok "T7b 0.3.0 upgrade purges retired test-stage assets"
+else
+    bad "T7b retired test-stage assets left behind: out='$OUT'"
+fi
+if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | grep -q "purged=4" \
    && [ ! -f "$DEST3/.claude/commands/run.md" ] && [ ! -f "$DEST3/.claude/commands/init.md" ] \
    && ls "$DEST3/.claude/commands/run.md.bak."* >/dev/null 2>&1; then
     ok "T7 old harness-zh command copies purged with backup"

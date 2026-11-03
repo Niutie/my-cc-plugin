@@ -2,14 +2,16 @@
 
 > [my-cc-plugin](../../README.md) marketplace 的一部分，安装方式见那里。
 
-在 [BMad Method](https://github.com/bmad-code-org/BMAD-METHOD) 之上跑 sprint 的编排 plugin，面向一个开发者带多个 AI 子 agent 的工作方式。BMad 产出规划文档（PRD、architecture、epics、sprint-status），super-harness 按 `sprint-status.yaml` 把 backlog story 一条条推进完：每条 story 跑一次 `bmad-build-auto`（规划、实现、多层 review、commit），事后审计提交区间，codex 没挂进 build 时补一轮外部 codex review 和修复，按需再跑一轮 follow-up review，然后同步 sprint-status 和 deferred 账本、跑测试，epic 收尾时做 retrospective。
+在 [BMad Method](https://github.com/bmad-code-org/BMAD-METHOD) 之上跑 sprint 的编排 plugin，面向一个开发者带多个 AI 子 agent 的工作方式。BMad 产出规划文档（PRD、architecture、epics、sprint-status），super-harness 按 `sprint-status.yaml` 把 backlog story 一条条推进完：每条 story 跑一次 `bmad-build-auto`（规划、实现、多层 review、commit），事后审计提交区间，codex 没挂进 build 时补一轮外部 codex review 和修复，按需再跑一轮 follow-up review，然后同步 sprint-status 和 deferred 账本，epic 收尾时做 retrospective。
+
+流水线里没有单独的测试阶段。单元测试和集成测试在实现阶段由 `bmad-build-auto` 写并实跑，e2e 和验收测试交给测试团队，见下文「测试分工」。
 
 有两种跑法，走的是同一份流水线手册（`pipeline.md`）：
 
 | 命令 | 怎么跑 | 适合 |
 |---|---|---|
 | `/super-harness:run-inline` | 单路，在当前会话里一条一条跑，每一步都看得见 | 调试、优化流水线；story 之间依赖不清楚 |
-| `/super-harness:run` | 多路并行：互不依赖的 story 各开一个 git worktree、各起一个 headless Claude Code 进程同时跑，跑完按顺序合回 sprint 分支，再串行完成 build-sync、测试和 epic retro | 依赖已经声明清楚，想缩短整个 sprint 的时间 |
+| `/super-harness:run` | 多路并行：互不依赖的 story 各开一个 git worktree、各起一个 headless Claude Code 进程同时跑，跑完按顺序合回 sprint 分支（合入前可以先在合流后的代码上跑一遍项目测试），再串行完成 build-sync 和 epic retro | 依赖已经声明清楚，想缩短整个 sprint 的时间 |
 
 0.2.0 起 harness-zh 并入本 plugin，harness-zh 不再单独维护。从 harness-zh 迁移的步骤见下文「安装」。
 
@@ -26,14 +28,14 @@ flowchart LR
   S["sprint-status.yaml<br/>depends_on / deps_overrides"] --> R{"就绪判定<br/>且有空 slot"}
   R -->|prepare + launch| W1["lane worktree：story/A<br/>claude -p worker 跑 B0–B3"]
   R -->|prepare + launch| W2["lane worktree：story/B<br/>claude -p worker 跑 B0–B3"]
-  W1 -->|report ready| I["合流（串行）<br/>rebase → 搬 tag → build-verify → ff"]
+  W1 -->|report ready| I["合流（串行）<br/>rebase → 搬 tag → build-verify → verify_command → ff"]
   W2 -->|report ready| I
-  I --> C["收口（串行）<br/>build-sync → done tag → ⑤.5 测试"]
+  I --> C["收口（串行）<br/>build-sync → done tag"]
   C -->|epic 全部完成| T["epic retro ⑥ / ⑥.5"]
   C -.->|下游依赖满足| R
 ```
 
-并行的只有 worker 那一段（B0–B3，按 pipeline.md 的 lane 模式执行），各在自己的 worktree 和分支上。合流、收口、retro 要写共享账本或共用测试环境，在主 worktree 里一条一条做。
+并行的只有 worker 那一段（B0–B3，按 pipeline.md 的 lane 模式执行），各在自己的 worktree 和分支上。合流、收口、retro 要写共享账本，在主 worktree 里一条一条做。
 
 ### 一轮调度
 
@@ -51,10 +53,10 @@ sequenceDiagram
   W-->>D: 进程退出，唤醒调度者
   D->>S: tick
   S-->>D: next_action = integrate
-  D->>S: integrate KEY（rebase + ff）
+  D->>S: integrate KEY（rebase + 验证 + ff）
   loop 直到 NEXT=finish
     D->>S: postmerge KEY
-    S-->>D: NEXT = sync / tag / test / finish
+    S-->>D: NEXT = sync / tag / finish
   end
 ```
 
@@ -75,8 +77,9 @@ stateDiagram-v2
   ready --> integrating: integrate
   integrating --> conflict: 代码冲突
   conflict --> integrating: 子 agent 或你解决后
-  integrating --> held: build-verify 不通过
+  integrating --> held: build-verify 或 verify_command 不通过
   held --> prepared: 修好后 retry
+  held --> integrating: 验证失败修好后重跑 integrate
   integrating --> merged: ff 合并
   merged --> done: postmerge 收口完成
   done --> [*]
@@ -84,11 +87,23 @@ stateDiagram-v2
 
 trouble、conflict、held 是需要你处理的状态，`/super-harness:board` 会把它们排在最前面。
 
+## 测试分工
+
+| 哪一层 | 谁来做 | 怎么保证 |
+|---|---|---|
+| 单元测试、集成测试 | B1 的 `bmad-build-auto` | spec 的 `## Verification` 段写验证命令并实跑，至少包含 `harness-project-config.yaml` 里的 `verification_commands`；step-03 的 Matrix Test Audit 要求 I/O 矩阵每一行都有跑过且通过的测试，否则 story 直接 blocked；step-04 的 verification-gap 审查层找没有测试兜住的行为改动 |
+| 合流后的回归 | `/super-harness:run` 的合流验证门 | `parallel.yaml` 配了 `verify_command` 时，lane 合入 sprint 分支前在合流后的代码上跑一遍，失败就挂起这一路，见「合流验证门」 |
+| e2e、验收测试 | 测试团队 | harness 不做 |
+
+`verification_commands` 和 `verify_command` 是两个配置：前者写进 B1 的 prompt，由实现子 agent 执行；后者由 `superh.py integrate` 自己执行，只在并行模式合流时用。两者可以填同一组命令。
+
+0.3.0 之前流水线里有一个 ⑤.5 测试阶段（`/super-harness:run-test`，ATDD 红相加 Playwright e2e）。它在 story done 之后才跑，红了也不拦，没配 e2e 的项目每条 story 都白起一个子 agent，所以 0.3.0 把它删了。
+
 ## 前置条件
 
 所有跑法都需要：
 
-- BMad Method ≥ 6.11（实测 6.12.4），至少装 Core + BMM，跑测试循环还要 TEA；集成选 Claude Code，输出目录保持默认的 `_bmad-output`。安装：`npx bmad-method install`。
+- BMad Method ≥ 6.11（实测 6.12.4），至少装 Core + BMM；集成选 Claude Code，输出目录保持默认的 `_bmad-output`。安装：`npx bmad-method install`。
 - [uv](https://docs.astral.sh/uv/)：BMad 6.12 通过 `uv run _bmad/scripts/render_skill.py` 启动每个 skill，没有 uv 时 `bmad-build-auto` 直接 HALT。安装：`curl -LsSf https://astral.sh/uv/install.sh | sh`。
 - 项目用 BMad sprint-planning 生成了 `sprint-status.yaml`。
 
@@ -113,7 +128,7 @@ trouble、conflict、held 是需要你处理的状态，`/super-harness:board` �
 /super-harness:init
 ```
 
-它把资产投递到 `.claude/harness/`，装 git pre-commit hook，检查并行调度的前置条件；BMad 规划文档已经齐的话，接着从中提取 16 个字段填 `harness-project-config.yaml`。并行配置 `.claude/harness/parallel.yaml` 只在不存在时投放，之后不会被覆盖。
+它把资产投递到 `.claude/harness/`，装 git pre-commit hook，检查并行调度的前置条件；BMad 规划文档已经齐的话，接着从中提取字段填 `harness-project-config.yaml`。并行配置 `.claude/harness/parallel.yaml` 只在不存在时投放，之后不会被覆盖。
 
 plugin 升级后执行 `/super-harness:update`，它只刷新资产，不动两份配置。从 super-harness 0.1.0 升上来时，`.claude/super-harness/config.yaml` 会被原样搬到 `.claude/harness/parallel.yaml`，旧目录确认后可以删掉。
 
@@ -134,7 +149,6 @@ plugin 升级后执行 `/super-harness:update`，它只刷新资产，不动两�
 | `/super-harness:run-inline` | 单路主循环，参数 `--story [<key>]` / `--epic [<num>]` / `--continue` / `--dry-run` | 日常，或调试流水线 |
 | `/super-harness:run` | 多路并行调度，参数 `--slots <N>` / `--dry-run` | 依赖声明清楚之后 |
 | `/super-harness:board` | 并行调度看板，先列需要你处理的 lane | 并行跑起来之后 |
-| `/super-harness:run-test` | 单条 story 的 ATDD + E2E；流水线阶段 ⑤.5 自动调用，也可以单独跑 | 按需 |
 | `/super-harness:codex-catchup` | 补跑因 codex 不可用而跳过的 review + 修复 | codex 恢复后 |
 | `/super-harness:upgrade-deferred-work` | 复测 `deferred-work.md` 的 schema v1 符合度，在 advisory 和 strict 之间切换 | 按需 |
 | `/super-harness:report-issue` | 自动收集版本、sprint 状态、halt 现场，用 `gh` 给 `Niutie/my-cc-plugin` 提 issue | halt 或想反馈时 |
@@ -177,6 +191,7 @@ plugin 升级后执行 `/super-harness:update`，它只刷新资产，不动两�
 ```
 cd <worktree> && claude --resume <session>                     # 进入那一路的会话
 python3 .claude/harness/scripts/superh.py retry <KEY>          # 修好后让 worker 续作
+python3 .claude/harness/scripts/superh.py integrate <KEY>      # 合流验证失败、在 lane 里修好并 commit 后重新合流
 python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 ```
 
@@ -192,9 +207,20 @@ python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 | `worktree_root` | `<仓库名>.worktrees`（仓库旁边） | lane worktree 放在哪 |
 | `copy_paths` / `link_paths` | `.claude/harness`、`.claude/skills`、`_bmad` | 没进 git 的基建文件怎么带进 worktree。这些路径必须被 `.gitignore` 忽略，软链要写成不带结尾斜杠的 `/node_modules`；`superh.py doctor` 可以检查 |
 | `prepare_command` | 空 | 开 lane 后执行的命令，例如 `pnpm install --frozen-lockfile` |
+| `verify_command` / `verify_timeout_sec` | 空 / 1800 | 合流验证命令，见下文 |
 | `worker_permission_mode` | bypassPermissions | worker 的权限模式 |
 
-项目本身的配置（产物目录、前端目录、验证命令、`retro_gate` 等）在 `.claude/harness/harness-project-config.yaml`，由 init 从 BMad 文档提取。
+### 合流验证门
+
+两条 lane 各自测试都通过，合在一起仍可能出问题。配了 `verify_command`（例如 `cd control-plane && go test ./... && pnpm --filter web test`）后，`superh.py integrate` 在 rebase 和 build-verify 之后、ff 合并之前，在 lane worktree 里用 `sh -c` 跑一次。这时 lane 的代码和合入后的 sprint 分支完全一致。可用的环境变量有 `SUPERH_KEY`、`SUPERH_WORKTREE`、`SUPERH_MAIN_ROOT`。
+
+- 只在这一路确实被 rebase 到更新的 sprint 提交上时才跑。没 rebase 的 lane 代码没变，B1 已经测过。
+- 输出里的 `VERIFY=` 是 `passed`、`failed`、`skipped-unset`（没配）或 `skipped-not-rebased` 之一。
+- 失败时这一路记为 held，sprint 分支不动。在 lane worktree 里修好并 commit，再执行 `superh.py integrate <KEY>`。
+
+单路的 `/super-harness:run-inline` 没有这一步，B1 就是在同一棵树上跑的测试。
+
+项目本身的配置（产物目录、前端目录、给 B1 用的 `verification_commands`、`retro_gate` 等）在 `.claude/harness/harness-project-config.yaml`，由 init 从 BMad 文档提取。
 
 ## 合流时会自动处理的冲突
 
@@ -218,12 +244,13 @@ plugin 是源，项目里的 `.claude/harness/` 是部署副本，运行时只�
 bash plugins/super-harness/scripts/run_all_tests.sh
 ```
 
-先跑 `release_check.sh`（版本一致性、命令 frontmatter、流水线手册的协议回流检查），再跑 `scripts/` 下所有 `*_test.sh`。其中 `superh_test.sh` 用一个假的 `claude` 可执行文件扮演 worker，在临时仓库里跑完就绪判定、开 lane、启动、两路并行合流（含账本冲突自动消解和 tag 搬迁）、代码冲突、重试和放弃，不消耗 token。CI 见仓库的 `.github/workflows/ci.yml`。
+先跑 `release_check.sh`（版本一致性、命令 frontmatter、流水线手册的协议回流检查），再跑 `scripts/` 下所有 `*_test.sh`。其中 `superh_test.sh` 用一个假的 `claude` 可执行文件扮演 worker，在临时仓库里跑完就绪判定、开 lane、启动、两路并行合流（含账本冲突自动消解、tag 搬迁和合流验证门）、代码冲突、重试和放弃，不消耗 token。CI 见仓库的 `.github/workflows/ci.yml`。
 
 ## 版本
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.0 | 2026-11-03 | 去掉 ⑤.5 测试阶段和 `/super-harness:run-test`。基本测试由 `bmad-build-auto` 在实现阶段完成，e2e 和验收测试交给测试团队。并行模式新增合流验证门：`parallel.yaml` 配 `verify_command` 后，lane 合入 sprint 分支前先在合流后的代码上跑一遍。`harness-project-config.yaml` 的 `e2e_framework`、`extra.e2e_test_subdir` 退役；`/super-harness:update` 会清掉项目里旧的测试阶段资产。 |
 | 0.2.2 | 2026-11-03 | 修 macOS 自带 bash 3.2 下 pre-commit 的 gate ①：`retro_gate=warn` 时也会拦下新 story spec 的 commit，现在恢复为只警告。`release_check.sh` 加了一项静态检查，防止同类写法再进来。 |
 | 0.2.1 | 2026-11-03 | 修两个从 harness-zh 带过来的问题。装 git hook 时不再覆盖项目自己的 pre-commit（例如 pre-commit 框架写的），改为保留原 hook、给出串接办法并以退出码 3 提示；确认要覆盖时用 `HARNESS_HOOK_FORCE=1`。run-test 的 T4 改用环境探测出的包管理器跑 e2e，npm / yarn / bun 项目不再撞上写死的 `pnpm e2e`。 |
 | 0.2.0 | 2026-11-02 | 并入 harness-zh 0.2.1，不再依赖单独安装的 harness-zh。新增单路命令 `/super-harness:run-inline`；harness-zh 的 run.md 拆成 `pipeline.md`（单条 story 流水线，inline、lane、调度三种模式共用）和 `commands/run-inline.md`。资产统一部署到 `.claude/harness/`，并行配置改为 `.claude/harness/parallel.yaml`，命令不再复制进 `.claude/commands/`。 |
