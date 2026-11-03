@@ -1,6 +1,47 @@
 # super-harness changelog
 
-## 0.1.0 — 2026-11-02
+新条目放最上面。harness-zh 从 super-harness 0.2.0 起并入本 plugin，它 0.1.0 到 0.2.1 的完整记录原样保留在本文件后半部分「harness-zh 历史」一节。`pipeline.md` §1.L 提到的旧流水线说明就在那里的 v0.1.39 及更早条目中。
+
+---
+
+## v0.2.0 — 2026-11-02 — 并入 harness-zh，新增单路模式 run-inline
+
+### 改动
+
+super-harness 不再依赖项目里另装的 harness-zh。harness-zh 0.2.1 的流水线、脚本、git hook、约定文档和辅助命令都搬了进来，单条 story 的执行方式没有变。
+
+- 命令统一放在 `/super-harness:` 下：`init`、`update`、`run`（多路并行）、`run-inline`（新）、`board`、`run-test`、`codex-catchup`、`report-issue`、`upgrade-deferred-work`。
+- `/super-harness:run-inline`：单路，在当前会话里一条一条跑，每一步都看得见，适合调试和优化流水线。参数和 harness-zh 的 `/harness-zh:run` 相同（`--story` / `--epic` / `--continue` / `--dry-run`）。
+- harness-zh 的 `commands/run.md` 拆成两份。单条 story 的步骤（行为契约、续作切入表、路径预期产出表、B0 到 B4、⑤.5、⑥、⑥.5、verdict 门、halt 规则）放进 `pipeline.md`，部署到 `.claude/harness/pipeline.md`，章节编号沿用旧版。启动和主循环留在 `commands/run-inline.md`。
+- `pipeline.md` 里标明了 inline、lane、调度三种模式各自负责哪几步、做法有什么不同。worker prompt 不再写「只执行 run.md 第几节到第几节」的覆盖规则，改成按 lane 模式执行，以后调整章节不会让 worker 失效。
+- 并行调度的 `/super-harness:run` 启动时也检查 retro_action_items 是否还是 harness-zh ≤ 0.1.39 的旧写法，和 run-inline 一致。之前只有单路会检查。
+- `run-inline` 启动时，如果并行调度还有没收口的 lane，会提醒一行。
+
+### 部署位置
+
+- 全部资产放在 `.claude/harness/` 下：`superh.py` 进 `scripts/`，worker 和合流冲突的 prompt 进 `prompts/`。0.1.0 用的 `.claude/super-harness/` 不再使用。
+- 并行配置从 `.claude/super-harness/config.yaml` 改为 `.claude/harness/parallel.yaml`。`deploy_assets.sh` 只在它不存在时投放，并且不把它写进 manifest，之后的部署既不会覆盖它，也不会 purge 它。项目里有 0.1.0 的旧配置时原样搬过来，不用模板，`deps_overrides`、`no_deps_policy` 这些设置不会丢。只有旧配置、还没迁移时，`superh.py` 拒绝运行，不回退到默认值（默认值会让本该串行的 story 被并行跑）。`superh.py doctor` 会提示旧目录 `.claude/super-harness/` 可以删除。
+- 不再把命令文件复制到项目的 `.claude/commands/`。harness-zh 以前复制过去的副本记在旧 manifest 里，`init` 和 `update` 都带 `DEPLOY_PURGE=1`，会先备份再删除。用户自己写的命令从没进过 manifest，不受影响。
+- `copy_paths` 默认值去掉了 `.claude/commands`。
+- `harness-project-config.yaml`、`harness/<KEY>/*` tag、`.git/super-harness/` 下的运行状态都保持原样。
+
+### 从 harness-zh 迁移
+
+1. `/plugin install super-harness@my-cc-plugin`
+2. 在项目根目录跑 `/super-harness:init`。已有的 `harness-project-config.yaml` 会保留，旧的命令副本会被清掉。
+3. `/plugin uninstall harness-zh`。两个 plugin 都往 `.claude/harness/` 写资产，留着旧的，下次误跑 `/harness-zh:update` 会把资产刷回旧版。
+
+做到一半的 story 用 `/super-harness:run-inline --continue` 接着跑。
+
+### 测试
+
+- `run_all_tests.sh` 现在也跑 `superh_test.sh`（85 项。新增 S5b：`parallel.yaml` 不进 manifest；S7 到 S10：从 0.1.0 布局升级时配置原样迁移、只有旧配置时拒绝运行、doctor 提示旧目录），全部改为从 super-harness 自己的源码树取脚本。
+- `deploy_assets_purge_test.sh` 新增 T7：模拟 harness-zh 项目迁移，命令副本被备份后删除，用户命令保留，`parallel.yaml` 正常投放。
+- `release_check.sh` 改为校验 super-harness 的版本号；Gate 3 同时检查 `pipeline.md`、`run-inline.md` 和 `run.md`。
+
+---
+
+## v0.1.0 — 2026-11-02 — 多路并行调度层（依赖 harness-zh）
 
 首个版本。
 
@@ -14,3 +55,1741 @@
 - 收口可中断：新增只读的 `superh.py postmerge <KEY>`，按 done tag、harness-state、测试产物和 `--step tested` 检查点给出下一步（sync / tag / test / finish），已完成的步骤不会重做，已有的 marker 不会重写。收口在 sync 步骤里被打断时，`start-run` 识别出脏文件都属于该 lane 的收口产物，报 `MAIN_CLEAN=resumable` 放行续作，其他脏文件仍然 halt。
 - 不修改共享的 `.git/info/exclude`。补进 lane 的路径没被 `.gitignore` 忽略时，prepare 失败并给出要加的行；新增只读的 `superh.py doctor`，init 用它预检。
 - `superh_test.sh`：80 项断言，用假 claude 跑通全链路，已接入 CI。
+
+---
+
+# harness-zh 历史（0.1.0 – 0.2.1）
+
+以下内容原样保留自 harness-zh 的 changelog。其中的命令名（`/harness-zh:*`）、文件路径（`commands/run.md`）都是当时的写法。
+
+每次对 harness-zh plugin 的改动在这里追加一条记录。**新条目放最上面**。每条包含：
+
+- 版本号 + 日期 + commit hash 段
+- 改动范围（plugin 文件 / 段）
+- 改动动机
+- 后续注意事项 / 待办
+
+> **历史接续说明**：harness 在 plugin 化之前作为 `.claude/harness/` 资产维护在 Aegis AI Audit 项目内（commits before plugin extraction）；plugin 提取前的 runtime 演化历史完整保留在该项目的 git history。本 changelog 仅记录 plugin 化之后的改动。
+
+---
+
+## v0.2.1 — 2026-10-31 — `cancelled` 算 story 终态 (closes #13)
+
+### 触发
+
+issue #13：一个 epic 的 16 条 backlog 跑完后，`epic-all-done 98` 退出码 1，因为 98-2 / 98-3 / 98-5 在规划阶段作废，状态写的是 `cancelled`，而终态只认 `done` 和 `wont-do`。§2 主循环把它当成"有 story 停在中途"，halt 并建议 `--continue`。这三条从没开始过，`--continue` 找不到东西，retro 也进不去。同一份 sprint-status 里还有一条 `cancelled`，跑到那个 epic 时会再卡一次。
+
+### 改动范围
+
+- `harness_spec.py`：新增 `ACTIVE_STORY_STATUSES`（backlog / ready-for-dev / in-progress / review）、`DROPPED_STORY_STATUSES`（wont-do / cancelled / canceled）、`TERMINAL_STORY_STATUSES`（done + 放弃态）。三个脚本共用这一份清单，之前 `sprint-status.py` 和 `harness-state.py` 各写了一份。
+- `sprint-status.py epic-all-done`：`cancelled` 计入终态。未全终态时 stderr 在原有清单后多打两行，`active=` 是 BMad 标准的进行中状态，`unrecognized=` 是两类都不属于的状态；只剩 `unrecognized=` 时再打一行 `hint:`，说明 `--continue` 续不了，给出改法。
+- `harness-state.py --in-flight`：已提交状态为 `cancelled` 的 story 也排除。
+- `harness-commit.py` stage 6 / 6-done：`EPIC_WONT_DO=` 同时列出 `wont-do` 和 `cancelled` 的 key。上游 retro 对两者一样强制 `rejected`，verdict 门据此不 halt。行名保持不变，run.md 里的判断不用改。
+- `commands/run.md`：§2 新增"epic 未全终态 halt"一段，按 `active=` / `unrecognized=` 分别给建议，只有前者才建议 `--continue`；`--epic` 参数表、阶段 ⑥、verdict 门同步写上 `cancelled`。
+- 测试：`build_pipeline_test.sh` 新增 N7（cancelled 终态、in-flight 排除、EPIC_WONT_DO 列出）和 N8（active / unrecognized 分行与 hint）；`sprint_status_format_test.sh` 夹具补拷 `harness_spec.py`。
+
+### 后续注意
+
+- 项目侧跑 `/harness-zh:update` 拿到新脚本后，直接重跑 `/harness-zh:run --epic <N>`，不用再手工把 `cancelled` 改成 `wont-do`。
+- retro verdict 仍会是 `rejected`（上游行为），回报里会注明可能只是这些 key 触发。
+- 终态清单没有做成配置项。遇到别的作废写法（如 `superseded`），halt 文案会提示改成 `cancelled` 或 `wont-do`。
+
+## v0.2.0 — 2026-10-27 — 适配 BMad 6.11+：每条 story 改由 bmad-build-auto 跑完，harness 改做事后审计与收口
+
+### 触发
+
+unified_agent_gateway 升到 BMad 6.12.4（manifest `installShims: false`）后排查：
+
+- `bmad-create-story` / `bmad-dev-story` 在 6.11 并入 `bmad-build` / `bmad-build-auto`，6.12 默认不装旧 ID。0.1.39 的 stage ①② 直接调这两个 skill，第一条 story 就会失败。gateway 里 harness 流水线最后一次跑是 2026-08-07（epic 75），之后改用手工 `bmad-build` + bmad-loop。
+- 6.12 的 skill 启动走 `uv run _bmad/scripts/render_skill.py`，机器上没装 uv。`bmad-build(-auto)` 缺 uv 直接 HALT。
+- `bmad-build-auto` 自带四层 review（blind-hunter / edge-case / verification-gap / intent-alignment），项目还能在 `_bmad/custom/bmad-build-auto.toml` 挂 codex 层（gateway 已挂），并且自己 commit、要求干净工作区。旧 stage ③④⑤ 与之重复，旧"子 agent 不许 commit"规则与之冲突。
+- retro 重写为证据驱动 5 Phase，有 `-H <epic>` 无人值守接口和 frontmatter `verdict`，action items 写进 sprint-status 顶层 `action_items:`，与 harness `retro_action_items` 成了两本账。
+- deferred 有三种写法并存：schema v1 FU、bmad-build 的 `source_spec/summary/evidence`、bmad-build-auto 写在 spec frontmatter 的 `deferred:`。最后一种 harness 完全看不见。
+- 顺带发现：pre-commit gate ① 与 run.md §0.A.0 写死 `[4-6]-*.md`（模板项目遗留，epic ≥ 7 的项目从未触发）；文档多处引用的 `_bmad/customize/` 不是 BMad 的覆盖目录（应为 `_bmad/custom/`），相关 toml 从未存在；`release_check.sh` 在 README 拆分后一直 FAIL。
+
+### 改动范围
+
+**① 流水线（`commands/run.md` 重写）**
+
+每条 story：B0 start tag + C11 注入 → B1 subagent 内跑 `bmad-build-auto`（嵌套子 agent，Claude Code 默认 3 层）→ `harness-commit.py build-verify` 审计 → `built` tag → B2 外部 codex review + fix（仅 codex 没挂进 build 时）→ B3 follow-up review（B2 有修复或 spec `followup_review_recommended: true` 时，最多一轮）→ B4 `build-sync` → `done` tag → ⑤.5 测试 → ⑥ retro → ⑥.5 residue。
+
+- spec 由 bmad-build-auto 写成 `spec-<slug>.md`，状态在 frontmatter。prompt 要求 slug 等于 key，但它会把中文 key 转写成英文 slug（gateway 里 `124-1-测试环境基线…` → `spec-124-1-test-env-baseline-….md`），所以 harness 按 `spec-<epic>-<seq>-*` 编号前缀识别（与 bmad-build 自己的 story-key 解析同规则，`1-1` 不会撞 `1-10`）。
+- `--continue` 改用 harness 自己的 tag 判断（`harness-state.py --in-flight`），不再用 sprint-status 的 `review`（6.11+ 里它也表示"交互式 build 完成待合并"）。
+- §0.A 工作区必须干净（bmad-build-auto 的要求）；§0.A.0 retro dev 项前置 gate 对任意 epic 生效，`_NO_SPEC_` 残留时不 dispatch（避免 build 跑完才被 hook 拦）。
+- 阶段 ⑥ 用 `bmad-retrospective -H <EPIC>`；stage 6 / 6-done 输出 `RETRO_VERDICT=` 与 `EPIC_WONT_DO=`。`rejected` 且没有 wont-do story 时 all 模式 halt；有 wont-do 时只醒目提示（上游把 wont-do 算未完成，会强制 rejected）。
+- codex-skipped marker 推迟到 B4 才写，B3 的 bmad-build-auto 不会碰到脏工作区；每条 story 的 B0 都检查工作区干净；Build intent 说明当前分支承载整轮 sprint，避免 build-auto 的分支检查误判。
+- 旧流水线启动、未完成的 story 走 §1.L：stage ③④⑤ 可续（codex / freelance fix / bmad-code-review 都还在），卡在 ②之前的只能重置后走新流水线。
+
+**② `harness-commit.py`**
+
+- 新 `build-verify` 模式：不 stage、不 commit，审计 `harness/<KEY>/start..HEAD`（凭据黑名单 / `_bmad-output` 越界，尊重 `planning_artifacts:` / 跨 story 隔离，尊重 `cross_story_artifacts:`）+ 工作区干净 + spec status done + `## Auto Run Result` 存在；输出 `SPEC_FILE` / `BASELINE_REVISION` / `FOLLOWUP_RECOMMENDED` / `DEFERRED_COUNT` / `CODEX_LAYER_SKIPPED`。
+- 新 `build-sync` stage：`<KEY> → done`、epic `backlog → in-progress`，把 spec `deferred:` 导入为 schema v1 FU（`FU-<X.Y>.B<n>`，`[source:build-auto-of-X.Y]`，按位置编号，重跑幂等）。无变更时 STATUS=skip 仍给 `SUGGEST_TAG`。先 sync 再判空（干净工作区是常态）。
+- 跨 story 隔离与预期产出认本 story 的 spec（编号前缀匹配，`-n` 后缀取最大）和 `epic-<N>-context.md`；story status 优先读 spec frontmatter。build-verify 还会把 bmad-build-auto 建 spec 之前 HALT 留下的 `bmad-build-auto-result-*.md` 报成 `BUILD_AUTO_RESULT=`，spec done 却只改了 artifacts 的报 `NO_CODE_CHANGE=`。
+- stage 6 STATUS=ok 输出 `RETRO_VERDICT=`。
+
+**③ 新文件**
+
+- `scripts/harness_spec.py`：spec 解析、frontmatter 读取（PyYAML 可选，内置 fallback 与 PyYAML 在 gateway 40 个真实 spec 上结果一致）、codex review layer 探测、deferred 导入。
+- `scripts/check_bmad_runtime.sh`：uv / bmad-build-auto / render_skill.py / `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` 探测；run 硬检查、init advisory。
+- `scripts/build_pipeline_test.sh`：build-verify / build-sync / 状态机 / action-status / runtime probe / gate ① 正则等 fixture。初稿经一轮独立 review（10 条 finding）后修订。
+
+**④ 状态与账本**
+
+- `harness-state.py`：build / legacy 双流水线 next_action_code（build / build-verify / codex / codex-fix / followup / followup-verify / sync / blocked / legacy-stage*），新增 `--story-md`、`--in-flight`（排除 sprint-status 已 done / wont-do 的）；B3 前打 `followup-start` tag，续作不会重复跑 follow-up；codex-in-build 探测用 git toplevel。
+- `sprint-status.py`：新增 `action-status <id> [<status>]` 读写原生 `action_items`、`epic-stories <N>`；`epic-all-done` 把 `wont-do` 视为终态。retro-fulfill 翻原生条目优先用上游 `sprint_status.py update --set-action-status`。
+- story 编号允许字母后缀（`124-4b-…`）：short id、gate ①、deferred grep、schema target 正则一并放宽。
+- retro 两本账按 id `epic-<N>-retro-<CODE>` 对齐（retro suffix §7），retro-fulfill 两边一起翻。
+
+**⑤ prompt 契约**
+
+- `bmad-create-story-suffix.md` → `bmad-build-auto-suffix.md`（规划契约：slug、`context:` 挂实现清单、白名单声明、C7 继承段、注入项处理）。spec 长度 lint 与 D-decisions extract 退役。
+- `bmad-dev-story-suffix.md` → `bmad-build-implement-suffix.md`（实现子 agent 清单，经 spec `context:` 送达，再拉取 `harness-prompt-suffix.py implement`）。
+- `harness-prompt-suffix.py` 新增 `build` / `implement` / `chore` 三个 stage；stage 4 与 chore 不再提 dev-result.json。
+- `bmad-retrospective-suffix.md`：按 6.12 的 Phase 名改写挂点，新增 §7 原生账对齐。
+
+**⑥ 其它**
+
+- pre-commit gate ①：触发改为任意 epic 的新 story spec（`(spec-)?<N>-<M>-*.md`，带第二个 `.` 的 sidecar 不触发）。
+- `check_inheritance_block.sh` 认 `spec-` 前缀；`grep_prev_retro_action_items.sh` 改由 B1 实际调用。
+- init / update / codex-catchup / run-test / architecture / README / deferred-work schema（新增 `build-of` / `build-auto-of` source）同步；BMad 命令名更新为 `bmad-prd` / `bmad-architecture`。
+- `release_check.sh`：顶部表读根 README，Versioning 表读插件 README。
+
+**⑦ codex 对抗式 review 修订（3 条）**
+
+- **retro_action_items 改为合法 YAML**（high）：≤ 0.1.39 的 seeder 写 `A1: pending` + 过缩进的 `category:` / `chore_spec:`，不是合法 YAML。以前只有 harness 自己的 awk 解析它，0.2.0 开始调 BMad 6.12 原生 `sprint_status.py`（整文件 YAML 解析）后会直接失败。改为嵌套写法（`A1:` + `status: pending`），新增 `harness_spec.migrate_retro_items_text`、`sprint-status.py migrate-retro-items [--check]`、`harness-commit.py retro-migrate` stage；seeder / chore_spec 填充先迁移再写，chore_spec 插在条目最后一个子键之后；4 个 bash 读取器和 `_lookup_chore_spec_from_yaml` 两种写法都认。顺带发现旧 checker 完全看不见嵌套写法的条目（gateway epic-54 起的 48 条 harness 项和 20 条 dev 项从未进过 gate）。
+- **retro_gate 开关**：读取器修好后 gateway 冒出 20 条未兑现 dev 项，加上 gate ① 扩到任意 epic，升级当天所有新 story spec 的 commit 都会被拒。新增 `harness-project-config.yaml` 顶层 `retro_gate: warn | block`，默认 `warn`（只提示）；`block` 才拦 commit、§0.A.0 才先跑兑现循环。
+- **build-verify 检查嵌套 artifact**（medium）：区间里 `test_artifacts/` 下别的 story 的文件报 `CROSS_STORY=`，artifacts 目录下其它嵌套路径报 `UNEXPECTED_ARTIFACT=`，与 staging 流水线同规则。
+- **build-sync 中断后仍可续作**（medium）：deferred 导入挪到 sprint-status 翻 done 之前；`--in-flight` 只在已提交的 sprint-status 为 done / wont-do **且**没有 harness 收口 commit 时才排除，未提交的 done 和已提交未打 tag 的 sync 都还能被 `--continue` 找到。
+- 新增回归 C1-C4；orchestration_observations_test 的 seeder 断言改为嵌套写法。迁移结果用 PyYAML 校验（本机无 ruamel.yaml，未用 BMad 原生解析器实测）。
+
+### 后续注意
+
+- 升级后在项目里跑 `/harness-zh:update`，manifest purge 会删掉两个改名前的 suffix 文件。
+- 第一次 `/harness-zh:run` 会在 §0.A 1.5 检测旧写法并迁移 retro_action_items（单独一个 `chore(sprint-status)` commit）。想手动先做：`python3 .claude/harness/scripts/sprint-status.py migrate-retro-items`。
+- 想恢复 retro 行动项硬拦截：在 `harness-project-config.yaml` 加 `retro_gate: 'block'`（模板新字段，update 不会自动补）。
+- 跑之前先装 uv，再跑 `bash .claude/harness/scripts/check_bmad_runtime.sh` 确认 `STATUS=ok`。
+- 新流水线尚未在真实项目上整轮跑过；第一轮建议 `/harness-zh:run --story`，观察 B1 的 spec 命名与 build-verify 结果。
+- BMad 原生 `deferred-work.md` 写法（bmad-build 交互版 / bmad-code-review）仍不进 C11 注入，只有 FU 格式的条目会被注入。
+
+---
+
+## v0.1.39 — 2026-06-12 — epic-6 实跑反馈四连修：planning_artifacts 白名单 + process-marker 自动剔除 + 子 agent task 工具禁令 + retro 瞬态重试 (closes #8, closes #9)
+
+### 触发
+
+issue #9（epic-6 全量 run 反馈，4 findings：1 high / 1 medium / 1 low / 1 info）+ issue #8
+（feature：过程文件类额外产出自动剔除而非 halt——与 #9 finding 3 同源）。epic-6 run 全程
+唯一一次需要 solo-dev 人工介入的 halt 是 #9 finding 1：retro chore spec（E11 forward-only
+remediation）**显式要求**回写 `_bmad-output/planning-artifacts/epics.md`，但 retro-fulfill
+commit 被 issue #5 的 OUT_OF_SCOPE_BMAD 守卫拦下，被迫手工 out-of-band `git add` + 独立
+docs commit 再重跑——脚本自己的 GUIDANCE 教的正是 harness 本应消灭的人工步骤。
+
+### 改动范围
+
+**① `planning_artifacts:` frontmatter 白名单（#9 finding 1, high）— `scripts/harness-commit.py`**
+
+- 新增 `read_planning_artifacts_allowlist(key, epic, stage)` + `_resolve_spec_md_path()`：
+  spec md frontmatter 可声明 `planning_artifacts:` YAML list（完整 repo-relative 路径，与
+  `cross_story_artifacts:` 的 bare-basename 约定不同——回写哪棵树必须无歧义）。约束：仅
+  `<bmad-output-parent>/planning-artifacts/` 子树（前缀从 artifacts_root 推导，跟随自定义
+  配置）、仅 `.md`、禁 `..` / 绝对路径；非法条目静默丢弃（best-effort，与 cross_story 同
+  姿态）。brainstorming/ / research/ 等兄弟子树不在豁免范围。
+- spec 解析：story stages 用 `<ARTIFACTS_DIR><key>.md`；retro-fulfill 的 key 是 retro item
+  code（如 E11），**优先**读 sprint-status.yaml `retro_action_items` 块该 code 的
+  `chore_spec:` 字段（stage 6-5 已写入；§0.A.0 只兑现有该字段的项——对 code 前缀互撞免疫，
+  值经 `chore-retro-c<epic>-<code>-<slug>.md` 全匹配校验防陈旧/异 code 值），缺失时才
+  code-first glob 兜底（slug 首字符 `[a-z0-9]` 只能挡大写续接；小写 kebab code 互为前缀时
+  glob 多命中 → WARN + 忽略 frontmatter，fail-closed）。
+- step 2.5 守卫：声明路径绕过 OUT_OF_SCOPE_BMAD halt，流入 project bucket 随 commit stage，
+  STATUS=ok 时输出 `PLANNING_ARTIFACT=<path>` 信息行；未声明路径照旧 halt，GUIDANCE 行
+  现在指向 `planning_artifacts:` 机制。白名单**仅在允许 project code 的 stage**
+  （2/4/5/retro-fulfill）生效——project_code=False stage 上 gated off，保持清晰的
+  OUT_OF_SCOPE_BMAD 诊断（而非放行后落入晦涩的 FORBIDDEN halt），GUIDANCE 注明本 stage
+  不适用。
+- 配套文档：run.md §−1.d 新增"Spec-driven planning-artifacts 回写"段 + §0.A.0 兑现 prompt
+  补 scope 说明；bmad-create-story-suffix.md 新增 §"planning-artifacts 回写声明约束"；
+  process_retro_residue_prompt.md frontmatter 模板 + 自检清单补该字段（残余处理器生成的
+  chore spec 在 Tasks 要求回写时自动声明——E11 这类 spec 从源头就带白名单）。
+
+**② process-marker 自动剔除（#8 + #9 finding 3, low）— `scripts/harness-commit.py` + `scripts/harness-prompt-suffix.py`**
+
+- 新增 `PROCESS_MARKER_TAGS = ("maven-skipped", "sandbox-skipped")` + `detect_process_markers()`，
+  挂在既有 step 1.6 auto-prune 通道（与 `AUTO_FIXED=unexpected-md` 同代码路径）：
+  `<KEY>.<tag>.json` 且 untracked/newly-added → unstage + rm + `AUTO_FIXED=process-marker
+  <path> action=unstaged+rm tag=<tag>`，不 halt。modified（已 tracked）永不自动删（与另两个
+  auto-fixer 同不变量）。
+- 白名单**显式枚举**，绝不泛化到 `*.json` / `*-skipped.json`——`<KEY>.codex-skipped.json` /
+  `.resolved.json` 是 schema 内 artifact（STAGES story_json）不可吞；新 marker 变种保持
+  halt，确认安全后人工进白名单。
+- 源头收敛：`harness-prompt-suffix.py` stage 2/4 新增"禁止过程 marker 文件"段（sandbox 跳过
+  只写 dev-result.json `checks_skip_reasons`）；run.md stage ② prompt 模板同步补一行；
+  run.md §−1.d 新增"过程 marker .json 自动剔除"段。
+- dry-run 一致性：`--dry-run` 只读检测 marker 并从分类中排除（输出
+  `action=planned-unstage+rm-dry-run`），与实跑结果一致——不再出现"dry-run 报
+  UNEXPECTED_ARTIFACT halt、实跑却 AUTO_FIXED ok"的预演失真（既有 unexpected-md 的
+  dry-run 分歧是 Opt 2 旧行为，本次不动）。
+- prune 后空 worktree 收口：worktree 只含被自动剔除的文件时，剔除后按 step 1b 同款分支
+  skip（skip_if_empty stage）或 halt"nothing left to commit"——不再输出会诱导空 commit 的
+  STATUS=ok。
+
+**③ 子 agent 任务追踪工具禁令（#9 finding 2, medium）— `scripts/harness-prompt-suffix.py` + `commands/run-test.md`**
+
+- `harness-prompt-suffix.py` 全 stage（1-6）新增"任务追踪工具禁令"段：禁止 TaskCreate /
+  TaskUpdate / TaskList / TaskGet / TaskStop——sprint 任务清单归主 orchestrator 独占（epic-6
+  run 实测：stage-2/5/5.5 子 agent 反复翻/建/删主任务，一度清空整个任务清单）。进度只走
+  prompt 规定渠道（story md checkbox / progress JSON / 返回 message）。
+- 不走 harness-prompt-suffix.py 的 spawn 点逐一补禁令：run-test.md T1 / T3 prompt 模板、
+  run.md 阶段 ⑤.5 的 run-test subagent spawn prompt（issue #9 实测污染源之一——它执行
+  run-test.md 时会被 §进度可视化 要求 TaskCreate）、process_retro_residue_prompt.md
+  （⑥.5 residue fresh agent，严格禁止 #11）；T4 无子 agent 不涉及。
+- run-test.md §进度可视化 改双模式：独立触发（会话主 agent）时照旧 TaskCreate；被
+  run-sprint ⑤.5 作为 subagent 调起时禁用任务工具、只通过返回 message 汇报——消除
+  "run-test 要求建任务、⑤.5 禁令禁止建任务"的自相矛盾。
+
+**④ retro 瞬态错误重试注记（#9 finding 4, info）— `commands/run.md` stage ⑥ + §3**
+
+- 等待返回处补充：retro subagent 死于瞬态 infra 错误（`API Error: Overloaded`，区别于配额
+  信号——以 §−1.a / §3 第一行完整关键词列表为准）且 `git status --porcelain` 干净 → 直接
+  重 dispatch 一次，不 halt；重试仍失败或 worktree 不干净 → 照旧 §3 halt 模板。
+- §3 硬约束表同步镜像该例外（沿用 stage ③ 配额例外的"§1 例外必须镜像进 §3"惯例）：
+  产物缺失行加 stage ⑥ 瞬态例外 carve-out；子 agent 预算行明确"配额中断重启或瞬态重试
+  合计至多 1 次（单 epic ⑥ 总 dispatch 上限 = 2）"；"绝对禁止重新拉子 agent"条款加同款
+  豁免——否则两处文本会让忠实读者得出相反行为（halt vs 重试）。
+
+### 验证
+
+- 新增 `scripts/harness_commit_planning_artifacts_test.sh`（7 fixture + 1 parser 探针：声明
+  放行 + PLANNING_ARTIFACT 行 / 未声明仍 halt + GUIDANCE 提示 / 非法条目丢弃——非 .md 与
+  错子树各有 load-bearing 的 OUT_OF_SCOPE_BMAD 断言（杀校验删除变异），`..` 穿越在
+  porcelain 层不可钉（git 路径恒规范化）改由 P3b importlib parser 探针钉 / retro-fulfill
+  glob 兜底放行（E11 场景复刻）/ retro-fulfill 未声明仍 halt / P6 project_code=False stage
+  gated off 且诊断清晰（无 FORBIDDEN）/ P7 yaml `chore_spec:` 优先于歧义 glob）。
+- 新增 `scripts/harness_commit_process_marker_test.sh`（7 fixture，真实 git repo 为主：
+  maven-skipped / sandbox-skipped 自动剔除 + 文件实删 / 未知 tag `gradle-skipped` 仍 halt /
+  codex-skipped schema artifact 照常 STAGED 不被吞 / tracked marker 永不自动删 / M6 dry-run
+  预演一致且不动盘 / M7 marker-only worktree 剔除后清晰 halt）。
+- `scripts/harness_prompt_suffix_test.sh` 扩 Test 7（全 stage 含任务工具禁令）+ Test 8
+  （stage 2/4 含 process-marker 禁令、stage 5 不含）。
+- `run_all_tests.sh` 全量：PASS=27 / FAIL=0 / SKIP=1（simulate_clone 既有 known-stale，CI
+  bootstrap job 实跑）。
+
+### 后续注意
+
+- `PROCESS_MARKER_TAGS` 初始只收录已观测的 `maven-skipped` + 合理同义 `sandbox-skipped`；
+  下游再冒新 marker 变种时按 UNEXPECTED_ARTIFACT halt 现场确认冗余后追加 tag（一行改动 +
+  process_marker test 加 fixture）。
+- `planning_artifacts:` 故意只开 planning-artifacts/ 子树；若未来出现 research/ 等其它子树
+  的合法回写需求，扩 `_PLANNING_ARTIFACTS_SUBDIR` 前需重新评估威胁面（不要顺手泛化）。
+- 下游项目需跑 `/harness-zh:update` 刷新 `.claude/harness/scripts/` + `.claude/commands/`
+  后①-④才生效。
+- 本版初稿经一轮多视角对抗式 review（4 lens + 逐 finding 反驳式复核）修了 9 处自身缺陷
+  （含 P3 测试空断言、⑤.5/⑥.5 spawn 点禁令缺口、§3 镜像缺失、residue 模板活例子会被逐字
+  照抄重开 issue #5 守卫等）——上面各小节描述的已是修正后的终态。
+
+---
+
+## v0.1.38 — 2026-06-10 — 全量对抗式 review 收口：96 findings 八主题修复 + 测试体系重建 + 发布门加固
+
+### 触发
+
+对 plugin 全资产（python / bash / md 编排协议 / prompt-suffixes / 测试 / CI / 文档）做了
+一轮全量对抗式 review，产出 96 条 findings（1 critical / 11 high / 35 medium / 49 low，
+每条带验证者复核记录；另 15 条候选被验证驳回留档）。完整清单见仓库根
+`REVIEW-2026-06-10.md`——下文括号内 `#N` 即该报告 finding 编号。本版按八个主题块收口。
+
+### 改动范围
+
+**一、安全门双洞（#1 critical / #7 high / #79，`harness-commit.py`）**
+
+- porcelain 扫描改 `git status --porcelain -uall -z`（#1）：旧 `--porcelain` 把整个
+  untracked 新目录折叠成 `dir/` 一行，目录**内部**的 blacklist 文件（凭证/密钥）对扫描
+  完全不可见——子 agent 新建 `config/` 塞一个 `aws-credentials.json` 整目录被静默
+  `git add`。`-uall` 展开到每个文件；`-z` 走 NUL 分隔原始路径，顺带修 #79（C-quoted
+  路径：文件名含双引号/换行不再对错误的字面路径操作）。
+- `glob_match` 改 gitignore 语义（#7）：`**/` 此前至少吃一段目录 → **仓库根目录**的
+  `.env` / `*.pem` / `credentials.json` 全部绕过安全门。现 `**/` 匹配零段起，根目录与
+  深层路径同等被拦。
+- BLACKLIST 拆两档（#1/#7 修复的衍生设计——洞补上后 junk 文件开始可见，不能全 halt）：
+  凭证档（`.env*` / `*.pem` / `*.key` / credentials 族 / `**/secrets/**`）维持
+  `STATUS=halt`；垃圾档（`.DS_Store` / `*.tmp` / `*.swp` / `__pycache__` / `*.pyc`）
+  改自动跳过 + stderr `NOTE: skipped junk file: <path>` 一行，不 stage、不 halt——
+  不再为一个 .DS_Store 卡死整条 story 流水线。垃圾档**只对不在 HEAD 的路径生效**
+  （regression R1 收口：tracked 文件的修改 / `git rm` 删除照常走流水线入 commit；
+  `*.log` 从垃圾档移除——.log 是常见合法项目文件，构建日志归项目 .gitignore 管）。
+- 新增 `harness_commit_blacklist_test.sh`（21 断言）：根目录凭证被拦 / 新目录嵌套凭证
+  被拦（pre-fix 两者全漏）/ junk 自动跳过 + NOTE / tracked .log 修改与 tracked
+  .DS_Store 删除不被误剔（R1 回归）/ i18n 豁免（issue #2/#5 路径）回归。
+
+**二、codex 降级链端到端闭环（#4 high / #6 high / #38 / #82）**
+
+- `<KEY>.codex-skipped.json` 纳入 stage 2/4/5 expected-output 契约、
+  `<KEY>.codex-skipped.resolved.json` 纳入 stage 3/4/5（#4）：此前 marker 在任何 stage
+  都被判 `unexpected_artifact` → 走 graceful-skip 的 story 在 stage 5 commit 必 halt，
+  `/harness-zh:codex-catchup` 又被同一个 marker 卡死——优雅降级机制实际从未端到端走通。
+  现 stage 5 把 marker 随 commit 入库，catchup 的 stage 4 commit 把 `.resolved.json`
+  归档结果一并带走。
+- codex-catchup §4 重排（#6）：§4.6 归档 marker 挪到 stage 4 commit（§4.7）**之前**，
+  归档结果随 commit 入库——旧顺序归档发生在 commit 后，`.resolved.json` 永远是 untracked
+  残留，下一个 story 的 §4.2 dirty-worktree 检查撞上自己上一轮的产物自锁 halt。§4.2
+  同步放宽：允许本命令已知的归档残留形态在场（其余 dirty 仍 halt）。
+- catchup stage 3 review 窗口锚定（#38）：review diff 改锚 `harness/<KEY>/done` tag +
+  detached worktree——旧口径复用 `--base stage2_base` 但 HEAD 已含后续 story 的全部
+  提交，codex 看到的是污染窗口；锚定失败走显式降级口径（`CATCHUP_WT_ACTIVE=0`，
+  §4.5 按"仅处理本 story finding"自决）。
+- run.md §3 防护表的"配额关键词命中即 halt"标注 **stage 3 例外**（#82）：阶段 ③ codex
+  subagent 的 quota/auth 命中不 halt，按 §③.1 skip+marker 处理（catchup-friendly），
+  与 §−1.b 的 halt 总则交叉引用消歧。
+
+**三、retro 契约真实接线（#5 high / #29 / #72 / #8 high / #16 / #17 / #28）**
+
+- Form 1 格式契约送达通道（#5）：run.md 阶段 ①（create-story）与阶段 ⑥（retro，含
+  §0.C retro-only 路径）的 subagent prompt 模板注入**强制 Read 契约**——"先 Read
+  `.claude/harness/prompt-suffixes/bmad-create-story-suffix.md` / `bmad-retrospective-suffix.md`
+  并全程遵守"。此前 suffix 写明 Form 1 / Category / Pre-retro self-audit 契约但没有任何
+  机制把文件送到 subagent 眼前，stage 6 fail-loud halt 全靠碰运气（issue #6 secondary
+  的三连 halt 根因）。
+- `**Category**: dev|harness` 声明被真实消费（#29）：`_parse_retro_action_items` 改返回
+  `(code, title, category)` 三元组（新增 `_extract_item_category`，仅 Form 1 H3 块有
+  per-item 声明通道；Form 2/3 恒 None），seeder 给 yaml 写 `category: dev|harness` 子键；
+  未声明/非法值 → 不写子键 + stderr WARN，gate 侧把无 category 项按 NOCAT 通道处理
+  （WARN 不阻，等效 harness；dev 强约束在补分类前不生效）。
+  retro suffix 的 Category 声明从死字段变成 `grep_pending_dev_retro_items.sh` /
+  `check_retro_action_items.sh` 真实读取的数据。新增 `retro_category_round_trip_test.sh`
+  双向回归。
+- follow-through 过滤补整文件兜底路径（#72）：旧实现只在找到 canonical §Action items
+  时过滤上期 recap，整文件兜底扫描会把上期 `AI-N.M` 表格 seed 进当前 epic——现兜底扫描
+  前先切除 follow-through / carryover 段。
+- EOF 换行全分支归一化（#8，issue #6 的剩余分支收口）：`_seed_retro_action_items` /
+  `_fill_chore_spec_field` 所有写入路径先确保现有内容以 `\n` 收尾再追加，文件末行无
+  换行符时不再产出粘连的损坏 YAML（0.1.36 只修了父键缺失分支）。
+- 4 份 retro_action_items parser 的文法/枚举收敛进 `deferred_work_schema_lib.sh`
+  （#16/#17）：`check_retro_action_items.sh` / `grep_pending_dev_retro_items.sh` /
+  `process_retro_residue.sh` / `grep_prev_retro_action_items.sh` 统一吃 lib 常量
+  （awk 经 `awk -v`、bash 经 `=~`），code 文法对齐多字母 epic letter、status 枚举补
+  `migrated-upstream`——四处各自漂移的状态机收口为单一 SoT。
+- create-story suffix 的 `chore-retro-c<epic>-*.md` 放行说明改为与 harness-commit.py
+  实际 stage 范围一致（#28），照做不再必 halt。
+
+**四、状态机与配置 SoT（#77 / #76 / #9 high / #33 / #80 / #60 / #24）**
+
+- `_sync_sprint_status_for_stage` 改两阶段 read-then-set（#77）：先全部读出当前值
+  算出需要翻转的集合，再统一写入——幂等（current == target 即 skip）、stage 6 双 key
+  （`epic-N-retrospective` + `epic-N`）翻转不再有半途 halt 留半套状态的窗口。
+  `sprint-status.py` `cmd_status` 支持 `epic-*` key（此前被 story-key 过滤恒 rc=1）、
+  新增 `next-in-epic <num>` 子命令（#35 配套）。
+- `read_story_status` 容多词 status（#76）：`in-progress` / `Ready for Review` 不再被
+  误报为 Status 行缺失；与 harness-state.py 的副本同步。
+- E2E 路径去硬编码（#9）：`harness_config.py` 新增 `get_frontend_dir()` /
+  `get_e2e_test_subdir()` getter（quiet fallback），harness-commit.py 的 F2 E2E spec
+  白名单前缀由两者派生；run-test.md T3/T4 改占位符渲染，不再写死 `console-web`。
+- 三处原始项目硬编码改 config 派生（#33）：blacklist 豁免 / F2 白名单 / 分组排除跟随
+  `harness-project-config.yaml`，自定义项目不再静默失效或误伤；`_ARTIFACTS_ALLOW_PREFIX`
+  等同步走 config。
+- `get_artifacts_root` 对绝对路径/越界相对路径降级不 raise（#80）：解析到 repo 内 →
+  归一化为 repo-relative；解析到 repo 外 → WARN + 降级 default，三个 consumer 不再在
+  import 期抛 ValueError traceback。harness-prompt-suffix.py 模块加载期 `relative_to`
+  崩溃一并消除（#73）。
+- upgrade-deferred-work §3.3.B 与 init §A.3 的 deferred-work 路径统一走
+  `read_harness_config`（#60），archive 分支不再硬编码默认 artifacts_root 且 `mv` 失败
+  显式检查（#24）。
+
+**五、bash 基建（#2 high / #58 / #3 high / #55+#57+#87 / #21+#54 / #50）**
+
+- pre-commit gate ②：纯删除 diff（清理/归档 FU 条目）不再触发 pipefail 无声 exit 1
+  阻断 commit（#2，`|| true` + 空集语义显式化）。
+- `install_git_hooks.sh` hooksPath 良性拒装改 `exit 3`（#58）：exit 1 收窄为真实安装
+  失败，init/update 的退出码契约表同步——真实失败不再被当成 hooksPath WARN 吞掉。
+- `check_test_harness_env.sh` Playwright chromium 缓存路径按 `uname -s` 分流（#3）：
+  Darwin → `~/Library/Caches/ms-playwright`、其它 → `~/.cache/ms-playwright`，Linux 上
+  e2e 不再被永远误判 sandbox-skip。
+- `deploy_assets.sh` 健壮性三连（#55/#57/#87）：所有临时文件进 EXIT trap；manifest 写
+  `mv -f` 原子替换；`find` 排除隐藏文件（`.DS_Store` 不再被投递进用户项目）；purge
+  瞬态失败的 candidate 回写新 manifest——skip 不再是 forever-skip，下次 update 自动
+  重试。新增 `deploy_assets_purge_test.sh`（22 断言，含 purge 失败回写 / manifest
+  原子性 / 越界路径拒绝）。
+- `run_all_tests.sh`：`for t in $(ls ...)` 改 glob 循环（含空格路径不碎裂，#21）；
+  `--strict` 下 KNOWN_FAILS 恒 0 的死逻辑修复 + 死变量清理（#54）；FAIL 时 dump 测试
+  输出 tail（不再 `>/dev/null 2>&1` 吞诊断，#44 附带项）；stale-listed 测试 PASS 时
+  打 `remove from KNOWN_STALE` 提示防名单腐化。
+- 新增 `scripts/prompt_template_lib.sh`（#50）：占位符渲染共享库，python 实现替代两处
+  重复的 sed 单字符转义逻辑，`project_display_name` 含 `&` / `\` 不再损坏输出。
+
+**六、md 编排协议收口（init / update / report-issue / run / run-test）**
+
+- init.md：所有分支判据 bash 块改块尾 echo（§A.2 投递统计 / §A.3 族检测 / §A.4 等，
+  #23——跨 Bash 调用 shell 变量不持久，不输出即不可观察）；§4.3.5 BACKUP_PATH 改
+  确定性命名 + 块尾 echo 字面路径（#22，rollback 不再引用空变量）；§A.2 新增
+  `DEPLOY_EXIT` 检查 + §7 防护清单条款 6（#64，与 update §7.2 对齐）；§A.3.c.i
+  `v1_pct` 渲染 ×100（#61）；全流程单一 TaskCreate（#62 命名漂移消除）；§6.5 重复的
+  `(c)` 分支重标号（#63）；字段计数全文统一 **16**（#90，frontmatter / §2 标题 /
+  §异常 halt 判据原说 14、§2 表实际 16 行自相矛盾）。
+- update.md：§5/§6 错号引用修正 + §6 报告模板补 purged 统计与清单行（#59，purge 二次
+  确认安全网落实到模板）。
+- report-issue.md：BODY_FILE（随机 mktemp 路径）与 TITLE 块尾 echo（#26）；title 截断
+  改 python3 按字符语义（#68，BSD awk 按字节切 CJK 出 mojibake）；`halt-recovery`
+  label 已在目标 repo 创建 + md 改述 gh 对缺失 label 的真实行为（#25，halt 类 issue
+  不再必然提交失败）。
+- run.md：删除 §−1.a / §1 commit 范围表残留的『主 agent 手工 `set` 兜底』指令（#70，
+  与 2026-05-04 现协议冲突的最后两处；本版 release_check.sh Gate 3 机检防回流）；
+  阶段 ⑤ deferred-work 趋势统计改 schema v1 口径（#81，旧 grep 的 inline 标记已被
+  gate ② 拒收、新项目永远显示 0）；§0.C 显式定义 `$KEY` 取法（该 epic 最后一条 done
+  story，#83）+ epic-of 验证；single-epic 取 key 改 `next-in-epic`（#35，目标 epic 前
+  有其它 backlog 时不再一条不跑就退出）；`--epic` 无参 fallback 进 §0.C 前补
+  `epic-all-done` 验证（#36）；§3 子 agent 预算重算（#37，⑤.5/⑥/⑥.5/§0.A.0 不计入
+  主预算、各设独立上限，正常路径不再必然超额）。
+- run-test.md：T4 `E2E_RC` 改 PIPESTATUS 取真实 e2e 退出码（#34，旧写法取到 tee 的
+  退出码，verdict 分类失效）；部署后断裂的相对链接与失效 recipe 引用清理（#71/#84）。
+
+**七、测试体系重建 + CI 收编（#10 high / #11 / #12 / #39+#45 / #40 / #41 / #44 / #46）**
+
+- 8 个 KNOWN_STALE 测试全部修绿移出名单（#10/#44）：名单只剩 `simulate_clone_test.sh`
+  （clone宿主部署树是其测试主体，源树本质跑不了——由 CI bootstrap-tests job 在 fixture
+  内实跑收编）。`grep_pending_deferred_for_story_test.sh` 按 schema v1 全量重写（#11，
+  旧版 11/16 断言失败、被测脚本实际零覆盖）。
+- `orchestration_observations_test.sh`（最大测试）大修后首次全绿：26/26 PASS（#12——
+  2>&1 合并流断言 / 不存在的部署 config 依赖 / 路径不一致全修）。
+- 新增 `sprint_status_format_test.sh`（44 断言）：单行 / BMad 多行块 / 混合三格式覆盖
+  `next` / `next-in-epic` / `status` / `epic-all-done` / `set`——issue #4 修复核心
+  从零回归测试（#39/#45）到双格式全覆盖。
+- 新增 `harness_commit_blacklist_test.sh`（15 断言，主题一）与
+  `deploy_assets_purge_test.sh`（22 断言，主题五）。
+- ci.yml 重构为 3 job（#40/#41）：`source-tests`（源树套件 + release gates）、
+  `bootstrap-tests`（fixture 内 glob sweep 部署式测试——不再点名固定 4 个，新增测试
+  自动入网）、`macos-bash32-tests`（macOS runner 系统 bash 3.2 跑源树套件，双环境
+  兼容承诺首次有真覆盖）。源树套件现 24 PASS / 0 FAIL / 1 known-stale SKIP。
+
+**八、资产与发布工程（#30 / #74+#92+#95 / #42 / #67 / #86 / #88 / #89 / #90 / #43）**
+
+- 删除 `prompt-templates/` 目录（4 个文件）停止分发（#30）：部署的运行时死资产，内容
+  停在 pre-schema-v1 且含下游项目专属引用，无任何脚本/命令消费。
+- 3 个 prompt-suffix 与 `conventions/deferred-work-schema.md` 去项目专属内容（#74/#92/
+  #95 配套）：Aegis / console-web / console-api 引用全部参数化或删除，
+  `run_retro_self_audit.sh` 同步。
+- `release_check.sh` 版本门扩到**四处一致**（#42）：plugin.json（SoT）/ marketplace.json
+  / README 版本表（顶部 plugin 表 + Versioning 表首行）/ changelog.md 头条 `## vX.Y.Z`。
+  changelog 头条是 `collect_issue_context.sh` 运行时上报版本号的事实来源，README 表
+  历史上漂移过连续 9 个版本（0.1.17-0.1.25）。另加两道防漂移机检门：Gate 3 ——run.md
+  同行出现独立词 `set` + 『兜底』且不含『不再』/『不要』即 exit 4（#70 防回流，否定句
+  协议说明放行）；Gate 4 —— 提取 upgrade-deferred-work.md 的 `<<'TPL'` heredoc 与
+  `templates/deferred-work.md.template` 逐字节 diff，不一致 exit 5（#67 的机检建议；
+  heredoc 末段已先同步 template 的章节组织指引句）。退出码契约表同步（新增 4/5）。
+- marketplace.json 删 `allowCrossMarketplaceDependenciesOn` 死配置（#86，v0.1.28 删
+  codex 硬依赖后无消费方）。
+- `.gitignore` `.bak.*` → `*.bak.*`（#88）：旧模式只匹配以 `.bak.` 开头的文件名，对
+  deploy_assets / install_git_hooks 实际产出的 `<file>.bak.<TS>` 后缀式命名零命中
+  （init 的 preinit 备份写 /tmp，无需 pattern）。
+- README：`/harness-zh:run --help` 引导改为真实 flag 清单 + 指向 run.md §0.0/§5 参数表
+  （#89，run.md 不存在 --help 分支，照跑会直接进主循环）；『14 字段』改 16（#90）；
+  版本表加 0.1.38 行。
+- architecture.md 0.1.28-0.1.38 收口（#43/#85）：`just process-retro-residue` 等不存在
+  的 recipe 引用全部替换为真实 bash 入口；命令分工表 6→7 个 + codex-catchup 行补
+  v0.1.38 闭环修正；树形图按 ls 实况重写（7 commands / 61 scripts 文件 /
+  deferred-work.md.template）；§〇.5 改述 plugin.json 自 v0.1.28 起无硬依赖（#85）；
+  补 §0.A.0 retro-fulfill gate / sprint-status 多行块双格式 / base-26 epic letter
+  三段机制描述；字段计数对齐 16。
+
+### 验证
+
+`run_all_tests.sh` 24 PASS / 0 FAIL / 1 SKIP（simulate_clone，known-stale → CI
+bootstrap-tests 实跑）。`release_check.sh` 4 gate 全绿（exit 0），且每道新门均做过
+故意漂移红测：版本门对 README/changelog 任一处错版本 exit 2；Gate 3 对插入
+『主 agent 调 `set` 兜底』行 exit 4、对现存否定句全放行；Gate 4 对 heredoc 改一字
+exit 5 + 输出 unified diff。各主题块的逐 finding 验证记录见 `REVIEW-2026-06-10.md`
+内嵌的验证者复核段。
+
+### 后续注意
+
+- 发布仍无 git tag（#91）：建议从本版起每次 bump 后打 `harness-zh/v0.1.x` 轻量 tag。
+- harness-state.py 性能项（#78，compute_state 6 遍全量 git log）未动——正确性无虞，
+  大仓库慢时再优化。
+- architecture.md 全文（含 §12.1 树形图）已对齐 16 字段口径，无『14 字段』残留。
+
+### 更正（0.1.36 条目）
+
+0.1.36 验证段称 orchestration 测试 T2/T3/T4 组的 FAIL 项「该测试本就在
+`run_all_tests.sh` 的 KNOWN_STALE，bootstrap CI 跑」——该表述与**当时事实不符**：
+#40 查实，彼时 ci.yml 的 bootstrap-tests job 只点名跑另外 4 个测试，orchestration
+测试在任何 CI job 都不执行（KNOWN_STALE 头注释的同款声明亦为假）。本版已让该测试
+修绿入 `run_all_tests.sh` 源树直跑（26/26）+ CI source-tests / macos-bash32-tests
+双收编，声明与现实重新一致。
+
+---
+
+## v0.1.37 — 2026-06-10 — `read_harness_config.sh` `_RHC_THIS` unset-after-source 修复，stage ⑥.5 复活（closes #7）
+
+### 触发
+
+GitHub issue #7：`read_harness_config.sh` source 末尾 `unset _RHC_THIS`（line 113），但
+`read_harness_config_field` 函数体 line 63 在**调用期**才解引用它 → caller `set -u` +
+config yaml 在场（不走 file-not-found early-return）时，任何 post-source 调用确定性命中
+`unbound variable`。`process_retro_residue.sh`（`set -euo pipefail` line 28 + source line 32 +
+line 240 调用）四条件全中 → stage ⑥.5（retro-residue → chore-spec 转换）对**任意 epic**
+exit 1。同 pattern 的 `backfill_resolved_markers.sh`（line 141 调用）一并受害。
+次生：`declare -a EXISTING_SPECS` 不赋值是 declared-but-unset，**bash >= 4.3**（含现场
+Debian bash 5.2）set -u 下 `${#EXISTING_SPECS[@]}` 也报 unbound（≤ 4.2 / macOS 3.2 容忍 —
+docker bash 3.2/4.2/4.3/4.4/5.0/5.2 矩阵实测，注意区间与直觉相反）。
+
+既有测试为何没拦：从 plugin 源码树跑时 config yaml 不在场 → 函数 early-return，
+崩溃行永远不执行。回归测试必须搭 deployed 式 fixture（config yaml 在场）。
+
+### 改动范围
+
+- `scripts/read_harness_config.sh`：
+  - `_RHC_THIS` → `_RHC_SCRIPT_DIR`：source 期即绝对路径化，**不进末尾 unset 清单**
+    （函数调用期仍需；caller source 后 cd 走也仍能定位 harness_config.py）。函数内
+    `${_RHC_SCRIPT_DIR:-}` 双保险（空串 → `-f` 失败 → 安全退化 awk fallback）。
+  - 函数入口硬化（同族 sweep 发现）：`local key="${1:-}"` 无 key 早退 default + WARN；
+    `[ ! -f "${HARNESS_CONFIG_PATH:-}" ]` — 该公开 env var 被外部 unset 时不再以
+    unbound variable 杀死 set -u caller，降级回 default。
+- `scripts/process_retro_residue.sh`：6 个 `declare -a` 全部 `=()` 显式初始化。注释注明
+  真实崩溃区间（bash >= 4.3）+ `=()` 不豁免空数组 `"${arr[@]}"` 整体展开（≤ 4.3 仍崩，
+  靠既有长度守护在前，改动时务必保持）。
+- 同族 sweep 顺带修（多 agent 对抗验证，各带 mktemp repro 实证）：
+  - `scripts/eval_test_stage_triggers.sh`：line ~210 mid-script 无守护 source — lib 缺失
+    （部分部署 skew）时 `set -uo pipefail`（无 -e）limp 过失败 source，下一行裸引
+    `$HARNESS_ARTIFACTS_ROOT` exit 1，违反自身「任何路径 exit 0」fail-open 契约。改为
+    存在性检查 + `${HARNESS_ARTIFACTS_ROOT:-}` 空 → `emit_defaults fail_open_default` + exit 0。
+  - `scripts/lint_deferred_work.sh`：`[ -f lib ]` 在场 ≠ `DWSL_*` 常量齐全（截断 skew），
+    裸引崩 rc=1 被本脚本「rc=违规数」契约误读成「1 violation」。对齐 git-hooks/pre-commit
+    gate ② 的 `[ -n "${DWSL_*:-}" ]` 守护（显式 if，default 含 `{4}` 量词不能走 `${VAR:-}`）。
+- 新增 `scripts/read_harness_config_issue7_test.sh`（4 fixture / 5 断言，deployed 式
+  tmp fixture）：T1 issue 复现一行；T2 source 后 cd 走再调用（锁 `_RHC_SCRIPT_DIR`
+  source 期绝对化）；T3 harness_config.py 缺席走 awk fallback；T4 process_retro_residue.sh
+  端到端（config 在场）。变异校验：pre-fix 4/5 FAIL（git HEAD 版实测），post-fix 5/5 PASS。
+
+### 验证
+
+`run_all_tests.sh` 14 PASS / 0 FAIL（新测试入列）。变异校验 + docker 6 版本 bash 矩阵 +
+三处守护各自 mktemp fixture 现场验证（fail_open JSON rc=0 / stub lib 走 inline fallback /
+unset env + 无 key 调用 caller 存活）。已识别未修（低危 latent）：`bootstrap_test_harness.sh`
+line 46 同 limp-past-source pattern（但首行 stderr 已点明真因、rc 契约不变，一次性手动入口）；
+`run_all_tests.sh` `"${KNOWN_STALE[@]}"` 空数组在 macOS 3.2 崩（静态非空字面量，不可达）。
+
+---
+
+## v0.1.36 — 2026-06-03 — `_seed_retro_action_items` 顶层 `retro_action_items:` 父键缺失自动 bootstrap（closes #6）
+
+### 触发
+
+GitHub issue #6：v0.1.35（issue #5）放开 epic > 26 的 retro_action_items seeding 后，
+项目里**首个真正 seed retro_action_items 的 epic（epic 54）**实跑暴露：顶层
+`retro_action_items:` 父键此前从未被 bootstrap（epic 52/53 在 v0.1.35 前 epic>26
+seeding 静默禁用，从没走到过 stage 6 的 `_seed_retro_action_items`）。v0.1.35 一放开，
+stage 6 commit 首次实跑 `_seed_retro_action_items` → 父键不存在 → `raise` halt：
+
+```
+STATUS=halt
+REASON=retro_action_items: parent block not found in sprint-status.yaml — schema violation; cannot seed (run /bmad-sprint-planning to bootstrap)
+```
+
+`/bmad-sprint-planning` 会重生成整个 sprint（该项目 236 story），为 bootstrap 一个空
+父键付出的代价严重不成比例。用户手工补键绕开时还踩了二次坑：第一次补的 `retro_action_items:`
+漏了尾随换行 → 脚本把 `  epic-54-retro:` 追加到同一物理行 → `retro_action_items:  epic-54-retro:`
+（非法 YAML，`process_retro_residue.sh` 找不到块）。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/harness-commit.py::_seed_retro_action_items`：
+  - 原 `block_idx is None` 分支拆成 `elif rai_idx is not None`（父键在、子块缺 —— 行为
+    不变，子块插在 section 末尾）+ `else`（父键本身缺）两路。
+  - 新 `else` 路：顶层 `retro_action_items:` 缺失时，在 EOF **自动 bootstrap** 该父键 +
+    `  epic-N-retro:` 子块 + items，**不再 raise / 不建议 sprint-planning**。脚本自管换行：
+    先确保现有内容以 `\n` 收尾（规避手工补键漏尾随换行的人工坑），再按文件块风格补一个
+    空行分隔，最后落 `retro_action_items:\n` + `insert_lines`（已含 `  epic-N-retro:` 头）。
+    与既有「子块缺则自动创建」对称。
+  - docstring 同步：父键缺失改述为自动 bootstrap；`Raises RuntimeError` 收窄到仅 IO 失败
+    （或 `_parse_retro_action_items` 提前抛出的 §Action items 在场但 0 解析项的 schema drift）。
+- `plugins/harness-zh/scripts/orchestration_observations_test.sh`：
+  - **修陈旧 T1.f9**：原断言 epic 27 → `letter=None` → WARN `1..26`，但 v0.1.35 起
+    `_epic_letter(27)=="AA"`（非 None），唯一剩下的 `letter=None` 路是非整数 / 非正整数
+    epic arg。retarget 到 epic `0`，断言 WARN `not a positive integer` + return `[]`。
+  - **新增 T1.f14**：顶层 `retro_action_items:` 缺失（且输入文件 EOF 故意不带尾随换行 ——
+    复现人工坑）→ 自动 bootstrap、不 halt、无 `retro_action_items:  epic-N-retro:` 并行行、
+    结果 YAML 结构正确（PyYAML 在则校验、不在则 skip）、re-run idempotent。
+  - 头部 fixture 清单 / group count 补 f10–f14。
+
+### 验证
+
+`orchestration_observations_test.sh` T1 组 14/14 PASS（含修后的 f9 + 新 f14）。
+`harness_commit_issue5_test.sh` 5/5、`check_retro_action_items_test.sh` 8/8、
+`process_retro_residue_test.sh` 4/4 全 PASS（refactor 未碰子块/父键既有路径）。T2/T3/T4
+组的 FAIL 为既有「需 deployed `.claude/harness/` fixture」环境项（该测试本就在
+`run_all_tests.sh` 的 KNOWN_STALE，bootstrap CI 跑），与本次无关。
+
+### 后续注意
+
+issue #6 secondary（lower priority）：BMad retrospective skill 本次输出 action items 为
+markdown 数字表格（`| 1 | <action> | |`）而非 Form 1 `### <code> — title`，触发 stage 6
+*另一个*（正确/预期的）fail-loud schema-drift halt，逼 orchestrator 手工 reformat。该
+fail-loud 是 `prompt-suffixes/bmad-retrospective-suffix.md` Form 1 契约的有意行为；上游 skill
+不可改（CLAUDE.md 约束），仅靠 prompt-suffix 覆盖纠偏。本次**不动** —— 与父键 bootstrap 正交，
+单列后续若反复出现再考虑加强 suffix 的输出侧约束。
+
+---
+
+## v0.1.35 — 2026-05-31 — `harness-commit.py` 三连修：epic>26 letter / i18n 凭证误伤 / 非 artifacts 文件误 stage（closes #5）
+
+### 触发
+
+GitHub issue #5：用户仓库单次 `/harness-zh:run --epic`（epic 52 → 53）实跑暴露 3 个
+`harness-commit.py` / retro-residue pipeline 问题（项目 epic 编号在 50s）。
+
+1. **`_epic_letter()` epic > 26 封顶（HIGH）**：原实现 `1 <= n <= 26` 之外返回 `None`，
+   导致 stage 6 `_seed_retro_action_items` 拿不到 letter → `retro_action_items.epic-N-retro`
+   块永不 seed → `process_retro_residue.sh --epic 52/53` 永久 exit 1。50s 编号 epic 的
+   stage ⑥.5 residue pipeline 实际死掉。
+2. **凭证 BLACKLIST 误伤 i18n 语言包（MEDIUM）**：`**/*-credentials.json` 命中新建
+   i18n locale 文件 `web/src/i18n/locales/{zh-CN,en-US}/personal-credentials.json`
+   （纯 UI 翻译文本，零 secret 字段）→ stage 2 `STATUS=halt`。用户被迫把文件改名
+   （连字符→下划线）绕开。
+3. **非 impl-artifacts 文件误入 story commit（MEDIUM）**：`_bmad-output/` 下
+   `implementation-artifacts/` 以外的文件（本次是并行 `/bmad-brainstorming` 产出的
+   `brainstorming/brainstorming-session-*.md`，与当前 story 无关）被分类为 project code
+   自动 `git add` 进 story 53-2 的 stage-4 commit，主 agent 靠人工 `git restore --staged`
+   才发现。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/harness-commit.py`：
+  - `_epic_letter(epic)`：改双射 base-26（"电子表格列号"）：1→A、26→Z、27→AA、
+    52→AZ、53→BA、...；epic ≤ 26 字节级向后兼容；仅非正整数 / 非整数返回 `None`。
+    `_seed_retro_action_items` 的 `letter is None` 分支注释同步更新（现仅兜非法 epic arg）。
+  - 新增 `is_i18n_locale_json(path)` + `_I18N_LOCALE_DIR_SEGMENTS`（`i18n`/`locales`/
+    `locale`）：路径含 i18n/locale 目录段的 `.json` 在 `matches_blacklist` 里整体豁免
+    （与既有 BMad artifacts 豁免同手法）。真实凭证文件（`infra/aws-credentials.json`、
+    `.env*`、`*.pem`、`**/secrets/**`）继续被拦。
+  - 新增 `is_out_of_scope_bmad_output(path)` + `_BMAD_OUTPUT_PREFIX`/
+    `_BMAD_OUTPUT_INSCOPE_PREFIX`（由 `ARTIFACTS_DIR` 派生，跟随项目 `artifacts_root`）：
+    main() 新增 step 2.5 gate，`_bmad-output/` 下非 `implementation-artifacts/` 路径
+    → `STATUS=halt` + `OUT_OF_SCOPE_BMAD=` + GUIDANCE（提示单独提交 / 移入
+    implementation-artifacts）。跑在 blacklist gate 之后，故 `.harness-logs/**` 等仍报
+    `BLACKLIST=`。docstring 的 emit 行清单补 `OUT_OF_SCOPE_BMAD=`。
+- `plugins/harness-zh/prompt-suffixes/bmad-retrospective-suffix.md` §1：letter 命名规则
+  补 epic > 26 多字母示例（27→AA、52→AZ），声明 `_epic_letter()` 为权威。
+- `plugins/harness-zh/scripts/harness_commit_issue5_test.sh`（新增）：5 fixture，源树
+  直跑（tmp git repo + `--dry-run`，无需 deployed `.claude/harness/`）。
+
+### 验证
+
+`harness_commit_issue5_test.sh` 5/5 PASS（I1 epic-letter >26 + 向后兼容；I2a i18n
+locale 凭证放行 + I2b 真凭证仍拦；I3a 越界 `_bmad-output/` halt + I3b
+`implementation-artifacts/` 不误伤）。`run_all_tests.sh` 全绿（13 PASS / 0 FAIL；
+8 known-stale skip 均为需 deployed fixture 的既有项，与本次无关）。`process_retro_residue.sh`
+的 code 正则 `[A-Z][A-Za-z0-9-]*` 本就兼容多字母 code，无需改 —— epic 52 失败的根因
+就是块从未被 seed，`_epic_letter` 修复后即可正常 seed + 处理。
+
+### 后续注意
+
+issue #5 secondary 提到的「retro skill 输出 `| # | 行动项 |` 纯数字表格 → 三种 Form
+均 0 命中」属 skill 输出与 parser 契约漂移，已在 bmad-retrospective-suffix.md §3
+列为禁止形态；上游 skill 不可改（CLAUDE.md 约束），靠 prompt-suffix 覆盖纠偏，本次
+不动。
+
+---
+
+## v0.1.34 — 2026-05-29 — `sprint-status.py` 兼容 BMad 多行块 `sprint-status.yaml`（closes #4）
+
+### 触发
+
+GitHub issue #4：用户仓库用 BMad v6.7.1 多行块格式的 `sprint-status.yaml`
+（`key:` 换行接 `status:`/`depends_on:`），`harness-zh:run` 完全跑不起来。
+
+根因：`STORY_KEY_RE` 只匹配单行 `key: status`，把多行块里 nested 的 `status:`
+行误当成一个名叫 "status" 的 story → `next` 吐 "status"、`status` / `epic-all-done`
+全失效。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/sprint-status.py`：
+  - `_iter_dev_status`：改 base_indent 状态机 + `BLOCK_KEY_RE` / `NESTED_STATUS_RE`，
+    多行块 entry 读 nested `status:` 子键；`line_index` 指向承载 status 值的行。
+    单行格式向后兼容。
+  - `cmd_set`：重写正则为通用 field 匹配（单行=key 行；多行块=status 行），保留
+    行尾 inline 注释；`depends_on` 等块内其他子键不受影响。
+  - `harness-commit.py` / `harness-state.py` 无需改（都 shell out 到本脚本）。
+
+### 验证
+
+单行 / 多行块 / 混合三格式 `_iter_dev_status` + `cmd_set` 回归全 PASS；真实
+232-story 多行块 yaml 上 `next` / `status` / `epic-all-done` / `set` 均正确，
+`set` 多行块结构无损。
+
+---
+
+## v0.1.33 — 2026-05-29 — `/harness-zh:run` 启动前置自动兑现 retro DEV items（fixes #3）
+
+### 触发
+
+GitHub issue #3（用户仓库 epic 5，story `5-1-安全事件-crud-启停-筛选`，stage 1 halt）：
+
+```
+pre-commit hook BLOCKING: epic-4-retro 10 条 dev 类 pending action items
+(D7/D8/D9/D10/D11/D14/D15/D16/D18/D20) 未兑现
+```
+
+新 epic 4-6 story 的 stage ① 创建 `<KEY>.md` 命中 pre-commit gate ① 触发模式
+`[4-6]-*.md`。若上个 epic retro 落地的 `category: dev` action items 还没兑现，
+commit 被 hook 拦——但**此时 stage ① subagent 的 token 已经烧掉**。用户要求：
+`/harness-zh:run` 启动时自动检测这些 dev 项并**先兑现**，避免「spawn stage-1 →
+干活 → commit 被拦 → halt」的 token 浪费。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/grep_pending_dev_retro_items.sh`（NEW）：纯
+  enumerator —— 扫 `retro_action_items` 块，机器可读列出所有 `category: dev` 且
+  status ∈ {pending, in-progress} 的项（gate ① 同口径），每项附 epic/code/status/
+  chore_spec。复用 `check_retro_action_items.sh` 的 awk 状态机 + 新增 chore_spec
+  捕获。stdout 契约：`ITEM<TAB>epic<TAB>code<TAB>status<TAB>spec` 行 + `_PENDING_DEV_`
+  / `_WITH_SPEC_` / `_NO_SPEC_` 三行汇总。恒 exit 0（除文件缺失 exit 2）；块缺失 /
+  重复 header 走 WARN + 0 项（gate 自会拦，enumerator 不重复报错）。
+- `plugins/harness-zh/scripts/harness-commit.py`：新增 `retro-fulfill` commit
+  stage —— 把一条 dev retro item 的 chore_spec 实现成项目代码后收口 commit。允许
+  路径 = 项目代码 + `sprint-status.yaml`（主 agent Edit 翻 status → done）+
+  `deferred-work.md` + `chore-retro-c{epic}-*.md`（chore_retro 通道豁免，与 stage
+  6-5 同）。位参 `key` = retro item 的 `<CODE>`（非 story key）；commit_msg =
+  `chore(retro-c{epic}-{key}): fulfill retro dev item`。`_sync_sprint_status_for_stage`
+  对本 stage no-op（retro_action_items 无 setter，由主 agent Edit 落地）。同步把
+  `retro-fulfill` 加进「需 `--epic`」stage 列表。
+- `plugins/harness-zh/commands/run.md`：
+  - 新增 §0.A.0「retro DEV items 兑现前置 gate」——在 §0.A 末尾、进 §1 之前，先判
+    本轮第一条 story key 是否命中 `^[4-6]-`；命中则跑 enumerator 检测 → 对每个有
+    chore_spec 的 dev 项 spawn fresh subagent 实现 → Edit 翻 status → `retro-fulfill`
+    收口 commit → 全清后进 §1。缺 spec 项不臆造，列给用户走 `process_retro_residue.sh`
+    补 spec 或 `--no-verify` 留痕。
+  - §0.5 路径预期产出表加 `retro-fulfill` 行；「项目代码」允许 stage 列表加
+    `retro-fulfill`。
+- `plugins/harness-zh/scripts/grep_pending_dev_retro_items_test.sh`（NEW）：9 用例
+  覆盖 dev/harness/done/NOCAT 分流、with/no-spec 分桶、块缺失 / 重复 header /
+  文件缺失边界、+ 与 `check_retro_action_items.sh` dev 计数一致性回归锚。
+- `plugins/harness-zh/scripts/retro_fulfill_stage_test.sh`（NEW）：3 用例（源码树
+  直跑 `--dry-run`）覆盖 happy path（3 路径 staged + commit_msg）、缺 `--epic` halt、
+  cross-story 隔离 halt。
+
+### 后续注意事项
+
+- **范围**：本前置只覆盖**启动那一刻**的 gate ① 阻塞。`all` 模式跑到 epic 边界
+  时上个 epic 的 stage ⑥ retro 会**新 seed** dev 项，下个 epic stage ① 仍可能被
+  拦——属 mid-run epic 切换，沿用既有 stage 6.5 → 手工兑现路径，未纳入本前置（避免
+  在主循环里插 dev-loop 的复杂度 + 失控风险）。后续如需可把 §0.A.0 抽成 §1 stage ①
+  前可复用的子例程。
+- gate ① 触发模式 `[4-6]-*.md` 是单字符 epic（4/5/6）；epic 7+ / epic 53 这类
+  `^[4-6]-` 不命中的 epic，gate ① 本就不触发，§0.A.0 也据此跳过——与 hook 行为
+  对齐。这是 harness 围绕 1-6 epic 项目设计的既有限制，本版未扩。
+- `retro-fulfill` 一次只兑现一条（per-item commit），chore_retro 通道允许任意
+  `chore-retro-c{epic}-*.md`（非严格限定当前 CODE），与 stage 6-5 批处理一致；真正
+  的隔离靠 cross-story gate（foreign `<other-key>.md` 仍 halt）。
+
+## v0.1.32 — 2026-05-28 — BLACKLIST `**/*credentials*` 收窄 + artifacts allow-list（fixes #2）
+
+### 触发
+
+GitHub issue #2（用户 caller 仓库 epic 53 跑 `/harness-zh:run` stage 1 halt）：
+
+```
+BLACKLIST=_bmad-output/implementation-artifacts/53-1-db-migration-credentials-表-agents-owner-user-id.md (**/*credentials*)
+```
+
+epic 53 主题就是「凭证管理」，4 条 backlog story 名字都含 `credentials` 子串
+（`53-1-db-migration-credentials-表-...` / `53-3-agent-凭证迁移-...-credentials` /
+`53-5-bff-credentials-crud-...`）→ stage 1 spec md / stage 2 源码改动 / stage 3
+codex-review.md / stage 5 review-findings.json 每个阶段 commit 都被同一模式
+误伤，epic 53 完全跑不通自动化。issue 由用户自己写得非常细致：root cause +
+方案 A/B/C + reproduction + workaround 全列了，本版按其推荐的 A+B 组合修。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/harness-commit.py`：
+  - **B（pattern 收窄）**: `BLACKLIST_PATTERNS` 删 `**/*credentials*`，替换为
+    精确命名集合 12 条：`**/credentials`、`**/credentials.{json,yaml,yml,ini,txt}`、
+    `**/*-credentials`、`**/*-credentials.{json,yaml,yml,ini}`、`**/*.credentials`。
+    业务命名中段含 `credentials` 子串（如 `credentials_service.go` /
+    `V53_create_credentials_table.sql` / `*-credentials-table.md`）不再误判。
+  - **A（artifacts allow-list 防御层 2）**: `matches_blacklist()` 入口加守卫
+    — `_bmad-output/implementation-artifacts/` 路径下后缀 md/json/yaml/yml 的
+    文件直接 return None（豁免 blacklist 扫描）。未来新增宽松 pattern 也不会
+    误伤 BMad 工程产物。allow-list 只覆盖 4 个 plugin 已识别的 artifact 后缀
+    （与 `ARTIFACT_RE` 对齐），不过度豁免 — `.pem` / `.key` 等真凭证后缀即使
+    放进 artifacts 目录也仍被原规则拦。
+- `plugins/harness-zh/scripts/orchestration_observations_test.sh` 新增 T1.f13
+  fixture：22 个用例覆盖 (a) issue 现场 spec/json/yaml PASS / (b) 业务源码命名
+  PASS / (c) 真凭证文件 BLOCK / (d) allow-list 后缀过滤（.pem under artifacts/
+  仍 BLOCK）。
+
+### 后续注意事项
+
+- `**/*secret*` 没列在原 BLACKLIST_PATTERNS，但同类风险存在（项目里出现 secret
+  字串的合法业务命名）。本版只修了 issue 报的 credentials，secret 类未来如需
+  添加 pattern，应直接走精确格式（不要再用 `*secret*` 宽 glob）。
+- glob_match 的 `**` 实现存在一个**独立 bug**：fullmatch 模式下 `**/foo` 不
+  匹配顶层 `foo`（顶层 `aws-credentials.json` / `.env` 当前不被拦）。本版没
+  fix 它（scope creep），但留作 known limitation；用户的真凭证一般落在子目录
+  （`~/.aws/credentials`、`config/credentials.yaml`），顶层文件被遗漏的实际
+  风险低。后续如需修可考虑把 `**/` 前缀展开为 `(.*/)?` 而非 `.*`。
+- T1.f13 覆盖 22 用例（8 PASS + 11 BLOCK + 3 边界）；retro parser fixture
+  T1.f6-f12 + 本 fixture 合计 T1 共 13 条。
+
+---
+
+## v0.1.31 — 2026-05-28 — retro action items parser 兜底放宽 + follow-through 过滤（fixes #1）
+
+### 触发
+
+GitHub issue #1（用户用 `/harness-zh:report-issue` 自动提）：epic-3 retro stage 6
+commit halt，第 3 个连续 epic 同样 root cause。诊断过程：
+
+1. issue 描述说 `### 3.1`/`### 4.1`/`### 5.1` numeric headers 是禁止形态 —— 这是
+   `/harness-zh:report-issue` 自动收集的**概述偏差**（取了 §三 What-went-well 的
+   `### 3.1` 之类 H3 当成 Action Items 的 H3）。
+2. 真实 retro `_bmad-output/.../epic-3-retro-2026-05-27.md` 实际格式：
+   - §六 "Epic 2 retro Action items follow-through" —— prev-epic recap section
+     （title 含 "Action items"，被旧 section detection 抢先命中，但其下表格行
+     `AI-N.M (注释)` 带括号注释 → 旧 Form 2 正则 `AI-(\d+)\.(\d+)\s*\|` 不匹配）
+   - §八 "Action items（行动项 — owner 统一为 solo-dev）" —— 真正的 epic 3 新增
+     17 条 + §8.5 团队约定 4 条 bullets，被 section detection 跳过未 scan
+3. 即使 section detection 命中 §八，§8.1-§8.4 表格用 `| AI-1.Y2 |`/`| **AI-1.X
+   (二次升级)** |`/`| AI-4.X1 (升级) |` 字母后缀 sub-id + bold/paren wrap，
+   旧 Form 2 正则全 0 命中 → fail-loud halt。
+
+3 个连续 epic 都触发是因为 BMad retrospective skill 在 prompt-suffix 引导下
+稳定输出这套"差不多但不全合规"的格式，老 fail-loud 哲学没让 skill 转向，每次
+都靠用户手工救场。
+
+### 改动范围
+
+- `plugins/harness-zh/scripts/harness-commit.py` `_parse_retro_action_items`：
+  - **section detection 改"取最后一个 canonical"**：增加 follow-through /
+    follow up / carryover 关键字过滤，跳过 prev-epic recap section；剩余
+    candidate 取 last（BMad retro 把新增 action items 放文末）。
+  - **Form 2 正则放宽接受 4 种 col 1 变体**：原 `AI-(\d+)\.(\d+)` 改为
+    `AI-(\d+)\.([A-Za-z]\w*|\d+)` 接受 letter+digits sub-id；前置 `\**\s*` +
+    后置 `(?:\([^)\n]*\))?\s*\**` 兼容 bold wrap + 括号注释。
+  - **Form 3 正则放宽接受 whole-bold 形态**：除原 `**A1** title` 外接受
+    `**A1 — title**` / `**A1（title）**：rest` 4 种变体；inner/outer title 都
+    剥分隔符 + 取非空者作为最终 title。
+  - **Form 2/3 改为共存合并**：原"Form 2 命中即 return"改为"Form 2 + Form 3
+    都跑、按 code 去重合并"。处理混合 retro 布局（§8.1-§8.4 表格 + §8.5
+    bullets）的实际场景。
+  - WARN 文案保留 `Form 2 (markdown table` / `Form 3 (bold inline` 老前缀
+    （兼容老 fixture grep 断言）+ 追加新格式说明。
+- `plugins/harness-zh/prompt-suffixes/bmad-retrospective-suffix.md` §"4. 兜底
+  匹配（Form 2/3）"：补 4 种 col 1 变体 + 4 种 whole-bold 变体清单；标记
+  v0.1.31 实测说明（"BMad skill 连续 3 轮稳定此格式 → 兜底已扩"）；记录
+  follow-through filter + §"团队约定"跨 epic A 系列的 known limitation。
+- `plugins/harness-zh/scripts/orchestration_observations_test.sh` 新增 3 条
+  fixture（T1.f10 follow-through 过滤 / T1.f11 Form 2 4 变体接受 / T1.f12
+  hybrid Form 2 + Form 3 合并 seed）。
+
+### 后续注意事项
+
+- BMad retrospective skill 的输出格式实际更接近"markdown 表格 + bullets 混合"
+  而非 prompt-suffix §"Form 1 H3" canonical。retro skill 是否未来真按 Form 1
+  写仍未知；v0.1.31 兜底已扩 + WARN 提示 + prompt-suffix 文档实测说明，先观察
+  epic-4 / 5 retro 的实际输出。如 BMad skill 仍稳定用 Form 2/3 → 考虑把"H3
+  canonical"哲学下调，把当前 Form 2 markdown 表格升为 canonical。
+- §"团队约定"跨 epic A 系列（`A7`-`A10` 在 epic-3 retro，但 letter=C）当前
+  作为 known limitation；如未来 retro skill 真切到 letter-strict 编码，可去
+  WARN。
+- T1.f10-f12 三新 fixture 增加 ~150 行测试代码，覆盖 issue #1 根因 + 兜底放宽
+  + section detection 多场景；retro action items parser 现总测试覆盖度 7 条。
+
+---
+
+## v0.1.30 — 2026-05-27 — plugin-discovery pipeline 加 `command grep`（修复敌对 shell wrapper 环境）
+
+### 触发
+
+0.1.29 push 完后，用户在 Linux dev env 重跑 `/harness-zh:update`，cache 里明明有 0.1.29 plugin.json，inline bootstrap 还是 halt：
+
+```
+ERROR: 无法定位 harness-zh plugin 安装目录
+```
+
+诊断过程（另一台机器的 agent 用 `set -x` 拆出来的）：
+
+1. `find ~/.claude/plugins/cache` 单独跑 → 4 个 manifest 全输出（codex + harness-zh 0.1.27/0.1.28/0.1.29）✓
+2. 但 `find ... | while IFS= read -r manifest; do ...; done` 循环里 read 只跑了 **1 次** ✗
+3. ground-truth `grep -c '"name":[[:space:]]*"harness-zh"' <manifest>` 单跑能命中 ✓ → grep 本身没坏
+4. 把 `grep` trace 出来看到：`exec -a ugrep ${_cc_bin} -G ... "$@"` —— Claude Code 在那台机器上注入了 `grep` shell function wrapper
+
+wrapper 内部逻辑（精简版）：
+
+```bash
+grep() {
+    if [[ $BASHPID != $$ ]]; then
+        # 已在 subshell → 省一次 fork，直接 exec 替换当前进程
+        exec -a ugrep "$_cc_bin" -G ... "$@"
+    else
+        # 主 shell → 包一层 subshell 避免污染
+        ( exec -a ugrep "$_cc_bin" -G ... "$@" )
+    fi
+}
+```
+
+`find | while read` 的右侧本身就是 subshell（`BASHPID != $$`），循环体里调 grep 命中第二条分支 → grep **把 while 循环所在的 subshell 进程整个 exec 替换掉了** → grep 跑完那个 subshell 就没了 → read 直接 EOF → 循环只迭代一次。
+
+后续 `</dev/null` redirect、`< <(process-sub)` 等都救不回来，因为问题在**进程被替换**，不在数据流被偷。
+
+### 改
+
+**5 个 critical-path 位置 grep → command grep**（`command` 内建绕过 function lookup → 直接调真 grep 二进制）：
+
+| 文件 | 行数 | 上下文 |
+|---|---|---|
+| `commands/init.md` | §A.0 2a + 2b | inline bootstrap cache + marketplaces 扫描 |
+| `commands/update.md` | §1 2a + 2b | 同上 |
+| `commands/upgrade-deferred-work.md` | 步骤 1 2a + 2b | 同上 |
+| `scripts/discover_plugin_root.sh` | step 2 + step 3 | helper 单份 SoT |
+| `scripts/collect_issue_context.sh` | line 87 + 88 | PLUGIN_VERSION 兜底扫描（issue 提单上下文收集） |
+
+每处加注释解释 wrapper-exec 隐患 + 为什么 `command` 救场。
+
+**未改的 `while` loops**（已扫一遍）：harness 其它 7 个 while-read 循环（`deploy_assets.sh` / `eval_test_stage_triggers.sh` / `process_retro_residue.sh` / `lint_deferred_work.sh` / `grep_prev_retro_action_items.sh` / `backfill_resolved_markers.sh` / `check_codex_availability.sh`）全部用 process-substitution `< <(...)` 喂数据，while 跑在主 shell 里，wrapper 走安全分支，**不**需要加 `command`。
+
+### 注意事项 / 后续
+
+- **未来新增 `find | while ... do ... grep ... done` 模式时**：必须用 `command grep`。如果改成 `while ... done < <(find ...)` process-substitution 形式也安全，但 critical-path 选择 `command grep` 不改循环结构，diff 最小。
+- 没有 blanket 把所有 grep 都换 `command grep` —— 99% 的 grep 调用不在 hostile subshell 上下文里，加 `command` 是噪音。只针对 5 处真有 hazard 的关键路径。
+- **wrapper 本身**：是 Claude Code 在某些 Linux dev env 上注入的（具体 trigger 条件未深查；可能是某个 shell init 钩子）。本插件不去碰它，只防御自己被坑。
+- **v0.1.28 / v0.1.29 squash 考虑**：0.1.28 的硬依赖修 + 0.1.29 的 2-tier bootstrap 修 + 本版的 wrapper 修，三轮都是为了让 fresh dev env 能装上 plugin。三个 commit 都已 push，回头不 squash；版本号留作 history trail。
+
+---
+
+## v0.1.29 — 2026-05-27 — inline bootstrap 2-tier 化（修复 fresh dev env 上探测失败）
+
+### 触发
+
+用户在另一台 fresh dev env 上跑 `/harness-zh:update` 报错：
+
+```
+ERROR: 无法定位 harness-zh plugin 安装目录
+```
+
+诊断：fresh install 时 Claude Code 直接从 `~/.claude/plugins/marketplaces/<name>/plugins/<plugin>/` 路径服务 plugin，**不**复制到 `~/.claude/plugins/cache/`。但 init/update/upgrade-deferred-work 三处的 inline bootstrap 都硬卡 `[[ "$cand" == */cache/* ]] || continue`，把 marketplaces 命中给跳过 → 全 miss → halt。
+
+`scripts/discover_plugin_root.sh` 自己 step 3 有 marketplaces fallback（注释里也写了"完整 fallback chain 由 helper 维护单份 SoT"），但 inline bootstrap 只是 helper 的简化版，丢了这层兜底。
+
+### 改
+
+**三处 inline bootstrap 全部改成 2-tier**（init.md §A.0 / update.md §1 / upgrade-deferred-work.md 步骤 1）：
+
+```bash
+# 2a) cache 扫描（首选 — 按 semver 降序选最高版）
+find ~/.claude/plugins/cache -maxdepth 5 -name plugin.json ...
+# 2b) marketplaces 兜底（fresh install / cache 未 populated）
+find ~/.claude/plugins/marketplaces -maxdepth 6 -name plugin.json ...
+```
+
+关键改动：
+- 移除 `[[ "$cand" == */cache/* ]] || continue` 硬过滤
+- `find` 根路径从 `~/.claude/plugins` 改成具体的 `~/.claude/plugins/cache` 或 `~/.claude/plugins/marketplaces`（更明确，少一次 path filter）
+- cache 仍优先（多版本时按 semver 选最新）；只有 cache 完全 miss 才走 marketplaces
+- marketplaces 找到第一个命中即 `break`（fresh install 只有一份）
+
+**`discover_plugin_root.sh` 不动** — 它的 step 3 已经有 marketplaces fallback。本次改动只对齐 inline bootstrap 与 helper 的语义。
+
+**周边教学文本同步更新**：init.md §A.0 / update.md §1 注释从"最小 12 行 inline bootstrap"改成"2-tier inline bootstrap"。
+
+### 注意事项 / 后续
+
+- **用户升级路径**：先 `/plugin marketplace update my-cc-plugin` 拉新 commits，再 `/plugin update harness-zh@my-cc-plugin` 把 0.1.29 进 cache（这一步用 Claude Code 内置命令，不走我们的 bootstrap，所以 0.1.27/0.1.28 用户也能正常升级）。新版进入 cache 后 `/harness-zh:update` 就用新 bootstrap 跑。
+- 0.1.28 等于本次 v0.1.29 改动**之前**的最后一版；marketplaces fallback 缺失导致 0.1.28 在 fresh env 上不可用，没人能用 /harness-zh:update 升上来 — 这是个 squash candidate，但 0.1.28 既已 push（commit `7b7ceee`），保留版本号防 cache/marketplace listing 漂移。
+- 未来若 inline bootstrap 还要改：先想想是不是该把逻辑挪进 `discover_plugin_root.sh`，让 inline 部分只保留"能不能找到 helper 自己"的最小自举。
+
+---
+
+## v0.1.28 — 2026-05-27 — codex 改回可选依赖（解锁 codex 未装时的安装失败）
+
+### 触发
+
+用户反馈：`/plugin install harness-zh@my-cc-plugin` 报错 `Dependency "codex@openai-codex" is not installed`，要求用户先单独装 codex 才能装 harness。但 harness 自己已经有完整的 codex graceful-skip 通道（v0.1.27 引入 stage 3+4 pre-flight skip + `<KEY>.codex-skipped.json` marker + `/harness-zh:codex-catchup` 补跑），硬依赖与"codex 是可选增强"的设计意图直接冲突。
+
+### 改
+
+**`plugin.json` 摘掉硬依赖**
+
+- 删除 `dependencies` 段（之前是 `[{ "name": "codex", "marketplace": "openai-codex", "version": "*" }]`）
+- 影响：harness-zh 单独 `/plugin install` 不再报错；用户可以先用 harness，想要 stage 3+4 对抗式 review 再单独装 codex
+- runtime 行为不变：`/harness-zh:run` stage 3 pre-flight 仍调 `check_codex_availability.sh`，不可用就走 skip + marker 路径
+
+**`/harness-zh:init` 加 codex availability advisory（§A.4.d）**
+
+- §A.4 之后、§A.5（BMad detection）之前插入一段 advisory 探测：调 `scripts/check_codex_availability.sh`，结果绑定到 `$CODEX_RESULT`
+- §A.6 deployment summary 多一行 `codex (optional): <status>`：
+  - `available — stage 3+4 will run normally`
+  - `not installed — stage 3+4 will skip; install with /plugin marketplace add openai/codex-plugin-cc && /plugin install codex@openai-codex; then /harness-zh:codex-catchup`
+- 探测**不阻 init**（codex 是 optional），只是首次装 harness 时让 solo-dev 一眼知道当前 codex 状态
+
+**README + 顶层 versioning table 更新**
+
+- README `### Prerequisites > #### 2. codex plugin` 标题加 `(optional — v0.1.28+)` + 改述（不再说"hard dependency blocks install"，改说"install works without it；skip+marker+catchup 路径处理 codex 缺席场景"）
+- 顶层 versioning table 加 0.1.28 行；表格版本号 0.1.27 → 0.1.28
+
+### 注意事项 / 后续
+
+- marketplace.json + plugin.json 版本必须保持一致（v0.1.27 引入的 `release_check.sh` gate 会捕获 drift）
+- 用户半路 init 现有项目 → §A.4.d advisory 也会跑（不止首次 install 场景）；想跳过可以未来加 `--skip-codex-probe` flag，但本版不实现
+- `/harness-zh:codex-catchup` 命令、`check_codex_availability.sh` 脚本、`codex-skipped.json` marker 协议均**不变**
+
+---
+
+## v0.1.27 — 2026-05-09 — 工程化加固（codex 多轮 review 驱动）+ codex skip / catchup
+
+### 触发
+
+`/codex:adversarial-review` 在 v0.1.26 提交后跑了三轮，逐轮揭出工程化层面的问题：
+
+- **Round 1 critical**：marketplace.json 版本（0.1.16）与 plugin.json（0.1.26）漂移；`/harness-zh:report-issue` 命令的 `argument-hint` frontmatter 是非法 YAML（两个相邻 flow sequence），命令可能根本装不上
+- **Round 2 high**：`/harness-zh:update` 的 purge 实现是"对账整个 .claude/ 树"，会误删用户自定义 `.claude/commands/*.md` 与 personal helper 脚本（数据丢失风险）；CI 用 `KNOWN_STALE` 把多个测试静默 SKIP，新做的 schema 修改可能 silent 回归
+- **新功能需求**：codex-in-cc 不可用（未装 / 配额耗尽 / 未登录）时，原协议是 halt + 等用户。改成显式跳过 stage 3+4 + 留 marker + `/harness-zh:codex-catchup` 后置补跑
+
+### 改
+
+**释放门禁**
+
+- 新增 `scripts/release_check.sh`：两道闸门 — (1) marketplace.json 与 plugin.json 版本必须相等 (2) 6 个 `commands/*.md` frontmatter 必须能被 PyYAML 解析。任一失败 exit ≠ 0
+- `commands/report-issue.md:3` 的 `argument-hint` 加单引号修复 YAML 解析失败
+- `commands/init.md / run.md / run-test.md / update.md / upgrade-deferred-work.md / report-issue.md` 全部加 `allowed-tools` frontmatter；`update.md` / `upgrade-deferred-work.md` 补 `argument-hint`
+
+**Manifest-based purge**（替换 v0.1.26 prototype 的 blanket diff 实现）
+
+- `scripts/deploy_assets.sh` 每次部署后写 `.claude/harness/.deploy-manifest.txt`（本插件本次部署的文件清单）
+- `DEPLOY_PURGE=1` 模式只 purge "出现在旧 manifest 但不在新 manifest" 的文件，每个删之前先备份到 `<file>.bak.<TS>`
+- **从未进过 manifest 的文件永不动**：用户自定义命令 / 其他 plugin 文件 / personal helpers 都安全
+- 安全网：deploy 有 FAILED → purge 整体跳过 + manifest 不被覆盖；新 manifest 为空 → 拒绝 purge；半路接入（旧项目无 manifest）→ 首次 PURGE 跳过 + 留 manifest 给以后用
+- `deploy_assets.sh` 必需顶层文件（`architecture.md` / `answer-policy.md` / `changelog.md` / `test-stage-triggers.yaml`）missing 时不再静默跳过 — 通过 `deploy()` 内部的 FAILED++ 路径触发 exit 2
+
+**Codex skip + catchup**（新功能）
+
+- 新增 `scripts/check_codex_availability.sh`：cheap path probe，不调用 codex（不烧 quota），输出 JSON `{available, reason, binary_path, remediation}`
+- 新增 `commands/codex-catchup.md`（`/harness-zh:codex-catchup`）：扫描 `_bmad-output/implementation-artifacts/*.codex-skipped.json` marker → 对每条 KEY 重跑 stage 3 + stage 4 → 归档为 `*.codex-skipped.resolved.json`
+- `commands/run.md` 阶段 ③ 拆三段：
+  - §③.0 pre-flight 探测（调 `check_codex_availability.sh`）
+  - §③.1 skip 路径（不可用 → 写 `<KEY>.codex-skipped.json` + 显式 halt 模板风格通知 + 跳到 stage 5；触发条件 = pre-flight 命中 OR in-flight 关键词命中：`hit your limit` / `rate limit` / `usage limit` / `quota` / `not logged in` / `unauthorized` / `please log in` / `auth required`）
+  - §③.2 主体（codex 可用时正常 spawn）
+- `commands/run.md` 阶段 ④.0 pre-flight：检查 `<KEY>.codex-skipped.json` 是否存在；存在则 stage 4 整段跳过
+
+**dedup + 工程清理**
+
+- 抽 `scripts/discover_plugin_root.sh` + `scripts/deploy_assets.sh`：init / update / upgrade-deferred-work 三命令各自的 ~50 行复制粘贴块缩到 12 行 inline bootstrap + 调用共享脚本
+- `scripts/harness_config.py` 加 `--get <field>` / `--config-path` CLI 模式；`read_harness_config.sh:read_harness_config_field` / `eval_test_stage_triggers.sh:read_project_field` / `check_test_harness_env.sh` 三处 inline awk parser shell-out 到 Python（保留 awk fallback 防 python3 缺失）
+- 同时修 `_strip_yaml_scalar` 对 `'val' # comment` 形式的语义错误（v0.1.26 之前缺这一支处理）
+- 抽 `scripts/deferred_work_schema_lib.sh`：`git-hooks/pre-commit` gate ② 与 `scripts/lint_deferred_work.sh` 共用同一份 schema regex SoT
+- `harness-commit.py` + `harness-state.py` 全部 `open()` 加 `encoding="utf-8"`（CJK locale 安全）
+- `harness-state.py:120` cwd 相对路径调用 → `Path(__file__).resolve().parent / "sprint-status.py"`
+
+**测试 + CI**
+
+- 新增 `scripts/retro_category_round_trip_test.sh`：5 fixture 集成测试，覆盖 retro_action_items category 字段的 writer→reader round-trip（防 writer 漏 `category:` 字段静默退化为 NOCAT WARN）
+- 新增 `scripts/run_all_tests.sh`：中央 test runner，区分 PASS / FAIL / `KNOWN_STALE` SKIP
+- 新增 `.github/workflows/ci.yml`：双 job
+  - `source-tests` 跑 release_check + run_all_tests（10 个 source-tree 测试）
+  - `bootstrap-tests` 用 mktemp + `deploy_assets.sh` + `install_git_hooks.sh` + 真 `_bmad-output/` seed 构造下游项目 fixture，跑 4 个 env-dependent 测试（`pre_commit_deferred_schema_test.sh` / `harness_commit_isolation_test.sh` / `simulate_clone_test.sh` / `run_retro_self_audit_test.sh`）
+- bootstrap 这一道**当场抓到**了我自己 v0.1.27 改动里的一个 regression：pre-commit 的 `${VAR:-default}` fallback 因 default 含 `[0-9]{4}` 中的 `}` 被 bash 截断，regex 变成 `[0-9]{4--}` → legacy-inline-resolved fixture 静默 PASS（应 BLOCK）。不上 CI bootstrap 永远抓不到。改成显式 `if/else` 写法
+
+**其它**
+
+- 6 处 `bash` 脚本加 `set -o pipefail`；`read_harness_config.sh` 加 `set -o pipefail` 头
+- 4 处 broken cross-reference（`run.md` / `run-test.md`）
+- `plugin.json` 加 `"license": "UNLICENSED"`
+- README 加 `(0.1.17–0.1.25 internal-only)` 跳号注解
+- `pre_commit_deferred_schema_test.sh:16` worktree 兼容（`git rev-parse --git-path hooks/pre-commit`）
+
+### 后续
+
+- v0.2 候选：split harness-commit.py / harness-state.py god-object（1920 LOC / 870 LOC）
+- 字段数三方对齐（architecture.md `16 字段` vs README `14 fields` vs template 注释头 `11 + 3 = 14`，实际数 19）
+- README 加 troubleshooting / uninstall section
+
+---
+
+## v0.1.26 — 2026-05-09 — 新增 `/harness-zh:report-issue` 一键提 issue 通道；退役 `upstream-feedback.md`（Q4 第二次 supersession）
+
+### 触发
+
+solo-dev 反馈：v0.1.14 引入的 `upstream-feedback.md` 中转通道实际反馈到达率低 — 用户 review 文件 → 复制粘贴到 GitHub issue 创建页 → 手填 title / 标 label，5+ 步手工损耗，多数项目积累几条后就不提了。同时 plugin 缺乏"用户在使用过程中遇到 plugin 缺陷时一键反馈"的入口；halt 时只能在选项 1-5 里给出"撤回 / 续作 / 调查 / 重启 / 等修复"，没有"提 issue 让作者去修"这一档。
+
+### 改
+
+**新增直通管道：**
+
+- `commands/report-issue.md` — 新 slash command `/harness-zh:report-issue`：
+  - 解析 `--type bug|feature|halt|other` / `--story` / `--epic` / `--halt-stage` / `--halt-command` / `--halt-reason` 等 flag（缺什么用 `AskUserQuestion` 兜底）
+  - 调 `collect_issue_context.sh` 拼好 issue body 给用户 review
+  - `AskUserQuestion` 三档：Submit / Edit body first / Cancel
+  - Submit 时 `gh auth status` preflight + `gh issue create --repo Niutie/my-cc-plugin --title "..." --body-file ... --label ...`
+  - **halt 场景特殊行为**：提交成功后必须输出一段「临时绕过方案」（基于手里的 halt 现场给具体的 git / shell 指令），让用户不必等 plugin 修复就能继续推进项目
+  - 失败兜底：gh 未装 / 未登录 / 提交失败时 emit 引导文字 + 手工 fallback（`pbcopy` + `open https://github.com/Niutie/my-cc-plugin/issues/new`）
+- `scripts/collect_issue_context.sh` — best-effort 上下文采集器：
+  - plugin 版本（先读 `.claude/harness/changelog.md` 顶部，缺则扫 `~/.claude/plugins/**/plugin.json` 取最高 semver）
+  - 环境（OS / shell / `CLAUDE_PLUGIN_ROOT` 注入状态）
+  - git 状态（branch / HEAD / dirty 行数 / 近 10 个 harness-asset commits / 近 5 个项目 commits）
+  - sprint 状态（`sprint-status.py count` + `next`）
+  - story 状态（如指定 `--story` 则 `harness-state.py $KEY`）
+  - halt block（仅 `--halt-stage` 时拼）
+  - `harness-project-config.yaml` fingerprint（仅 project_name / project_language / deferred_work_mode 三字段；privacy-conscious — 不抽路径或 org 字段）
+  - 全程 best-effort，缺哪个采哪个；`yaml` / `git` / `python3` 任一缺失也能退化产出 markdown
+
+**halt 模板植入：**
+
+- `commands/run.md` §3 末尾的 canonical halt 模板新增**选项 6**："怀疑这是 plugin 缺陷？跑 /harness-zh:report-issue ..." — 与原有选项 0-5 并列
+- `commands/run-test.md` / `commands/init.md` / `commands/update.md` / `commands/upgrade-deferred-work.md` 各自的短 halt 模板都加同一档新选项
+- `commands/run.md` §2 主循环出口的"🎉 完成"报告后加一行 mild hint：跑下来如有不顺手 → 跑 `/harness-zh:report-issue`
+
+**Q4 第二次 supersession — 退役 `upstream-feedback.md` 通道：**
+
+- 删 `scripts/extract_harness_feedback.sh`（迁移工具，353 行）
+- 删 `scripts/detect_harness_residue.sh`（残余检测器，155 行）
+- 删 `templates/upstream-feedback.md.template`
+- `prompt-suffixes/bmad-retrospective-suffix.md` 重写「retro action items 写入分流」段：
+  - retro skill 不再分流；`category: dev` 与 `category: harness` 都写 `sprint-status.yaml.retro_action_items`
+  - `category` 字段仅决定 pre-commit gate 行为：dev 阻 commit / harness 仅 stderr WARN + hint 跑 `/harness-zh:report-issue`
+- `commands/init.md` §A.3.d 重写为**纯 advisory**：仅检测 sprint-status.yaml 内是否还有 v0.1.25 残余的 `category: harness` 条目；有则 emit hint 引导跑 `/harness-zh:report-issue`，**不**自动改 yaml、**不**调任何脚本。`HR_RESULT` 字段仍在 §A.6 报告中露出。
+- `scripts/check_retro_action_items.sh` 对 `pending_harness > 0` 的 WARN 文本改为 hint `/harness-zh:report-issue`（不再 hint 已删的 `extract_harness_feedback.sh`）；`migrated-upstream` status enum 保留兼容（v0.1.14-0.1.25 残余视同 done，不阻不 WARN）
+- `architecture.md` 〇.3 命令分工表加一行 `/harness-zh:report-issue`；§六 Q4 加 v0.1.26 supersession note；scripts 树状图 [Harness upstream-feedback 流] 一节改为 [Plugin issue 直通管道]
+
+### 后续注意事项
+
+- 用户首次跑 `/harness-zh:report-issue` 前需保证 `gh` CLI 已装 + `gh auth login` 完成；`gh-cli` 不像 BMad / codex 是硬依赖（plugin.json `dependencies` 不申明），保持轻量
+- v0.1.14-0.1.25 期间项目侧落到磁盘的 `.claude/harness/upstream-feedback.md` 文件**不**主动删（用户私有数据；plugin 资产投递的 cmp/backup 路径里不包含此文件，`/harness-zh:update` 不会动）。用户可自行决定 archive / 删除 / 把里面剩余条目用 `/harness-zh:report-issue` 提为 issue 后再清理
+- `migrated-upstream` 仍是合法 status enum 用于历史兼容；将来某个版本（v0.2+）可考虑硬移除 + 配套 migration 工具
+
+---
+
+## v0.1.17 – v0.1.25 — _未公开发布_
+
+internal iteration only — squash-merged into v0.1.26 before marketplace publish；未单独打 marketplace tag、未单独投递 plugin store。版本号跳跃仅是内部迭代记账痕迹。
+
+---
+
+## v0.1.16 — 2026-05-07 — 修 codex adversarial review 在 v0.1.13 / v0.1.14 上发现的 3 处 control-flow / 一致性缺陷
+
+### 触发
+
+solo-dev 跑 `/codex:adversarial-review` 审 0.1.13 + 0.1.14 + 0.1.15 三个未 push commit。verdict = `needs-attention`，3 处缺陷可复现：
+
+1. **[high] detector exit code 被吞** — `extract_harness_feedback.sh` 用 `$(... 2>/dev/null || true)` 包 detector 后再读 `$?`，`|| true` 让退出码恒为 0。`sprint-status.yaml` 缺失或 `retro_action_items` 块缺失时本应触发 `exit 2/3` 的路径被静默跳过，假报"已干净"。
+2. **[high] upgrade-deferred-work B 档先 mv 后 cp 且 PLUGIN_ROOT 未定义** — `/harness-zh:upgrade-deferred-work` 选 B（archive+greenfield）时，文档先 `mv deferred-work.md` 到归档，再 `cp "$PLUGIN_ROOT/templates/..."` 回填新模板。但该文档未定义 `PLUGIN_ROOT` 探测逻辑（注释说"复用 update §1"但没原样列出），LLM 照搬时会因 `PLUGIN_ROOT` 空字符串导致 `cp` 失败 → 主账本 `deferred-work.md` 永久缺失。
+3. **[medium] 迁移非事务化，部分失败会双追加** — `extract_harness_feedback.sh --apply` 先写 `upstream-feedback.md`，再改 `sprint-status.yaml`。若第二步失败，下次重跑 detector 仍认为同条目 unmigrated → 重复追加 UF。
+
+### 修
+
+**Fix #1**：`scripts/extract_harness_feedback.sh` detector 调用改用 `set +e` / `set -e` 块包，显式捕获真退出码。新增 `[ "$DETECT_EXIT" -ne 0 ]` 兜底分支处理意外退出码。fixture 测试覆盖 exit 0/2/3 三条路径。
+
+**Fix #2**：`commands/upgrade-deferred-work.md` 选 B 改为安全六步：
+1. 解析 `PLUGIN_ROOT`（同 update §1 探测：env var → cache/* → 任意 plugin.json）
+2. 决定 `SOURCE_MODE`（plugin-template 优先；探测失败 → inline-fallback）
+3. 算归档路径（防 collision；已存在则加时间戳后缀）
+4. `mv deferred-work.md → archive`（不可逆动作）
+5. 写新模板（cp 或 cat heredoc），**失败必 rollback** mv
+6. 同步 `deferred_work_mode → strict`
+
+inline fallback 模板内容直接写在步骤 5 heredoc 内（不再依赖文档别处的"参考"段；删除冗余尾注）。
+
+**Fix #3**：`scripts/extract_harness_feedback.sh --apply` 重写为原子 + 幂等：
+- 在 memory 里算好新 UF + 新 SS 内容，再走 `os.replace()` 原子写入（write `.tmp` + fsync + replace）
+- 写入顺序：UF 先 / SS 后（SS-mutation 是 ack；crash 在中间不会 data loss，只可能 retry 后 dedup）
+- 新增 `(epic, code)` dedup：扫现有 UF 文件中 `## From: <epic>` 段下的 `- **<code>**` bullet，已在的条目跳过 UF 追加（仍 mutate SS 翻状态）
+- 异常路径清理 .tmp 残文件 + 提示用户 retry 安全
+
+fixture 测试模拟 partial-failure（写完 UF 后回滚 SS）+ retry，验证：UF 不重复（grep -c 仍为 1）+ SS 重新翻 migrated-upstream。
+
+### 后续注意事项
+
+- Atomic write 在跨文件系统场景（如 `/tmp` 归档 vs 项目根 SS）会退化为 `EXDEV` — 当前实现 `.tmp` sibling 在同 fs 下，假设 SS / UF 同卷。如未来支持跨卷需改成"copy + rename"+"原 path unlink on success"。
+- Fix #2 文档化的探测逻辑较长（~20 行 bash）— 后续如新增"投放空模板"路径（不止 deferred-work.md，可能 upstream-feedback.md 也需 greenfield 模式），考虑抽出 `scripts/locate_plugin_template.sh` 共享脚本。
+- Codex review verdict `needs-attention` 已闭环；本 commit 后建议再跑一次 review 确认 fix 落地。
+
+---
+
+## v0.1.15 — 2026-05-07 — 命令 frontmatter `argument-hint` 字段：autocomplete 提示参数
+
+### 触发
+
+solo-dev 注意到其它 plugin（如 codex 的 `/codex:adversarial-review`）在 slash command autocomplete 菜单上显示参数提示（`[--wait|--background] [--base <ref>] ...`），harness-zh 的 5 条命令都没显示。Claude Code slash command frontmatter 支持 `argument-hint` 字段（man-page 风格 — 方括号可选 / 竖线互斥 / 尖括号占位符），加上即可。
+
+### 修
+
+| 命令 | argument-hint |
+|---|---|
+| `/harness-zh:run` | `[--story [<key>] \| --epic [<num>] \| --continue \| --dry-run]` |
+| `/harness-zh:run-test` | `--story <key>` |
+| `/harness-zh:init` | `[--dry-run \| --force \| --merge]` |
+| `/harness-zh:update` | (无参数；省略 hint) |
+| `/harness-zh:upgrade-deferred-work` | (无参数；省略 hint) |
+
+仅改 frontmatter，不动命令正文 / 任何运行逻辑。
+
+### 后续注意事项
+
+无。后续新增命令记得带 `argument-hint`（无参数时省略字段，不写空字符串以免 autocomplete 显示空方框）。
+
+---
+
+## v0.1.14 — 2026-05-07 — retro action items category:harness 与 sprint-status 解耦 → upstream-feedback.md
+
+### 触发
+
+epic retro 产出的 action items 已经按 `category` 字段分流（`dev` / `harness`），`check_retro_action_items.sh` (pre-commit gate ①) 也按 category 做行为分流（dev 阻 commit，harness 仅 WARN）。但**物理位置**还都在 `_bmad-output/implementation-artifacts/sprint-status.yaml.retro_action_items`。从 plugin 用户视角：
+
+- sprint-status.yaml 是**项目侧 artifact**（用户的项目 git 历史里），里面躺着 plugin 维护方的债（`category: harness` 那些）
+- 用户感觉项目背着 plugin 自己的待办，污染 retro 视图
+- harness 类条目对项目用户没有 actionable 意义（用户不可能也不该改 plugin 源码），但 `check_retro_action_items.sh` 还会反复 WARN 提示它们 pending
+
+需要把 harness 类彻底搬出 sprint-status，落到一个独立的、专给 plugin 用户用来汇总后提 GitHub issue 的文件。
+
+### 修
+
+**新增 `templates/upstream-feedback.md.template`** — markdown 文件，header 含用户工作流（review → 复制提 issue → 翻 status 留 audit）+ schema 说明（每条目格式 + 5-值 status enum）。
+
+**新增 `scripts/detect_harness_residue.sh`** — bash + python3 内联，扫 sprint-status.yaml.retro_action_items 块，找未迁移（即 status != `migrated-upstream`）的 `category: harness` 条目。stdout 单行 JSON `{count, items[]}`，含每条的 epic / code / status / inline comment（description）/ chore_spec。exit 0 健康 / 2 sprint-status 缺 / 3 retro 块缺。
+
+**新增 `scripts/extract_harness_feedback.sh`** — 迁移工具，`--dry-run`（默认）print 预览，`--apply`：
+1. bootstrap upstream-feedback.md（不存在时从 plugin templates/ 投放，fallback 内嵌 minimal header）
+2. 备份 sprint-status.yaml → `.bak.<timestamp>`
+3. 把 harness 条目按 epic 分组追加到 upstream-feedback.md
+4. python state-machine 重写 sprint-status.yaml：把被迁条目的 `<CODE>: <status>` 行的 status 翻 `migrated-upstream`（**不**删行，保留 audit；用户可手工清掉 commented block）
+
+**`scripts/check_retro_action_items.sh` enum 扩展** — `migrated-upstream` 加入合法 status enum；不再触发 unknown-status WARN。
+
+**`prompt-suffixes/bmad-retrospective-suffix.md` 新增 §"retro action items 写入分流"** — 强制 retro skill 区分 `category: dev`（写 sprint-status，行为同前）vs `category: harness`（**禁止**写 sprint-status，**改写** upstream-feedback.md）。包含写入 schema、文件 bootstrap 路径、历史数据兼容指引。
+
+**`commands/init.md` 扩展 §A.3.d** — sprint-status.yaml 存在时跑 detect_harness_residue.sh，按 count 分支：
+- `count = 0` 或 sprint-status 缺 / retro 块缺 → silent / skip
+- `count > 0` → emit 现状 + dry-run 预览 + AskUserQuestion 二选一：
+  - **A) Migrate 现在**（推荐）— 跑 `extract_harness_feedback.sh --apply`
+  - **B) 跳过** — 提示后续手工跑
+
+§A.6 部署统计新增 `harness-residue: $HR_RESULT` 行。
+
+### 后续注意事项
+
+- 迁移行为是**保留式**（status 翻 `migrated-upstream`，不删行）。用户如果想完全清理 sprint-status，需手工删除 `migrated-upstream` 状态的整段（每段 4 行：CODE: status / category / chore_spec / 空行间隔）。后续可补一个 `--purge` 模式但目前不做（保留 = 安全）。
+- 没改 `sprint-status.py` 渲染逻辑 — 不知道它是否会显式列 `migrated-upstream` 状态条目；如发现噪音再补 filter。
+- 项目侧的"未迁残余"WARN 路径：`check_retro_action_items.sh` 看到 pending+harness 时仍 WARN（提示"快跑 extract"）；solo-dev 选择 init §A.3.d 跳过的话每次 commit 都会看到这条 WARN，是预期行为（提醒未完事）。
+- 提 issue 路径目前是手工（用户 review upstream-feedback.md 后复制粘贴）。后续可补一个 `/harness-zh:export-feedback` 命令一键打包成可提 issue 的 markdown 段，但 MVP 不做。
+
+---
+
+## v0.1.13 — 2026-05-07 — 半路接入项目时 deferred-work.md schema 检测 + 三档迁移
+
+### 触发
+
+`/harness-zh:init` 假定 deferred-work.md 要么不存在（bootstrap 空模板）、要么 100% schema v1 conformant。半路接入既有项目（项目里已有大段 legacy deferred-work.md — 无 4-tag 头 / 含 inline `Resolved by Story X.Y` 后缀 / 含 `FU-RETRO-*` 命名空间）时这两个假设都不成立。具体伤害：
+
+- pre-commit gate ② 只扫新增行，历史 legacy 条目本身**不**阻 commit — 但 dev / review / spec-author agent 在 deferred-work.md 上下文里 mimic 周围 legacy 格式写新条目时会被 gate 拒
+- `grep_deferred_buckets.sh` / `grep_deferred_status.sh` / `grep_pending_deferred_for_story.sh` 三脚本只识 v1 4-tag 行，对 legacy 条目盲；§1 总账数据失真；dev agent 漏 cross-story trigger surface
+
+不能强制要求半路接入用户先还历史债（违背"装插件就能用"的接入意图），也不能默默忽略（数据失真会复利累积）。
+
+### 修
+
+**新增 `scripts/detect_deferred_work_schema.sh`** — bash 入口 + python3 内联，扫 deferred-work.md 算四类计数（FU 总数 / v1 4-tag 已标 / legacy 4-tag 缺失 / legacy inline 后缀 / FU-RETRO-* 命名空间）+ v1_pct，分类成 4 档：`pristine`（无 FU）/ `v1_clean`（≥95% v1）/ `mixed`（部分 v1）/ `legacy`（0% v1）。stdout 单行 JSON，exit 0 健康路径 / 2 文件缺失。
+
+**`templates/harness-project-config.yaml.template` 新增字段** — 顶层 `deferred_work_mode: 'strict'`（默认）；可切 `'advisory'` 表示与历史 legacy 条目共存，§1 总账按 v1-tagged 子集口径解读。pre-commit gate ② 行为不受 mode 影响（永远只校验新增行）。
+
+**`commands/init.md` 扩展 §A.3.c** — 仅当 `DW_BOOTSTRAPPED=0`（文件 pre-existed）时进，跑 detector，按 classification 分支：
+- `pristine` / `v1_clean` → silent OK，不询问
+- `mixed` / `legacy` → emit 现状报告 + AskUserQuestion 三选一：
+  - **A) Advisory 共存**（推荐）— 历史不动，sed yaml 设 `deferred_work_mode: 'advisory'`
+  - **B) Archive + greenfield** — `mv deferred-work.md deferred-work.legacy-pre-schema-v1.md`，从 plugin 模板重新 bootstrap；mode 保持 strict
+  - **C) Backfill 手工指南** — 不改文件，emit schema §5 backfill 路径；solo-dev 自己用 LLM 单批改写后重测
+- `§A.6` 部署统计新增 `deferred_work_mode: ${DW_MODE_RESULT}` 行
+
+**新增 `commands/upgrade-deferred-work.md`** — 事后入口，跑同款 detector + 三档交互。供 solo-dev 在 init 时选 advisory、后来想切回 strict、或事后手工 backfill 完想复测的场景；对 `pristine` / `v1_clean` + `mode=advisory` 自动提示切回 strict（mode 漂回路径）。
+
+### 后续注意事项
+
+- 本 commit **未**实现机器自动 Pass 1 backfill（schema §5 描述的 ~80% regex 抽取转换）。Backfill 仍是手工 LLM 单批 + 人工 Pass 2 兜底路径。后续 v0.2+ 可补一个 `scripts/backfill_deferred_pass1.py` 把 schema §5 Pass 1 逻辑落地，`/harness-zh:upgrade-deferred-work` 选项 C 升级为半自动。
+- `grep_deferred_buckets.sh` / `grep_deferred_status.sh` / `grep_pending_deferred_for_story.sh` 当前**不**感知 mode；跑 advisory 模式时三脚本仍按 v1 子集输出，无 WARN 提示"还有 K 条 legacy 条目未计入"。这是 known gap；solo-dev 自己在脑里把"§1 总账"理解为子集就够，正式补 WARN 是 v0.2+ 的小品改。
+- detector 的 `v1_pct >= 0.95` 阈值是经验值（容忍 5% 单条遗漏），如发现真实项目里 1-2 条 typo 反复触发交互可调到 0.9。
+
+---
+
+## v0.1.12 — 2026-05-07 — harness-commit.py / harness-state.py CJK 路径 quotepath + utf-8 decode-safe（i18n 续修）
+
+### 触发
+
+solo-dev 在 `~/HaiAn MCTS` 升级到 v0.1.11（CJK story key regex 修好）后跑 `/harness-zh:run`，stage 1 commit 仍 halt：
+
+```
+STATUS=halt
+REASON=non-artifact path in stage 1 which forbids project code
+FORBIDDEN="_bmad-output/implementation-artifacts/1-1-\345\220\216\347\253\257\345\267\245\347\250\213\350\204\232\346\211\213\346\236\266\344\270\216\345\205\254\345\205\261\345\237\272\347\241\200\350\256\276\346\226\275.md"
+```
+
+### 根因
+
+两个独立 i18n bug，叠加发作：
+
+1. **`git status --porcelain` / `git diff --stat` / `git ls-files` 默认 quotepath=true** — 输出对非 ASCII 路径做 C-style octal 转义并加双引号包裹（`"_bmad-output/.../1-1-\345\220..."`）。harness-commit.py 的 `classify()` 把这种带引号 + 转义的 path 拿去匹配 `<KEY>.md` artifact pattern，全数 miss，故 stage 1 把 story md 误判为"项目代码"（黑名单）→ halt。harness-state.py 三处 `git status --porcelain` + 一处 `git diff --stat` 同样路径数据全部受污染，影响 `compute_state` 的 worktree_clean / 落地清单分组 / resume prompt artifact 计数。
+
+2. **`subprocess.run(..., text=True)` 默认 utf-8 strict 解码** — `git diff --cached --stat` 把长文件名按列宽截断展示（`...3-2-用户管理-rbac... | 12 +-`），可能在 CJK 多字节序列中段切断。strict 解码遇到孤立首字节抛 `UnicodeDecodeError`，stage 1 在 sanity-check 段崩。
+
+CJK story key 项目（v0.1.11 修好后才暴露，因为之前 sprint-status.py 直接过滤掉看不到 story）必踩；ASCII 项目（如 Aegis）从未遇到。
+
+### 修
+
+集中到 `run()` helper（`harness-commit.py:1234` + `harness-state.py:79`），双 fix 一并注入：
+
+```python
+def run(cmd):
+    if cmd and cmd[0] == "git" and (len(cmd) < 3 or cmd[1] != "-c" or not cmd[2].startswith("core.quotepath")):
+        cmd = ["git", "-c", "core.quotepath=false"] + list(cmd[1:])
+    return subprocess.run(cmd, capture_output=True, text=True, errors="replace", check=False)
+```
+
+- (a) 幂等检测后 `-c core.quotepath=false` 注入；所有 git 子调用统吃（status / diff / ls-files / log / rev-parse 全部）
+- (b) `errors="replace"` 让 stat 截断的半个 UTF-8 字节降级成 U+FFFD 替换符，不阻流；stat 输出本就是人类摘要，replacement char 无害
+
+`git-hooks/pre-commit` 同时加 `GIT="git -c core.quotepath=false"` 别名，gate ① / ② 防御性挂上（当前 trigger 都是 ASCII 不直接出问题，但任何未来 CJK 命名的 retro 文件 `4-X-中文复盘.md` 会立即踩坑——零成本补丁）。
+
+附带 ship `templates/deferred-work.md.template` + init §A.3.b 投放——`_bmad-output/implementation-artifacts/` 父目录存在但 `deferred-work.md` 不存在时从 template cp 一份。消除 main agent 凭印象造非 schema-v1 placeholder 被 gate ② 拒的整类问题（典型症状：用 `[severity:medium]` 这种废弃 tag）。
+
+### 验证
+
+`run()` helper 单测：注入 git 子调用 + 不重复注入已设的 `-c core.quotepath=...` + 不动 non-git 命令；`errors='replace'` 实际下沉到 subprocess kwargs。
+
+```
+PASS: quotepath injection works for git, idempotent, skips non-git
+PASS: run() now passes errors=replace + quotepath
+```
+
+CJK 路径 stage 1 实跑（在 HaiAn MCTS 项目 hotfix 版上验证过）：commit 通过、artifact 正确分类、stat 截断不再崩。
+
+### 注意
+
+- 这是 v0.1.11 i18n 修复的续集——sprint-status 解 CJK key 后，下游 git path I/O 是第二层雷。已审计 plugin 内全部 `subprocess.run(["git", ...])` 调用（harness-commit.py / harness-state.py 各一处 helper 集中托底；harness_config.py、sprint-status.py 等其他脚本不直接 shell out 到 git，无关）。短期内应该排完了。
+- `git-hooks/pre-commit` 的 `GIT="git -c ..."` 是 bash 字符串展开模式，不是 array — 当前所有调用都是裸的 `$GIT diff ...` 形式，无 quoting 边界问题；如未来加更复杂 hook gate 用到含空格参数，记得切 array `GIT=(git -c core.quotepath=false)` + `"${GIT[@]}"`。
+- 升级后请检查项目侧 `.claude/harness/scripts/` 是否有手工 hotfix（`.claude/` 通常 gitignored）；`/harness-zh:update` 会备份成 `.bak.<TS>` 再覆盖，diff 确认 plugin 新版语义覆盖了 hotfix 之后再清 .bak。
+
+Bump 0.1.11 → 0.1.12。
+
+---
+
+## v0.1.11 — 2026-05-07 — sprint-status.py CJK story key 解析（i18n 真 bug 修复）
+
+### 触发
+
+solo-dev 在 `~/HaiAn MCTS` 跑 `/harness-zh:run --epic 1`，启动时 `python3 sprint-status.py count` 返回 `0/0`、`next` 退出 1，但 `_bmad-output/implementation-artifacts/sprint-status.yaml` 实际有 80+ 条 backlog story。
+
+### 根因
+
+`sprint-status.py:61` 的 `STORY_KEY_RE` 正则 `^\s+([A-Za-z0-9_\-]+):\s*(\S+)\s*(?:#.*)?$` 写死 ASCII 字符集，但 BMad 中文模式（用户配置 `communication_language: Chinese / document_output_language: Chinese`）产出的 story key 全是 CJK 短语：
+
+```yaml
+development_status:
+  epic-1: backlog
+  1-1-后端工程脚手架与公共基础设施: backlog        ← 不匹配 ASCII regex
+  1-2-前端工程脚手架-主题-token-与全局布局: backlog ← 同上
+  ...
+```
+
+整个 80+ 条 story 被静默过滤，count→0/0 / next→exit1 / epic-of/find-by-status 等所有 sprint-status.py 命令链路全失效。
+
+`harness-state.py` 通过 `python3 sprint-status.py status <key>` shell out 读状态，连带受影响。`harness-commit.py` 等其他脚本用 `re.escape(key)` 处理 key，无 ASCII 假设，未受影响。
+
+### 修
+
+`scripts/sprint-status.py:61` 把 `[A-Za-z0-9_\-]+` 替换成 `[^\s:#]+`（接受任何非空白/非冒号/非注释起点字符 — yaml 语法本就禁止 unquoted mapping key 含这三类，CJK / accents / 任何 Unicode 自动通过）：
+
+```python
+STORY_KEY_RE = re.compile(r"^\s+([^\s:#]+):\s*(\S+)\s*(?:#.*)?$")
+```
+
+加注释解释为什么用否定字符类（yaml 语法约束 + i18n 友好）。整个 regex 仍只在 `development_status:` 块内匹配（`_iter_dev_status` 的 `in_block` 状态机不变），不会误吃 yaml 其他段（如 `retro_action_items.<code>.status`）。
+
+### 验证
+
+复制修过的脚本到 HaiAn MCTS 项目侧 `.claude/harness/scripts/sprint-status.py`，重跑：
+
+| 命令 | 修前 | 修后 |
+|---|---|---|
+| `count` | `0/0`（全过滤） | `62/62` ✓ |
+| `next` | exit 1 | `1-1-后端工程脚手架与公共基础设施` exit 0 ✓ |
+| `epic-of <CJK key>` | `key 不是合法 story key` | `1` ✓ |
+
+### 注意
+
+这是 harness 第一个 i18n 真 bug。原 Aegis 项目用英文 story key（`5-9-forensic-evidence-destroy-workflow-dual-control` 这种），从未踩过这个坑。BMad 中文产出场景属于 plugin 化后扩大用户群带来的覆盖面变化，未来类似 ASCII 假设需逐个排雷（已审计 harness-commit.py / harness-state.py 无此问题；其他 .sh / .py 脚本的 regex 多数针对 chore filename / action item code 等 design-by-letter 场景，非 user-data，无需修）。
+
+Bump 0.1.10 → 0.1.11。
+
+---
+
+## v0.1.10 — 2026-05-06 — Orphaned cache 过滤 + §A.5 单一权威源化（修 LLM hallucinate "需要 split form"）
+
+### 触发
+
+solo-dev 在 `~/HaiAn MCTS`（prd.md ✓ + architecture.md 单文件 ✓ + sprint-status.yaml ✓）跑 v0.1.9 `/harness-zh:init`，**直接跑 helper 脚本** `bash run_sprint_init_check_prereq.sh` 输出 `all_present: true exit 0`，但 LLM **没真跑 helper**，自己按 §A.5 inline bash 字面意义 + §A.7 文案历史模式 hallucinate "需要 split 成 architecture/tech-stack.md + repo-structure.md"，错误进 BMAD_READY=0 早结束。
+
+同时报告中提到：§A.0 plugin 路径探测命中了 orphaned 0.1.2 缓存目录（带 `.orphaned_at` marker），LLM 从 stale 副本部署了 0.1.2 内容 — 需要手动切到 0.1.9 活跃路径。
+
+### 根因
+
+1. **§A.0 探测漏洞**：`find` + `plugin.json` 扫描没有过滤 Claude Code 在版本切换时留下的 `.orphaned_at` 标记目录，"命中即用"会拿到 stale 内容
+2. **§A.5 双源结构**：表格 + inline bash 同时存在，LLM 倾向于按"自己理解"判断而不实际执行 bash → 字面读了"3 必需 + 1 可选"但 hallucinate 出"sharded form 是真正的 well-known"
+
+### 修
+
+#### §A.0 加 orphaned 过滤
+
+`commands/init.md` §A.0 plugin 路径探测两处（cache 优先 + fallback）都加 `[ -f "$candidate/.orphaned_at" ] && continue`，跳过 stale 副本。Cache 目录可能同时存在多个版本（如 0.1.0 + 0.1.2 + 0.1.7 + 0.1.9），其中只有最新一个无 marker；探测器现在自动跳过历史版本。
+
+#### §A.5 重构为"helper 是单一权威源"
+
+之前 §A.5 既有"接受形式"表格又有 inline bash detection — LLM 容易"演奏"bash（按语义分析而不实际跑）。改成：
+
+- §A.5 顶部明确 **"调 helper 脚本，按 exit code + JSON 决定流程"**
+- 删 inline bash detection（不再是"参考实现"，避免 LLM 误用）
+- 表格降级为"供理解的 reference"，明确 **"绝对不要用此表自己重写检测，调 helper 即可"**
+- 加 HELPER_EXIT → BMAD_READY 映射表（0/2/3/其他）
+- §A.7 早结束文案改成 `$HELPER_GUIDANCE`（直接贴 helper 的 stderr 引导段），不再重写
+
+### 注意
+
+- helper 脚本 `run_sprint_init_check_prereq.sh` 本身从 v0.1.8 起就 dual-form 正确；v0.1.10 是把 init.md §A.5 / §A.7 也对齐到"helper 唯一权威"模型，避免 LLM 绕过 helper 自己 hallucinate
+- HaiAn MCTS 实测 helper 输出：`{"all_present": true, "missing_planning": [], "missing_sprint_status": false, "optional_missing": ["product-brief*.md (可选 — 缺则字段 1/15 从 prd.md 兜底)"]}` exit 0 — 应该进 §0+ 字段提取（product-brief 缺仅 WARN）
+
+---
+
+## v0.1.9 — 2026-05-06 — 跨整个 plugin tree 全量审计 dual-form (sharded / 单文件) 兼容性
+
+### 触发
+
+solo-dev 提醒"prd / ux-design / architecture 都存在分片和不分片，都兼容了吗"。v0.1.3-v0.1.8 已修 §A.5 detection + §2 字段表 + helper script，但全量审计发现还有几处遗漏。
+
+### 全量审计结果
+
+| 文件 | 引用 BMad sharded 路径？ | 修法 |
+|---|---|---|
+| `commands/init.md` §A.5 | ✓ 已 dual-form（v0.1.3-v0.1.8） | — |
+| `commands/init.md` §2 字段表 | ✓ 已 dual-form（前 6 行；后续行 LLM 按表前置说明 fallback） | — |
+| `scripts/run_sprint_init_check_prereq.sh` | ✓ 已 dual-form（v0.1.8） | — |
+| `architecture.md` §十一 (plugin 设计文档) | ✗ MUST-EXIST 表 + 字段 mapping 表都写 sharded 形式为唯一 | **修：表格扩成 dual-form；加 ux-design / epics 未引用的说明段** |
+| `scripts/run_retro_self_audit.sh` | ✗ 6 处 hardcode sharded 子文件路径（A5/A8/B4/B9/C2/C6） | **修：加 `find_bmad_doc` helper + 6 处替换** |
+| `scripts/run_sprint_init_test.sh` | ✗ test fixture 用 sharded + assert product-brief MUST-EXIST | 暂留（脚本是 self-test，用户不跑；下版本统一更新） |
+| `prompt-templates/data-visibility-review-template.md` | ⚠️ 引用 sharded 子文件 | 暂留（template 是项目特定，clone 时 solo-dev 自决） |
+
+### ux-design 和 epics
+
+`grep -r 'ux-design\|epics'` 在 plugin 任何运行时文件（commands/scripts/prompt-suffixes/templates）**均无命中**。harness-zh 当前不读 ux-design / epics 任何形式（信息从 sprint-status.yaml + prd.md + architecture.md 间接获取）。所以"兼容 vs 不兼容"对 ux-design / epics 无意义。
+
+将来若加 hard ref（比如 story creation 注入 UX 上下文），需同步在 §A.5 加可选检测 + §2 加字段映射 + 用 `find_bmad_doc` 风格 helper。本版只在 architecture.md §十一 加说明段记录这个决策。
+
+### 修
+
+| 位置 | 改动 |
+|---|---|
+| `architecture.md` §十一 prereq gate 表 | 4 行 hardcoded MUST-EXIST → 4 行概念产物（必需/可选 + 单文件/sharded 接受形式） |
+| `architecture.md` §十一 14 字段 mapping 表 | source 列加"或 architecture.md §section"形式作单文件 channel；加表头说明 |
+| `architecture.md` §十一 加说明段 | ux-design / epics 当前未引用；如未来加引用需走同样的 dual-form pattern |
+| `scripts/run_retro_self_audit.sh` | 加 `find_bmad_doc` helper（顶部，sharded → 单文件 fallback 的通用解析器）；6 处 check 函数（check_A5 / A8 / B4 / B9 / C2 / C6）替换 hardcode 路径为 helper 调用 |
+
+### 注意
+
+- `find_bmad_doc` 单文件回退是近似（grep 跨整个父文件而非仅章节），但 retro audit grep 模式都很特异（"NFR52 baseline" / "RBAC 业务层数据可见性收敛 pattern" 等），跨章节假阳性风险低
+- `run_retro_self_audit.sh` 头部 banner 已标 PROJECT-SPECIFIC（A1..C12 是 Aegis 实际 retro action items），新项目本就要重写 check 函数体；本版只是把"如果你保留这套 scaffolding 但项目用单文件 BMad"场景从 silent 失效升级为正确兼容
+
+---
+
+## v0.1.8 — 2026-05-06 — product-brief 降级可选 + 单文件 architecture.md 表述清晰化
+
+### 触发
+
+solo-dev 在 `~/HaiAn MCTS`（已跑过 BMad，有 prd.md + architecture.md 单文件 + sprint-status.yaml）跑 `/harness-zh:init`，被错报"BMad 未齐"早结束：
+
+1. **product-brief.md 误判**：项目没跑过 `/bmad-product-brief`（BMad 上游 product-brief 本就是可选环节），但我把它列为 MUST-EXIST hard fail，导致 BMAD_READY=0
+2. **architecture.md 单文件 LLM 误读**：spec 里写"单文件或 sharded 都接受"，但 LLM 仍报告"需要 split form" —— spec 表述偏 sharded 形式作为"主选"，单文件作为"fallback"，措辞误导
+
+### 修
+
+#### product-brief 降级为可选
+
+`commands/init.md` §A.5 + `scripts/run_sprint_init_check_prereq.sh`：
+
+- product-brief 从 MUST-EXIST 移到 NICE-TO-HAVE 类别
+- 缺失只进 `OPTIONAL_MISSING` 数组（WARN 不 fail），不影响 BMAD_READY
+- helper JSON 输出加 `optional_missing` 字段
+- §A.7 早结束文案分两段：【必需缺失】（阻流）+【可选缺失】（仅信息）
+- §2 字段 1（project_display_name）已有"product-brief.md 或 prd.md"双源，缺 product-brief 自然 fallback 到 prd.md 提取项目名
+
+#### 单文件 vs sharded 表述对等
+
+`commands/init.md` §A.5 表 + §2 字段表前置说明：
+
+- 明确写 "**单文件 / sharded 是 BMad 上游的两种合法布局**"（不是"主选/次选"）
+- §2 表前置说明加粗 "**两种形式都是一等公民，没有'主选'和'次选'之分**"
+- 单文件读取协议：用 Read 读全文按章节标题（"Tech Stack" / "Repo Structure" / "NFRs" / "i18n" / "Proxy" / "Testing Strategy"）grep 段落
+- BMad 默认产单文件（不跑 `/bmad-shard-doc` 就一直是单文件） — 这是 majority case，要求 split 等于强迫用户额外动作
+
+### 注意
+
+升到 v0.1.8 后跑 init 在 `~/HaiAn MCTS` 应该能进 §0+ 字段提取（3 必需都齐：prd ✓ architecture ✓ sprint-status ✓；product-brief 缺会 WARN 但不阻）。
+
+---
+
+## v0.1.7 — 2026-05-06 — §A.4 git hook 安装加非 git 仓库自适应（AskUserQuestion 半自动 init）
+
+### 触发
+
+solo-dev 在 `~/plugin-test`（非 git 目录）跑 `/harness-zh:init`，§A.4 install_git_hooks.sh 退出 128 (fatal: not a git repository)，被 LLM 智能降级为 WARN 通过。但 solo-dev 反馈"是不是也需要自动帮忙 init 一下"。
+
+### 设计权衡
+
+`git init` 完全无脑自动有 4 类 case 需要处理：
+
+| 场景 | 自动 init 是否安全 |
+|---|---|
+| 已在 git 仓库（含 parent 有 .git/ 的子目录） | N/A — 不该 init |
+| 干净空目录 / 全新项目 | ✓ 合理 |
+| solo-dev 错进了 scratch 目录 | ✗ 不该悄悄 init |
+| 嵌套 — parent 已是 git 仓库 | ✗ 嵌套 repo 是 anti-pattern |
+
+直接 silent auto-init blast radius 不为零（场景 3、4），不能这么做。
+
+### 修
+
+`commands/init.md` §A.4 重构成 3 个分支：
+
+- **§A.4.a** `git rev-parse --is-inside-work-tree` 退出 0（已在 git 工作树）→ 直接装 hook（与 v0.1.6 行为相同）
+- **§A.4.b** 退出非 0（不在任何 git 仓库内）→ 用 `AskUserQuestion` 询问 solo-dev：
+  - 选 Yes → `git init` + 装 hook
+  - 选 No → WARN 跳过，提示"手工 git init 后跑 install_git_hooks.sh"
+- **§A.4.c** paranoia 防护：嵌套 repo 触发不该出现的状态时 halt
+
+### 注意
+
+- `git rev-parse --is-inside-work-tree` 检测同时覆盖 "当前目录是 repo 根" + "当前目录是 repo 子目录"；不需要单独 check parent
+- AskUserQuestion 是 LLM 调用的 tool，markdown command 直接 instruct LLM 调用即可（不需要 interactive shell）
+- 选 No 时退出码 0（成功），仅 WARN — 与现有"hook 装失败不阻断主流程"原则一致
+
+---
+
+## v0.1.6 — 2026-05-06 — BMad 安装文档基于实测更新（5 模块 + 66 skills + 4 输出目录）
+
+### 触发
+
+solo-dev 在 `~/HaiAn MCTS` 跑了一遍 `npx bmad-method install` 把实际交互流程贴回来。对照之前的 README + helper 文案，发现几处不准：
+
+1. **模块数从 4 改 5** — agent 调研漏了 `BMad Core` 模块（v6.6.0），它跟 BMM 是分开的两个模块（`_bmad/core/config.yaml` + `_bmad/bmm/config.yaml`）。`--modules bmm,bmb,tea,cis` 漏 core，应该是 `core,bmm,bmb,cis,tea`。
+2. **Skills 数从"~30"改"~66"** — 实测 `claude-code configured: 66 skills → .claude/skills`。
+3. **输出目录有 4 个**（不是 2 个） — installer 实际创建：
+   - `_bmad-output/planning-artifacts/`
+   - `_bmad-output/implementation-artifacts/`
+   - `_bmad-output/test-artifacts/`（TEA 模块产物落点 — 之前没提）
+   - `docs/`（project knowledge）
+4. **legacy 提醒** — installer 检测旧 `~/.codex/prompts/bmad-*.md` 并打印 `rm -rf` 清理命令；README 加一段说明。
+5. **模块版本号** — README 里加版本快照（BMM v6.6.0 / BMB v1.7.0 / CIS v0.2.0（早期）/ TEA v1.15.1）。
+6. **non-interactive 安装命令** — `--directory` + `--yes` flag 加上才能跑 CI 模式。
+
+### 修
+
+| 位置 | 改动 |
+|---|---|
+| `README.md` BMad 段模块表 | 4 → 5 模块；加 BMad Core 行（v6.6.0）；CIS 标早期版本 v0.2 |
+| `README.md` install 段 | 重写：重点放在**交互式安装的提示与默认回答对照表**（用户实测的 8 个交互 prompt 逐条列出推荐回答）；非交互式版降级为附加的"一键脚本"（CI 用）|
+| `README.md` 删 legacy 清理段 | 老版 BMad 残留是 BMad installer 自己提示用户清理的事，与 harness-zh 无关，删 |
+| `commands/init.md` §A.7 早结束文案 | install 命令同步：`npx bmad-method install` 主推；非交互一键脚本作 alt |
+| `scripts/run_sprint_init_check_prereq.sh` stderr footer | 同上 |
+
+### 注意
+
+- 交互安装时**必须选 Claude Code 作为 integration**，否则 skills 不会写到 `.claude/skills/`，harness-zh 后续 `/bmad-*` 命令调度会失败
+- CIS v0.2.0 是 early 版本（README 标"early"），ABI 可能未稳定；harness-zh 当前不依赖 CIS 命令（主要 brainstorming / 设计思维类，非 sprint loop 必需），降级为 Recommended 而非 Required
+
+---
+
+## v0.1.5 — 2026-05-06 — 删除多余的 `/bmad:workflow-init` 引导
+
+### 触发
+
+solo-dev 质疑 v0.1.3 / v0.1.4 文案里 "首次装完 BMad 还要跑 `/bmad:workflow-init` 来初始化 `_bmad/` 配置目录"这句话的必要性。
+
+### 根因
+
+v0.1.3 调研时 agent 看到 `/bmad:workflow-init` 命令描述写"executing Workflow Init command to initialize BMAD Method in the current project"，**字面**理解为"装完后首次必跑"。但实际核实（Aegis 项目侧 `_bmad/bmm/config.yaml` 头部注释 "Generated by BMAD installer / Version: 6.6.0 / Date: ..."）：
+
+- `_bmad/` 配置目录是 **`npx bmad-method install` 自己生成的**（installer 内部脚本写）
+- Aegis 没单独跑过 `/bmad:workflow-init`，BMad 命令照常工作
+- `/bmad:workflow-init` 这个命令大概是给"项目已有 BMad skills 但缺 `_bmad/` 配置"的特殊场景用（如 clone 了别人项目但没 install 过），**不是**标准流程必要步骤
+
+### 修
+
+| 位置 | 改动 |
+|---|---|
+| `commands/init.md` §A.7 早结束文案 | 删 `/bmad:workflow-init` 行；改成"installer 会自动建 _bmad/ 配置目录，无需额外 init 步骤" |
+| `scripts/run_sprint_init_check_prereq.sh` stderr footer | 同上 |
+| `README.md` BMad install 段 | 删 workflow-init 子节；明确 installer 自动建配置 |
+
+### 注意
+
+如果 solo-dev 实际遇到 "BMad not initialized" 类错误（罕见 — 通常只在 clone/copy 项目但没 install 时），手动跑 `/bmad:workflow-init` 仍是有效兜底；但**不是**标准首次流程。
+
+---
+
+## v0.1.4 — 2026-05-06 — BMad 命令名改回 hyphen 形式（修 v0.1.3 过激改动）
+
+### 触发
+
+solo-dev 反馈 v0.1.3 把所有 BMad 命令改成 colon 形式（`/bmad:prd` 等）"好像不对" —— 实际 hyphen 形式（`/bmad-create-prd`）和 colon 形式（`/bmad:prd`）在用户环境**都存在且都可用**，他**通常用 hyphen**。
+
+### 根因
+
+v0.1.3 调研时 agent 报告 "上游用纯冒号"，但只看了 BMad 上游 README 的 docs 描述，没核实**实际装到本地后的命令注册**。两形式同时存在的实情：
+
+- **hyphen 形式**（`/bmad-<name>`）= 直接对应 `.claude/skills/bmad-<name>/` 的 skill 名（`npx bmad-method install --tools claude-code` 写的就是这种）
+- **colon 形式**（`/bmad:<name>`）= BMad workflow 别名 / namespace 命令；多数 PM 命令同时注册两种
+- 部分命令名形式不同（`/bmad-create-prd` vs `/bmad:prd`、`/bmad-create-architecture` vs `/bmad:architecture` —— hyphen 带 "create-" 前缀，colon 没有）
+- 较新 / meta 命令（`/bmad:workflow-init`、`/bmad:research`、`/bmad:tech-spec`、`/bmad:brainstorm`、`/bmad:create-workflow` 等）**仅** colon 形式
+
+### 修
+
+| 位置 | 改动 |
+|---|---|
+| `commands/init.md` §A.5 表格"来源命令"列 | colon → hyphen + 加两形式等价说明段 |
+| `commands/init.md` §A.5 detection 块的 MISSING_LABELS hint | colon → hyphen |
+| `commands/init.md` §A.7 早结束文案 | 4 个 PM 命令改 hyphen + 加 "命令名也可写 /bmad:xxx" 说明；保留 `/bmad:workflow-init` 标注"只有冒号形式" |
+| `commands/init.md` §1 描述 | 同步 |
+| `scripts/run_sprint_init_check_prereq.sh` MISSING_GUIDANCE 数组 | colon → hyphen；末尾 stderr 加两形式等价注脚 |
+| `README.md` BMad 段命令清单 | colon → hyphen + 一行说明 colon 别名也可 |
+
+### 注意
+
+§A.5 表格"来源命令"列示例（修后）：
+- product-brief → `/bmad-product-brief`
+- prd → `/bmad-create-prd`（注意 hyphen 形式带 "create-" 前缀）
+- architecture → `/bmad-create-architecture`（同上）
+- sprint-planning → `/bmad-sprint-planning`
+
+未来若 solo-dev 改习惯 colon 形式，重跑一次本档全局 sed 即可。
+
+---
+
+## v0.1.3 — 2026-05-06 — 对齐 BMad-METHOD 上游（命令名 + 路径）
+
+### 触发
+
+`/harness-zh:init` 早结束文案里硬编码了：
+
+- `/bmad-product-brief`（连字符 — 旧命令命名约定）
+- `_bmad-output/planning-artifacts/architecture/tech-stack.md` + `repo-structure.md`（sharded 路径）
+- 跑 BMad install 没指引
+
+但 BMad-METHOD 上游（github.com/bmad-code-org/BMAD-METHOD）当前实际：
+
+- 命令统一冒号形式：`/bmad:product-brief` / `/bmad:prd` / `/bmad:architecture` 等
+- architecture 默认产**单文件** `architecture.md`（含 tech-stack / repo-structure / nfrs / i18n / proxy 等章节）；只有跑过 `/bmad:shard-doc` 才切片到 subdir
+- product-brief 文件名带项目后缀（`product-brief-{project_name}.md`）
+- 5 模块：BMM / BMB / TEA / CIS / BMGD，前 4 个 harness-zh 都用得上，BMGD（game dev）不需要
+- 装法：`npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code` + `/bmad:workflow-init`
+
+### 修
+
+| 位置 | 改动 |
+|---|---|
+| `commands/init.md` §A.5 | 检测改"4 类概念产物，单文件或 sharded 任一形式接受"；MISSING 列表精简到产物级别（不逐文件） |
+| `commands/init.md` §A.7 早结束文案 | `/bmad-` → `/bmad:`；产物路径用单文件名（默认形式）；加 `npx bmad-method install` + `/bmad:workflow-init` 引导 |
+| `commands/init.md` §1 描述 + MUST-EXIST 文本清单 | 同步上述变化 |
+| `commands/init.md` §2 字段提取表 | 加前置说明（"sharded 路径优先 → fallback 读单文件章节"）；前 6 行 source 列加"或 architecture.md §section"备选 |
+| `scripts/run_sprint_init_check_prereq.sh` | PLANNING_CHECKS 数组 → 4 个内联 if-else 块（支持 glob / 单文件 OR sharded 目录）；GUIDANCE 命令名全冒号；末尾加"首次使用 BMad" install + workflow-init 提示 |
+| `README.md` BMad prereq 段 | 增加 5 模块对照表（BMGD 标 "Skip"）；改 install 命令为 `npx bmad-method install --modules bmm,bmb,tea,cis --tools claude-code`；增加 `/bmad:workflow-init` 首次步骤 |
+
+### 注意
+
+§2 字段提取表只更新了前 6 行的 source 列（加 "或 architecture.md §section" 备选）；后 10 行（i18n / nfrs / proxy / project_context / fullstack_review_steps）仍按 sharded 路径写但 LLM 在 §2 跑提取时会按表前的"sharded 优先 → fallback 单文件章节"自适应，不阻流。
+
+---
+
+## v0.1.2 — 2026-05-06 — 跨 marketplace 依赖语法修复
+
+### 触发场景
+
+solo-dev 跑 `/plugin install harness-zh@my-cc-plugin` 报错：
+
+> Plugin "harness-zh@my-cc-plugin" is already installed — 1 dependency still unresolved: codex@my-cc-plugin.
+
+### 根因
+
+`plugin.json` 的 `dependencies` 用了 `{name: "codex", version: "*"}` 简写。Claude Code 默认把 `{name: "codex"}` 解析为 `codex@<当前 marketplace>` —— 即 `codex@my-cc-plugin`。但 codex 实际在 `openai-codex` marketplace，my-cc-plugin 里没有 codex plugin，所以 dep 永远 unresolved。
+
+### 修法
+
+**plugin.json** 用对象格式显式指定 marketplace：
+
+```json
+"dependencies": [
+  { "name": "codex", "marketplace": "openai-codex", "version": "*" }
+]
+```
+
+**marketplace.json** 加白名单（跨 marketplace 依赖默认禁，必须根 marketplace 显式 opt-in）：
+
+```json
+"allowCrossMarketplaceDependenciesOn": ["openai-codex"]
+```
+
+### 注意
+
+用户装 harness-zh 前必须已 `claude plugin marketplace add openai/codex-plugin-cc`（让 Claude Code 知道 openai-codex marketplace 存在）。README 已列为前置；此处用 plugin.json 硬声明做兜底（自动检查 / 报错引导）。
+
+---
+
+## v0.1.1 — 2026-05-06 — PLUGIN_ROOT 探测修复（首次装载暴露的 bug）
+
+1 commit（`38c799b`）：
+
+- **`38c799b`** — `/harness-zh:init` §A.0 + `/harness-zh:update` §1 的 fallback 探测改用 `plugin.json` 扫描，替代失效的 `find -name harness-zh`
+
+### 触发场景
+
+solo-dev 首次在 `~/plugin-test` 跑 `/plugin install harness-zh@my-cc-plugin` 后，未跑 `/harness-zh:init`（先误以为 install 会自动部署）。但更深一层 bug：即便跑 init，§A.0 的 `find ~/.claude -type d -name harness-zh` fallback 在 Claude Code **实际**的安装布局下找到的是版本子目录的**父级**（`~/.claude/plugins/cache/my-cc-plugin/harness-zh/`），里面没 commands/ scripts/ 等 — 实际文件在 `harness-zh/0.1.0/` 下。
+
+### 修法
+
+两遍扫 `plugin.json`：
+1. 第一遍优先 `cache/<marketplace>/<plugin>/<version>/`（官方版本化安装路径）
+2. 第二遍 fallback 到任意命中（含 `marketplaces/<...>/plugins/<plugin>/` git-clone 副本）
+
+匹配条件：plugin.json 内含 `"name": "harness-zh"`。
+
+### 验证
+
+在 zhenhua 实际安装路径上跑通 — 解析到 `/Users/zhenhuazhu/.claude/plugins/cache/my-cc-plugin/harness-zh/0.1.0`，含 commands/ 和 41 个 scripts。
+
+---
+
+## v0.1.0 — 2026-05-06 — 初始 plugin 提取
+
+5 commits（commit `65148b1` → `2f782ae`）：
+
+- **`65148b1`** — 把 Aegis 项目的 `.claude/harness/` + `.claude/commands/` 全量 copy 到 `my-cc-plugin/plugins/harness/`，加 `marketplace.json` + `plugin.json`（v0.1.0 scaffolding）
+- **`0d82f82`** — 重命名 plugin 命名空间 `harness` → `harness-zh`（避通用名冲突）；commands 文件 reshuffle：
+  - `run-sprint.md` → `run.md` (`/harness-zh:run`)
+  - `run-test-sprint.md` → `run-test.md` (`/harness-zh:run-test`)
+  - `run-sprint-init.md` → `init.md` (`/harness-zh:init`)
+- **`6fd3a4e`** — `/harness-zh:init` 头部加 §A Plugin Asset Deployment 段：
+  - §A.0 探测 `${CLAUDE_PLUGIN_ROOT}` / `find ~/.claude` fallback
+  - §A.1-§A.2 mkdir + cmp/backup/overwrite 资产部署
+  - §A.3 仅当不存在时投放 `harness-project-config.yaml`
+  - §A.4 跑 `install_git_hooks.sh`
+  - §A.5 BMad artifacts 检测 → 决定是否进 §0+ 字段提取
+  - 新增 `/harness-zh:update` 命令（仅刷资产，不动 yaml，不跑 BMad 提取）
+- **`1662600`** — `harness-project-config.yaml.template` 全清空（让 init merge 模式能填）+ 修漏掉的 `.yaml.template` sed（前一次重命名 find 过滤只匹配 `.yaml`）
+- **`2f782ae`** — `/init` §A.2 + `/update` §3 用 `find` + process substitution 替代 `shopt -s nullglob` + glob（兼容 zsh — 不会因空子目录在默认 NOMATCH 下中止脚本）
+
+### 设计要点
+
+- **Plugin 是 asset deployer，不是 runtime container**：runtime 仍用 `.claude/harness/` project-resident 路径，因为：
+  - git pre-commit hooks 在 git 上下文跑（非 Claude Code），`${CLAUDE_PLUGIN_ROOT}` 不可用
+  - markdown commands 的 bash 块（per Anthropic docs）不保证注入 `${CLAUDE_PLUGIN_ROOT}`
+  - 强行用 plugin-internal 路径会撞这两道墙
+- **Asset deployment 幂等**：cmp 比较内容；相同 unchanged，不同 backup → overwrite（沿用 `install_git_hooks.sh` 模式）
+- **yaml 永不被资产投递覆盖**：保 solo-dev 已填的 14 字段配置；只在缺失时从 template 投放
+- **BMad ready 分叉**：init §A.5 检测 `_bmad-output/planning-artifacts/{product-brief,prd,architecture/{tech-stack,repo-structure}}.md` + `_bmad-output/implementation-artifacts/sprint-status.yaml` 都齐 → 进 §0+ 字段提取；缺则早结束 + 引导用户跑 BMad workflow
+
+### 已知约束 / 待验证
+
+- **依赖 `codex` plugin**（plugin.json 已声明）；缺则 Claude Code 装 harness-zh 时 halt
+- **依赖 BMad workflow toolset**（**未声明 plugin dep**，因为 BMad 在多数环境是项目 `.claude/skills/bmad-*` 形式而非 plugin）；README 列为前置要求
+- **未做真实 Claude Code 装载测试**：`/plugin marketplace add` + `/plugin install` + `/harness-zh:init` 端到端验证待 solo-dev 在干净项目跑
+- **smoke-tested**：§A 部署逻辑在 zsh 临时目录跑通三轮（fresh / 幂等 / drift 恢复），含空子目录边界场景

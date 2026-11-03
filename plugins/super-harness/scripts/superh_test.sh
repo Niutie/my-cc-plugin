@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # superh_test.sh — super-harness 调度层回归测试（不调用真实 claude）。
 #
-# 在临时目录建一个伪下游项目：harness-zh 脚本以「未入库 + gitignore」方式部署
+# 在临时目录建一个伪下游项目：harness 脚本以「未入库 + gitignore」方式部署
 # （覆盖 copy_paths 补齐路径），sprint-status 用 BMad 多行块格式带 depends_on。
 # 用一个假的 claude 可执行文件扮演 worker：读 stdin、在 lane worktree 里模拟
 # bmad-build-auto 的提交（含 sprint-status / deferred-work 改动）、打 tag、调用
@@ -15,7 +15,7 @@
 #   C*  真代码冲突 → exit 3 → 人工解决后 integrate 续跑
 #   X*  mark / cleanup / abandon
 #
-# 用法：bash superh_test.sh   （需要 harness-zh 源码在 ../../harness-zh）
+# 用法：bash superh_test.sh   （从 plugin 源码树运行，脚本取同目录的 harness 脚本）
 
 # No pipefail: assertions are `echo "$OUT" | grep -q ...`, and grep -q exits on the
 # first match — the writer may then take SIGPIPE, which pipefail would turn into a
@@ -24,7 +24,6 @@ set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$HERE/.." && pwd)"
-HZ_DIR="$(cd "$PLUGIN_DIR/../harness-zh" && pwd)"
 
 PASS=0
 FAIL=0
@@ -32,7 +31,9 @@ ok()  { PASS=$((PASS + 1)); echo "  ok   $*"; }
 bad() { FAIL=$((FAIL + 1)); echo "  FAIL $*"; }
 check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$name"; else bad "$name"; fi; }
 
-TMP="$(mktemp -d)"
+# pwd -P: on macOS mktemp lives under /var -> /private/var; git reports the
+# resolved path, so compare against the physical one.
+TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 PROJ="$TMP/proj"
 mkdir -p "$PROJ"
@@ -45,14 +46,13 @@ git config commit.gpgsign false
 git config tag.gpgsign false
 
 ART=_bmad-output/implementation-artifacts
-mkdir -p "$ART" src .claude/harness/scripts .claude/super-harness/scripts .claude/super-harness/prompts
-cp "$HZ_DIR"/scripts/*.py "$HZ_DIR"/scripts/*.sh .claude/harness/scripts/
+mkdir -p "$ART" src .claude/harness/scripts .claude/harness/prompts
+cp "$PLUGIN_DIR"/scripts/*.py "$PLUGIN_DIR"/scripts/*.sh .claude/harness/scripts/
 cat > .claude/harness/harness-project-config.yaml <<'EOF'
 project_display_name: 'Fixture'
 artifacts_root: '_bmad-output/implementation-artifacts'
 EOF
-cp "$PLUGIN_DIR/scripts/superh.py" .claude/super-harness/scripts/
-cp "$PLUGIN_DIR/prompts/"*.md .claude/super-harness/prompts/
+cp "$PLUGIN_DIR/prompts/"*.md .claude/harness/prompts/
 
 # fake claude: acts as the worker inside the lane worktree
 FAKE="$TMP/fake-claude"
@@ -67,7 +67,7 @@ MODE="$(cat "$SUPERH_MAIN_ROOT/.fake-mode-$KEY" 2>/dev/null || echo ok)"
 git tag "harness/$KEY/start"
 case "$MODE" in
   blocked)
-    python3 "$SUPERH_MAIN_ROOT/.claude/super-harness/scripts/superh.py" report "$KEY" --status blocked --summary "bmad-build-auto HALT: intent gap"
+    python3 "$SUPERH_MAIN_ROOT/.claude/harness/scripts/superh.py" report "$KEY" --status blocked --summary "bmad-build-auto HALT: intent gap"
     echo '{"type":"result","result":"blocked","is_error":false}'
     exit 0 ;;
   silent)
@@ -106,17 +106,17 @@ git add -A
 git commit -qm "feat($KEY): implement"
 git tag "harness/$KEY/built"
 python3 .claude/harness/scripts/harness-commit.py build-verify "$KEY" > "$SUPERH_MAIN_ROOT/.bv-$KEY.log" 2>&1 || true
-python3 "$SUPERH_MAIN_ROOT/.claude/super-harness/scripts/superh.py" report "$KEY" --status ready --summary "built ok"
+python3 "$SUPERH_MAIN_ROOT/.claude/harness/scripts/superh.py" report "$KEY" --status ready --summary "built ok"
 echo '{"type":"result","result":"done","is_error":false,"total_cost_usd":0.01,"num_turns":3}'
 EOF
 chmod +x "$FAKE"
 
-cat > .claude/super-harness/config.yaml <<EOF
+cat > .claude/harness/parallel.yaml <<EOF
 max_slots: 2
 no_deps_policy: serial
 worktree_root: '$TMP/wt'
 claude_bin: '$FAKE'
-copy_paths: [.claude/harness, .claude/super-harness]
+copy_paths: [.claude/harness]
 EOF
 
 cat > "$ART/sprint-status.yaml" <<'EOF'
@@ -158,7 +158,7 @@ printf '.claude/\n.fake-mode-*\n.bv-*\n' > .gitignore
 git add -A
 git commit -qm "init"
 
-SH="python3 $PROJ/.claude/super-harness/scripts/superh.py"
+SH="python3 $PROJ/.claude/harness/scripts/superh.py"
 result_edit() {  # result_edit <KEY> '<python statements on d>'
 python3 - "$(git rev-parse --git-common-dir)/super-harness/lanes/$1.result.json" "$2" <<'PY'
 import json, sys
@@ -368,7 +368,7 @@ $SH start-run --slots 1 >/dev/null
 [ "$($SH tick | jget 'd["slots"]["max"]')" = "1" ] && ok "S1 --slots overrides config for the run" || bad "S1"
 $SH start-run --reset-slots >/dev/null
 [ "$($SH tick | jget 'd["slots"]["max"]')" = "2" ] && ok "S2 --reset-slots restores config" || bad "S2"
-cat >> .claude/super-harness/config.yaml <<'EOF'
+cat >> .claude/harness/parallel.yaml <<'EOF'
 deps_overrides:
   1-4-delta: []
   2-1-epsilon:
@@ -380,19 +380,39 @@ echo "$PLAN" | jget '[s for s in d["stories"] if s["key"]=="1-4-delta"][0]["deps
 echo "$PLAN" | jget '[s for s in d["stories"] if s["key"]=="2-1-epsilon"][0]["reasons"]' | grep -q '等待依赖 1-4-delta' \
     && ok "S4 deps_overrides block list parsed" || bad "S4"
 DEP="$TMP/deploy-target"; mkdir -p "$DEP"
-OUT="$(bash "$PLUGIN_DIR/scripts/deploy.sh" "$PLUGIN_DIR" "$DEP" 2>/dev/null)"
-[ -f "$DEP/.claude/super-harness/config.yaml" ] && [ -f "$DEP/.claude/super-harness/prompts/worker.md" ] \
-    && echo "$OUT" | grep -q 'installed=' && ok "S5 deploy installs assets + config template" || bad "S5 $OUT"
-echo "max_slots: 5" > "$DEP/.claude/super-harness/config.yaml"
-bash "$PLUGIN_DIR/scripts/deploy.sh" "$PLUGIN_DIR" "$DEP" >/dev/null 2>&1
-grep -qx 'max_slots: 5' "$DEP/.claude/super-harness/config.yaml" && ok "S6 redeploy keeps user config" || bad "S6"
+OUT="$(DEPLOY_QUIET=1 bash "$PLUGIN_DIR/scripts/deploy_assets.sh" "$PLUGIN_DIR" "$DEP" 2>/dev/null)"
+[ -f "$DEP/.claude/harness/parallel.yaml" ] && [ -f "$DEP/.claude/harness/prompts/worker.md" ] \
+    && [ -f "$DEP/.claude/harness/scripts/superh.py" ] && [ -f "$DEP/.claude/harness/pipeline.md" ] \
+    && [ ! -d "$DEP/.claude/commands" ] \
+    && echo "$OUT" | grep -q 'installed=' && ok "S5 deploy installs assets + parallel.yaml template, no .claude/commands" || bad "S5 $OUT"
+! grep -qx '.claude/harness/parallel.yaml' "$DEP/.claude/harness/.deploy-manifest.txt" \
+    && ok "S5b parallel.yaml is not manifest-owned (never purged)" || bad "S5b"
+echo "max_slots: 5" > "$DEP/.claude/harness/parallel.yaml"
+DEPLOY_PURGE=1 DEPLOY_QUIET=1 bash "$PLUGIN_DIR/scripts/deploy_assets.sh" "$PLUGIN_DIR" "$DEP" >/dev/null 2>&1
+grep -qx 'max_slots: 5' "$DEP/.claude/harness/parallel.yaml" && ok "S6 redeploy (with purge) keeps user parallel.yaml" || bad "S6"
+# upgrade from super-harness 0.1.0 (config at .claude/super-harness/config.yaml)
+DEP2="$TMP/deploy-legacy"; mkdir -p "$DEP2/.claude/super-harness"
+git -C "$DEP2" init -q .
+printf 'max_slots: 3\nno_deps_policy: epic-parallel\ndeps_overrides:\n  1-2-beta: [1-1-alpha]\n' > "$DEP2/.claude/super-harness/config.yaml"
+OUT="$(cd "$DEP2" && python3 "$PLUGIN_DIR/scripts/superh.py" env 2>&1)"; RC=$?
+[ "$RC" -ne 0 ] && echo "$OUT" | grep -q '0.1.0 的并行配置' \
+    && ok "S7 superh refuses to fall back to defaults when only the 0.1.0 config exists" || bad "S7 rc=$RC $OUT"
+ERR="$(DEPLOY_QUIET=1 bash "$PLUGIN_DIR/scripts/deploy_assets.sh" "$PLUGIN_DIR" "$DEP2" 2>&1 >/dev/null)"
+cmp -s "$DEP2/.claude/super-harness/config.yaml" "$DEP2/.claude/harness/parallel.yaml" \
+    && echo "$ERR" | grep -q '^migrated: .claude/harness/parallel.yaml' \
+    && ok "S8 deploy carries the 0.1.0 config over verbatim (reported even when quiet)" || bad "S8 $ERR"
+OUT="$(cd "$DEP2" && python3 .claude/harness/scripts/superh.py env 2>&1)"
+echo "$OUT" | grep -q '"no_deps_policy": "epic-parallel"' && echo "$OUT" | grep -q '"1-2-beta"' \
+    && ok "S9 migrated deps_overrides / no_deps_policy are in effect" || bad "S9 $OUT"
+(cd "$DEP2" && python3 .claude/harness/scripts/superh.py doctor) | grep -q '^WARN=.claude/super-harness/' \
+    && ok "S10 doctor flags the leftover 0.1.0 directory" || bad "S10"
 
 echo "== D: lane cleanliness never edits the shared info/exclude"
 EXCL="$(git rev-parse --git-common-dir)/info/exclude"
 EXCL_BEFORE="$(cat "$EXCL" 2>/dev/null || true)"
 mkdir -p tools nm && echo 'local' > tools/local.cfg && echo 'dep' > nm/index.js
 printf 'nm/\n' >> .gitignore && git commit -qam "ignore nm/ (dir-style rule)"
-cat >> .claude/super-harness/config.yaml <<'EOF2'
+cat >> .claude/harness/parallel.yaml <<'EOF2'
 copy_paths:
   - .claude/harness
   - tools

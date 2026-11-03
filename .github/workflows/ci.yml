@@ -1,4 +1,4 @@
-name: harness-zh CI
+name: super-harness CI
 
 on:
   push:
@@ -27,13 +27,13 @@ jobs:
         run: pip install pyyaml
 
       - name: Run release_check.sh (version + frontmatter gates)
-        run: bash plugins/harness-zh/scripts/release_check.sh
+        run: bash plugins/super-harness/scripts/release_check.sh
 
+      # Includes superh_test.sh (dispatcher, fake claude worker). harness-zh is
+      # frozen at 0.2.1 after the merge into super-harness 0.2.0 and no longer
+      # gated here.
       - name: Run plugin self-test suite (source-tree only)
-        run: bash plugins/harness-zh/scripts/run_all_tests.sh
-
-      - name: Run super-harness dispatcher tests (uses harness-zh source scripts)
-        run: bash plugins/super-harness/scripts/superh_test.sh
+        run: bash plugins/super-harness/scripts/run_all_tests.sh
 
   bootstrap-tests:
     name: Bootstrap-fixture tests (env-dependent)
@@ -54,7 +54,7 @@ jobs:
       - name: Bootstrap fake downstream-project fixture
         run: |
           set -euo pipefail
-          PLUGIN_DIR="$GITHUB_WORKSPACE/plugins/harness-zh"
+          PLUGIN_DIR="$GITHUB_WORKSPACE/plugins/super-harness"
           FIXTURE_DIR="$RUNNER_TEMP/fake-project"
           mkdir -p "$FIXTURE_DIR/_bmad-output/implementation-artifacts"
           cd "$FIXTURE_DIR"
@@ -77,7 +77,7 @@ jobs:
           # (NOT by a YAML loader). Do not "fix" this to nested-mapping form;
           # all of the retro tooling (gate ①, retro_category_round_trip_test,
           # process_retro_residue) depends on this shape. See
-          # plugins/harness-zh/scripts/check_retro_action_items.sh:60-120 for
+          # plugins/super-harness/scripts/check_retro_action_items.sh:60-120 for
           # the parser.
           cat > _bmad-output/implementation-artifacts/sprint-status.yaml <<'EOF'
           development_status:
@@ -111,8 +111,8 @@ jobs:
           # Exclusions (each must state why + where the test IS gated):
           #   orchestration_observations_test.sh — T2.f3 greps the plugin
           #     SOURCE tree (${SCRIPT_DIR}/../commands/run-test.md by design);
-          #     the deployed layout has commands at .claude/commands/, not
-          #     .claude/harness/commands/, so it can only run source-tree.
+          #     the deployed layout carries no commands/ at all (slash commands
+          #     are served by the plugin), so it can only run source-tree.
           #     It is source-tree green and gated by the source-tests job.
           FAILED=0
           for t in .claude/harness/scripts/*_test.sh; do
@@ -173,4 +173,4 @@ jobs:
         # and the tests also resolve to the system 3.2 binary (not any
         # Homebrew bash 5.x that may appear on the image). /bin holds only
         # system binaries, so prepending it cannot shadow setup-python.
-        run: PATH="/bin:$PATH" /bin/bash plugins/harness-zh/scripts/run_all_tests.sh
+        run: PATH="/bin:$PATH" /bin/bash plugins/super-harness/scripts/run_all_tests.sh

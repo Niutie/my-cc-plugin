@@ -14,14 +14,14 @@
     {
       "name": "harness-zh",
       "source": "./plugins/harness-zh",
-      "description": "BMad-based sprint orchestration harness for solo-dev + AI workflows (zhenhua's flavor). Requires BMad >= 6.11 (bmad-build-auto) + uv.",
+      "description": "DEPRECATED, merged into super-harness 0.2.0. Frozen at 0.2.1; migrate with /plugin install super-harness@my-cc-plugin, /super-harness:init, /plugin uninstall harness-zh.",
       "version": "0.2.1"
     },
     {
       "name": "super-harness",
       "source": "./plugins/super-harness",
-      "description": "Parallel sprint dispatcher on top of harness-zh: one git worktree + headless claude worker per story, dependency-aware slots, serial merge queue with ledger-conflict auto-resolution. Requires harness-zh >= 0.2.1.",
-      "version": "0.1.0"
+      "description": "BMad-based sprint orchestration (harness-zh merged in): run stories one at a time in-session (/super-harness:run-inline) or in parallel with one worktree + headless claude worker per story and a serial merge queue (/super-harness:run). Requires BMad >= 6.11 + uv.",
+      "version": "0.2.0"
     },
     {
       "name": "ppt-maker",

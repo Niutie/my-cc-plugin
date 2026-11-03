@@ -1,0 +1,110 @@
+# Harness project config — 项目特定字段单一来源（template）
+#
+# 本文件由 /super-harness:init 在首次部署时（§A.3）从 plugin templates/ 投放到
+# .claude/harness/harness-project-config.yaml；仅当目标不存在时投放。
+#
+# 默认值全部为空 — 让 init §0-§6 的 BMad 字段提取流程能用 merge 模式填：
+#   - 既有空 → 写入 BMad 提取值或 fallback（merge / force 都写）
+#   - 既有非空 → merge 模式保留；--force 模式经二次确认后覆盖
+#
+# 用法：
+#   ① BMad-driven 自动填：先跑 BMad planning workflow，再跑 /super-harness:init →
+#      §A.5 检测齐 → 进 §0+ 字段提取，自动写入 11 描述字段 + 3 派生字段
+#   ② 手填：直接编辑本文件填值（或在 init 完后微调 BMad 提取结果）
+#
+# extra: map 给项目特定字段；eval_test_stage_triggers.sh 引用 ${frontend_dir} /
+# ${e2e_test_subdir} 等键替换 test-stage-triggers.yaml 内占位符。
+
+# ============ 5 必填字段（init §2 BMad 提取或手填）============
+project_display_name: ''         # e.g., 'Aegis AI Audit'
+container_orchestrator: ''       # docker-compose / k8s / podman / nerdctl-compose
+frontend_framework: ''           # e.g., 'Next.js 16' / 'SvelteKit 2' / 'Remix 2' / 'Astro 4'
+backend_languages: []            # e.g., ['Go 1.23', 'Python 3.12', 'TypeScript', 'Rust 1.85']
+e2e_framework: ''                # Playwright / Cypress / WebdriverIO / Selenium / 'none'
+                                 # 'none' = 纯后端 / 无 e2e 项目；让 /super-harness:run-test 走
+                                 # §4.5 clean skip（不写 skipped report、不污染 deferred-work）。
+                                 # Playwright 之外目前 T3/T4 仍是 Playwright-coded，会走 §4 sandbox-skip。
+
+# Artifact 输出根目录（init §3.1 派生；默认 '_bmad-output/implementation-artifacts'）
+artifacts_root: ''
+
+# deferred-work.md 工具链模式（init §A.3.c 半路接入项目时由 solo-dev 选择）
+#   strict   — 默认；§1 总账 + grep 工具假定 deferred-work.md 100% schema v1
+#   advisory — 半路接入 + 历史 legacy 条目共存模式；grep 工具仍按 v1 tag 工作，
+#              但 §1 总账数据被视为"v1-tagged 子集"而非全量。pre-commit gate ②
+#              不论 mode 都只校验新增行（mode 不影响 gate 行为）。
+# 切换路径：编辑本字段，或跑 /super-harness:upgrade-deferred-work 走交互升级流程。
+deferred_work_mode: 'strict'
+
+# retro 行动项门（pre-commit gate ① + pipeline.md §0.A.0）
+#   warn  — 默认；有未兑现的 category: dev retro 项时只打印提示，不拦 commit，
+#           run-inline / run 也只提示、不先跑兑现循环
+#   block — 拒绝新 story spec 的 commit，run-inline / run 起跑前先兑现这些项
+retro_gate: 'warn'
+
+# ============================================================================
+# extra — 项目特定扩展字段（任何 harness 文档 / 评估脚本可引用 ${key}）
+# ============================================================================
+extra:
+  # frontend / e2e 路径（test-stage-triggers.yaml 占位用；init §2 字段 6/7）
+  frontend_dir: ''               # 前端代码顶层目录名，e.g. 'console-web'
+  e2e_test_subdir: ''            # e2e 测试目录路径，e.g. 'tests/e2e'
+
+  # 容器栈规模（init §2 字段 8）
+  container_count: 0             # docker-compose / k8s 服务容器数量
+
+  # 路由架构（前端国际化；init §2 字段 9/10）
+  i18n_locales: []               # e.g., ['zh-CN', 'en-US']
+  routing_pattern: ''            # e.g., 'Next.js i18n routing'
+
+  # 网关插件 / 代理 addon（init §2 字段 11；项目独有）
+  proxy_addon: ''                # e.g., 'mitmproxy'
+
+  # 资源约束（NFR baseline；init §2 字段 12/13）
+  sandbox_constraint: ''         # e.g., '4C/8GB single-node'
+  resource_baseline: ''          # e.g., '4C/8GB'
+
+  # 后端服务模块顶层目录（init §2 字段 14；harness-architecture.md 引用）
+  backend_modules: []            # e.g., ['console-api', 'pipeline', 'proxy']
+
+  # Path classifier — harness-state.py group_worktree_changes() 按改动文件路径
+  # 打 label 桶。空 list 合法（全归 'other' 桶）；init §3.2 按 frontend/backend
+  # 字段自动推断填充。新项目可按本栈结构改 regex。
+  path_classifiers: []
+  # 示例（自动推断会生成类似结构）：
+  #   - label: 'backend Go source'
+  #     regex: '^console-api/(?!.*_test\.go$)'
+  #   - label: 'frontend TS source'
+  #     regex: '^console-web/src/(?!.*\.test\.)'
+
+  # Verification 引导命令（harness-state.py resume-prompt 引用；多行 | 块标量）
+  # init §3.3 按 backend_languages + frontend_framework 拼模板自动填充。
+  verification_commands: ''
+  # 自动填充示例（Go + Next.js 栈）：
+  #   verification_commands: |
+  #     go vet/build/test ./<backend_modules[0]>/...
+  #     pnpm --filter <frontend_dir> typecheck/test/lint --max-warnings=0/build
+
+  # 项目语境（subagent 决策依据 — harness-prompt-suffix.py 注入到代答政策块）
+  # init §2 字段 15 从 product-brief.md / prd.md 提取 6-10 条 '- <key>：<value>'。
+  # 缺失时 subagent 决策会缺项目语境（fallback 到通用决策原则）。
+  project_context: ''
+  # 自动填充示例：
+  #   project_context: |
+  #     - 开发模型：单人 + AI 协作开发（无团队、无独立 QA 资源）
+  #     - 目标客户：<目标客户画像>
+  #     - 交付形态：<私有化 / SaaS / 混合>
+  #     - 关键约束：<合规 / 性能 / 资源 / 维护成本等>
+
+  # 全栈贯通 review checklist（Q6 — harness-prompt-suffix.py implement 渲染给 bmad-build-auto 实现子 agent；旧流水线 stage 2 同源）
+  # init §2 字段 16 从 architecture/*.md 推断核心写入路径列表。
+  # 每项 = {label: 短描述, file_path: 具体文件路径或 module::symbol}。
+  # 空 list 合法（Q6 整段降级跳过；不阻流）。
+  fullstack_review_steps: []
+  # 自动填充示例：
+  #   - label: '字段定义'
+  #     file_path: '<backend>/internal/types.go::<EventType>'
+  #   - label: '写入路径'
+  #     file_path: '<backend>/internal/<writer>.go'
+  #   - label: 'i18n key'
+  #     file_path: '<frontend>/src/locales/zh-CN.json + en-US.json'

@@ -1,0 +1,1074 @@
+#!/usr/bin/env bash
+# chore-harness-epic-4-orchestration-observations — self-test
+#
+# 26 fixtures across 4 task groups (T1=14 / T2=3 / T3=4 / T4=5):
+#
+#   T1 — sprint-status auto-sync + retro_action_items seed + chore_spec fill
+#     T1.f1  stage 2 sync sets KEY=review + idempotent rerun no-op (#77 two-pass)
+#     T1.f2  stage 5 sync sets KEY=done (mock)
+#     T1.f3  stage 6 seed with 5 D items + **Category** round trip (#29);
+#            idempotent re-run = no change
+#     T1.f4  stage 6 seed when block exists with 2 D items, retro md has 5 → seeds D3..D5 only
+#     T1.f5  stage 6-5 fill chore_spec for matching files
+#     T1.f6  P0 fail-loud: section found + 0 items (no H3/table/bold) → RuntimeError
+#     T1.f7  P1 Form 2 fallback: markdown table `| AI-N.M |` → code `<letter>-N-M` + WARN
+#     T1.f8  P1 Form 3 fallback: bold inline `**A1**` / `**A1/A2/A3**` shared title + WARN
+#     T1.f9  graceful skip: malformed epic arg (letter=None) → WARN + return [] (post-#5)
+#     T1.f10 follow-through recap section filtered; canonical §Action items wins (#1)
+#     T1.f11 Form 2 accepts letter-suffix / bold-wrap / paren annotation
+#     T1.f12 hybrid Form 2 + Form 3 fire and merge, dual-WARN emitted
+#     T1.f13 blacklist: business "credentials" names PASS, real cred files BLOCK (#2)
+#     T1.f14 absent retro_action_items: parent auto-bootstraps at EOF, no halt (#6)
+#
+#   T2 — stage 5.5 commit message suffix unification
+#     T2.f1  T4 STAGES commit_msg含 "(run-sprint stage 5.5)"
+#     T2.f2  5-5 STAGES commit_msg含 "(run-sprint stage 5.5)"
+#     T2.f3  commands/run-test.md（源树）含 "(run-sprint stage 5.5)" 后缀
+#
+#   T3 — harness-state.py --resume-prompt --stage 2 增强字段
+#     T3.f1  worktree landing summary helper exposes "worktree 落地清单"（真 git fixture）
+#     T3.f2  git diff --stat helper exposes "git diff --stat 摘要"（真 git fixture）
+#     T3.f3  dev-result.json helper "**未写**" path
+#     T3.f4  dev-result.json helper field overview path
+#
+#   T4 — halt-recovery-check 三态（verdict 断言只看 stdout — stderr 分流捕获）
+#     T4.f1  stage 5 work-done-but-msg-lost (READY_TO_COMMIT)
+#     T4.f2  stage 5 work-not-done (NEED_RESUME)
+#     T4.f3  stage 5 partial齐 (INCONSISTENT)
+#     T4.f4  unknown stage exit 1（"unknown stage" 在 stderr）
+#     T4.f5  stage 2 READY (md Status=review + dev-result.json)
+#
+# Fixture pattern (review 2026-06-10 finding #12 — source-tree-direct):
+#   - All fixture dirs live inside ONE mktemp sandbox, cleaned by an EXIT trap
+#     (assertion failures / early exits can't leak tempdirs).
+#   - harness-project-config.yaml fixtures are GENERATED from
+#     templates/harness-project-config.yaml.template with artifacts_root set
+#     explicitly (deploy_assets.sh never ships a ready-made config — only
+#     /super-harness:init renders one — so cp from ${REPO_ROOT}/.claude/harness/
+#     could never work in the source tree).
+#   - Scripts under test load via ${SCRIPT_DIR} (source tree) or a deployed-
+#     layout copy under <fixture>/.claude/harness/scripts/ — never via
+#     CWD-relative .claude/ paths.
+# No real network / sandbox required — matches D3 / C-codex-fixes /
+# C-bootstrap fixture pattern.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HARNESS_STATE="${SCRIPT_DIR}/harness-state.py"
+TEMPLATE_CONFIG="${SCRIPT_DIR}/../templates/harness-project-config.yaml.template"
+
+GREEN=$'\033[32m'
+RED=$'\033[31m'
+RESET=$'\033[0m'
+
+PASS=0
+FAIL=0
+
+pass() { echo "${GREEN}PASS${RESET}: $1"; PASS=$((PASS + 1)); }
+fail() { echo "${RED}FAIL${RESET}: $1"; FAIL=$((FAIL + 1)); }
+
+if [[ ! -f "${TEMPLATE_CONFIG}" ]]; then
+    echo "FATAL: config template not found: ${TEMPLATE_CONFIG}" >&2
+    exit 1
+fi
+
+# One sandbox for every fixture; EXIT trap guarantees cleanup even when an
+# assertion aborts the run early (finding #12 constraint — EXIT, not RETURN).
+SANDBOX="$(mktemp -d)"
+trap 'rm -rf "${SANDBOX}"' EXIT
+
+# Generate a fixture config from the canonical template. artifacts_root is
+# written explicitly so harness_config.py never emits the "artifacts_root not
+# set" WARN into captured streams.
+make_fixture_config() {
+    # $1 = destination file path
+    sed "s|^artifacts_root: ''|artifacts_root: '_bmad-output/implementation-artifacts'|" \
+        "${TEMPLATE_CONFIG}" > "$1"
+}
+
+# Shared source-tree-side config (for fixtures that import scripts straight
+# from ${SCRIPT_DIR} — exported per-invocation via HARNESS_CONFIG_PATH).
+FIXTURE_CONFIG="${SANDBOX}/harness-project-config.yaml"
+make_fixture_config "${FIXTURE_CONFIG}"
+
+# Mirror init's deployed layout inside a fixture root: scripts under
+# .claude/harness/scripts/ + generated config one level up.
+deploy_fixture_scripts() {
+    # $1 = fixture root
+    mkdir -p "$1/_bmad-output/implementation-artifacts" "$1/.claude/harness/scripts"
+    cp "${SCRIPT_DIR}/harness-commit.py" "$1/.claude/harness/scripts/"
+    cp "${SCRIPT_DIR}/sprint-status.py" "$1/.claude/harness/scripts/"
+    cp "${SCRIPT_DIR}/harness_config.py" "$1/.claude/harness/scripts/"
+    cp "${SCRIPT_DIR}/harness_spec.py" "$1/.claude/harness/scripts/"
+    make_fixture_config "$1/.claude/harness/harness-project-config.yaml"
+}
+
+# ============================================================================
+# T1 — sprint-status auto-sync + retro_action_items seed + chore_spec fill
+# ============================================================================
+
+echo ""
+echo "=== T1 group (14 fixtures) — sprint-status auto-sync helpers ==="
+
+# ----------------------------------------------------------------------------
+# T1.f1 — _sync_sprint_status_for_stage stage 2 → review；rerun 幂等
+#         (finding #77 two-pass read-then-set: no-op rerun returns [] and the
+#         file bytes stay identical — no last_updated bump, no rewrite)
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f1.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" <<'YAML'
+last_updated: 2026-05-04
+
+development_status:
+  4-1-foo: backlog
+  4-2-foo: backlog
+
+retro_action_items:
+  epic-1-retro:
+    A1: done
+
+test_status: {}
+YAML
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+ss = '_bmad-output/implementation-artifacts/sprint-status.yaml'
+applied = hc._sync_sprint_status_for_stage('2', '4-1-foo', None)
+print('APPLIED', applied)
+before = open(ss, 'rb').read()
+applied2 = hc._sync_sprint_status_for_stage('2', '4-1-foo', None)
+after = open(ss, 'rb').read()
+print('APPLIED2', applied2)
+print('BYTES_SAME', before == after)
+")
+RC=$?
+if [[ $RC -eq 0 ]] && grep -q "APPLIED \[('4-1-foo', 'review')\]" <<< "$OUT" && \
+   grep -q "APPLIED2 \[\]" <<< "$OUT" && \
+   grep -q "BYTES_SAME True" <<< "$OUT" && \
+   grep -q "4-1-foo: review" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"; then
+    pass "T1.f1 — stage 2 sync set 4-1-foo=review + idempotent rerun no-op (#77)"
+else
+    fail "T1.f1 — stage 2 sync (rc=$RC out=$OUT)"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f2 — _sync_sprint_status_for_stage stage 5 → done
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f2.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" <<'YAML'
+last_updated: 2026-05-04
+
+development_status:
+  4-1-foo: review
+
+test_status: {}
+YAML
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+applied = hc._sync_sprint_status_for_stage('5', '4-1-foo', None)
+print('APPLIED', applied)
+")
+RC=$?
+if [[ $RC -eq 0 ]] && grep -q "APPLIED \[('4-1-foo', 'done')\]" <<< "$OUT" && \
+   grep -q "4-1-foo: done" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"; then
+    pass "T1.f2 — stage 5 sync set 4-1-foo=done"
+else
+    fail "T1.f2 — stage 5 sync (rc=$RC out=$OUT)"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f3 — _seed_retro_action_items: 5 D items, retro_action_items block 不存在 → create
+#         然后 idempotent re-run no change.
+#         Category round trip (review 2026-06-10 finding #29): D1/D2 declare
+#         `**Category**: dev|harness` in their H3 block body → parser returns
+#         (code, title, category) triples and the seeder writes the
+#         over-indented `      category: <v>` subkey right under the item;
+#         D3..D5 undeclared → no subkey (NOCAT).
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f3.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" <<'YAML'
+last_updated: 2026-05-04
+
+development_status:
+  4-1-foo: done
+
+retro_action_items:
+  epic-1-retro:
+    A1: done
+
+test_status: {}
+YAML
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-4-retro-2026-05-04.md" <<'MD'
+# Epic 4 Retrospective
+
+## 6. Action Items
+
+### D1 — first thing
+Action: foo
+**Category**: dev
+### D2 — second thing
+Action: bar
+**Category**: harness
+### D3 — third thing
+### D4 — fourth thing
+### D5 — fifth thing
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+seeded1 = hc._seed_retro_action_items('4', '_bmad-output/implementation-artifacts/epic-4-retro-2026-05-04.md', '_bmad-output/implementation-artifacts/sprint-status.yaml')
+print('SEEDED1', len(seeded1), [c for c, t, cat in seeded1])
+print('CATS', [cat for c, t, cat in seeded1])
+seeded2 = hc._seed_retro_action_items('4', '_bmad-output/implementation-artifacts/epic-4-retro-2026-05-04.md', '_bmad-output/implementation-artifacts/sprint-status.yaml')
+print('SEEDED2', len(seeded2))
+")
+RC=$?
+SS="${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"
+COUNT=$(grep -cE "^    D[0-9]+:" "${SS}" || true)
+CAT_COUNT=$(grep -cE "^      category: (dev|harness)$" "${SS}" || true)
+if [[ $RC -eq 0 ]] && grep -q "SEEDED1 5" <<< "$OUT" && \
+   grep -q "CATS \['dev', 'harness', None, None, None\]" <<< "$OUT" && \
+   grep -q "SEEDED2 0" <<< "$OUT" && \
+   [[ "$COUNT" -eq 5 ]] && [[ "$CAT_COUNT" -eq 2 ]] && \
+   grep -A2 "^    D1:$" "${SS}" | grep -q "^      status: pending" && \
+   grep -A2 "^    D1:$" "${SS}" | grep -q "^      category: dev$" && \
+   grep -A2 "^    D2:$" "${SS}" | grep -q "^      category: harness$"; then
+    pass "T1.f3 — stage 6 seed 5 D items + category subkeys (#29) + idempotent rerun = 0"
+else
+    fail "T1.f3 — seed creation+category+idempotent (rc=$RC count=$COUNT cat_count=$CAT_COUNT out=$OUT)"
+    cat "${SS}"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f4 — _seed_retro_action_items: block exists with D1/D2, retro md has D1..D5 → 仅 seed D3..D5
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f4.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" <<'YAML'
+last_updated: 2026-05-04
+
+development_status:
+  4-1-foo: done
+
+retro_action_items:
+  epic-4-retro:
+    D1: pending
+    D2: done
+      chore_spec: 'chore-retro-c4-D2-already-here.md'
+
+test_status: {}
+YAML
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-4-retro-2026-05-04.md" <<'MD'
+# Epic 4 Retrospective
+
+## 6. Action Items
+
+### D1 — first
+### D2 — second (already)
+### D3 — third
+### D4 — fourth
+### D5 — fifth
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+seeded = hc._seed_retro_action_items('4', '_bmad-output/implementation-artifacts/epic-4-retro-2026-05-04.md', '_bmad-output/implementation-artifacts/sprint-status.yaml')
+print('SEEDED', [c for c, t, cat in seeded])
+")
+RC=$?
+# Check: D1 unchanged (pending), D2 unchanged (done + chore_spec preserved), D3/D4/D5 added (pending)
+if [[ $RC -eq 0 ]] && \
+   grep -q "SEEDED \['D3', 'D4', 'D5'\]" <<< "$OUT" && \
+   grep -A1 "^    D1:$" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" | grep -q "^      status: pending" && \
+   grep -A1 "^    D2:$" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" | grep -q "^      status: done" && \
+   grep -q "chore_spec: 'chore-retro-c4-D2-already-here.md'" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" && \
+   grep -A1 "^    D3:$" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" | grep -q "^      status: pending" && \
+   grep -A1 "^    D5:$" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" | grep -q "^      status: pending"; then
+    pass "T1.f4 — partial seed (D1/D2 preserved, D3..D5 added)"
+else
+    fail "T1.f4 — partial seed (rc=$RC out=$OUT)"
+    cat "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f5 — _fill_chore_spec_field: 3 chore files → fill 2 missing fields (1 already filled)
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f5.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" <<'YAML'
+last_updated: 2026-05-04
+
+development_status:
+  4-1-foo: done
+
+retro_action_items:
+  epic-4-retro:
+    D1: pending
+    D2: pending
+      chore_spec: 'chore-retro-c4-D2-already-filled.md'
+    D3: pending
+
+test_status: {}
+YAML
+touch "${TMP}/_bmad-output/implementation-artifacts/chore-retro-c4-D1-foo.md"
+touch "${TMP}/_bmad-output/implementation-artifacts/chore-retro-c4-D2-already-filled.md"
+touch "${TMP}/_bmad-output/implementation-artifacts/chore-retro-c4-D3-bar.md"
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+filled = hc._fill_chore_spec_field('4', '_bmad-output/implementation-artifacts/sprint-status.yaml', '_bmad-output/implementation-artifacts')
+print('FILLED', filled)
+")
+RC=$?
+COUNT=$(grep -cE "chore_spec:" "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" || true)
+if [[ $RC -eq 0 ]] && \
+   grep -qE "FILLED \[\('D1', '.+'\), \('D3', '.+'\)\]" <<< "$OUT" && \
+   [[ "$COUNT" -eq 3 ]]; then
+    pass "T1.f5 — fill 2 missing chore_spec (D2 preserved, D1+D3 added)"
+else
+    fail "T1.f5 — fill (rc=$RC chore_spec_count=$COUNT out=$OUT)"
+    cat "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f6 — _parse_retro_action_items: section found + 0 H3/table/bold matches
+#         → RuntimeError (P0 fail-loud, schema drift detection)
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f6.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+# retro md mimics BMad SKILL §8 default output (`**Process Improvements:**` +
+# numbered list) which matches none of the 3 forms — must trigger fail-loud.
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-4-retro-2026-05-04.md" <<'MD'
+# Epic 4 Retrospective
+
+## 6. Action Items
+
+**Process Improvements:**
+
+1. action item one
+   Owner: solo-dev
+2. action item two
+   Owner: solo-dev
+
+**Technical Debt:**
+
+1. debt item one
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+try:
+    hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-4-retro-2026-05-04.md', 'D')
+    print('NO_RAISE')
+except RuntimeError as e:
+    msg = str(e)
+    if 'schema drift' in msg.lower() and 'action items section' in msg.lower():
+        print('RAISED_OK')
+    else:
+        print('RAISED_WRONG_MSG', msg)
+" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && grep -q "RAISED_OK" <<< "$OUT"; then
+    pass "T1.f6 — section found + 0 items raises RuntimeError (fail-loud)"
+else
+    fail "T1.f6 — fail-loud (rc=$RC out=$OUT)"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f7 — _parse_retro_action_items: Form 2 fallback (markdown table row
+#         `| AI-N.M | title |`) — codes normalize to `<letter>-N-M`
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f7.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md" <<'MD'
+# Epic 1 Retrospective
+
+## 五、Action items（行动项）
+
+### 5.1 流程改进类 action items
+
+| ID | 行动 | Owner | 时机 | 验收 |
+| --- | --- | --- | --- | --- |
+| AI-1.1 | 流程改进项一 | solo-dev | 立即 | 标准 |
+| AI-1.2 | 流程改进项二 | solo-dev | 立即 | 标准 |
+
+### 5.2 技术债类 action items
+
+| ID | 行动 | Owner | 时机 | 验收 |
+| --- | --- | --- | --- | --- |
+| AI-2.1 | 技术债项一 | solo-dev | epic 2 | 标准 |
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+items = hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md', 'A')
+print('ITEMS', [c for c, t, cat in items])
+print('TITLES', [t for c, t, cat in items])
+print('CATS', [cat for c, t, cat in items])
+" 2>&1)
+RC=$?
+# Expect codes A-1-1, A-1-2, A-2-1 with their respective titles, plus stderr
+# WARN. Form 2 rows carry no per-item Category channel → all None (#29).
+if [[ $RC -eq 0 ]] && \
+   grep -q "ITEMS \['A-1-1', 'A-1-2', 'A-2-1'\]" <<< "$OUT" && \
+   grep -q "CATS \[None, None, None\]" <<< "$OUT" && \
+   grep -q "Form 2 (markdown table" <<< "$OUT" && \
+   grep -q "流程改进项一" <<< "$OUT"; then
+    pass "T1.f7 — Form 2 markdown table fallback (3 items normalized to A-N-M, WARN emitted)"
+else
+    fail "T1.f7 — table fallback (rc=$RC out=$OUT)"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f8 — _parse_retro_action_items: Form 3 fallback (bold inline
+#         `**A1**` / `**A1/A2/A3**` shared title)
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f8.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md" <<'MD'
+# Epic 1 Retrospective
+
+## 五、Action items（行动项）
+
+自我约束：
+
+- **A1** 不再混用 docker-compose v1 / v2 命令
+- **A2/A3** 必须先跑 lint 再 commit
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+items = hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md', 'A')
+print('ITEMS', [c for c, t, cat in items])
+" 2>&1)
+RC=$?
+# Expect A1 (single bold) + A2 + A3 (split from `**A2/A3**` shared title), WARN emitted
+if [[ $RC -eq 0 ]] && \
+   grep -q "ITEMS \['A1', 'A2', 'A3'\]" <<< "$OUT" && \
+   grep -q "Form 3 (bold inline" <<< "$OUT"; then
+    pass "T1.f8 — Form 3 bold inline fallback (single + slash-grouped split, WARN emitted)"
+else
+    fail "T1.f8 — bold fallback (rc=$RC out=$OUT)"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f9 — _seed_retro_action_items: malformed epic arg (non-positive int) →
+#         letter=None → WARN + return [] (graceful skip; stage 6 commit
+#         continues). v0.1.35 (issue #5) made _epic_letter support epic > 26
+#         via bijective base-26, so epic 27 now maps to "AA" (NOT None); the
+#         only remaining letter=None case is a non-integer / non-positive epic
+#         arg (a caller bug, not retro-md schema drift). This fixture used to
+#         probe epic 27 — retargeted to epic 0 to match the post-#5 contract.
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f9.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml" <<'YAML'
+last_updated: 2026-05-04
+
+retro_action_items:
+  epic-1-retro:
+    A1: done
+
+test_status: {}
+YAML
+
+# 抓 stderr 验证 WARN（letter=None 在 _parse 之前提前返回，故 retro md 不必存在）
+F9_STDERR="${TMP}/f9-stderr.txt"
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+try:
+    result = hc._seed_retro_action_items('0', '_bmad-output/implementation-artifacts/epic-0-retro-2026-05-04.md', '_bmad-output/implementation-artifacts/sprint-status.yaml')
+    if result == []:
+        print('OK_RETURNED_EMPTY')
+    else:
+        print('UNEXPECTED_RESULT', result)
+except RuntimeError as e:
+    print('UNEXPECTED_RAISE', str(e))
+" 2>"$F9_STDERR")
+RC=$?
+STDERR_CONTENT="$(cat "$F9_STDERR" 2>/dev/null)"
+if [[ $RC -eq 0 ]] && grep -q "OK_RETURNED_EMPTY" <<< "$OUT" && \
+   grep -q "WARN.*epic.*'0'" <<< "$STDERR_CONTENT" && \
+   grep -q "not a positive integer" <<< "$STDERR_CONTENT"; then
+    pass "T1.f9 — malformed epic arg (letter=None) WARN + return [] (post-#5)"
+else
+    fail "T1.f9 — letter=None graceful skip (rc=$RC out=$OUT stderr=$STDERR_CONTENT)"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f10 — _parse_retro_action_items: §"Action items follow-through" recap
+#          section is filtered out; the canonical §"Action items" wins.
+#          (v0.1.31 issue #1 fix — prev-epic carryover recap must not be
+#          mis-seeded as current epic's new action items.)
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f10.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-3-retro-2026-05-27.md" <<'MD'
+# Epic 3 Retrospective
+
+## 六、Epic 2 retro Action items follow-through
+
+### 6.3 carryover
+
+| Epic 2 AI ID | summary |
+| --- | --- |
+| AI-2.2 | recap A item — must NOT be seeded as epic-3 new |
+
+## 八、Action items（行动项）
+
+### 8.1 流程改进类 action items
+
+| ID | 行动 |
+| --- | --- |
+| AI-1.Y2 | 新增 action item |
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+items = hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-3-retro-2026-05-27.md', 'C')
+print('ITEMS', [c for c, t, cat in items])
+" 2>&1)
+RC=$?
+# Expect only the new C-1-Y2 from §八 (follow-through §六 filtered out).
+if [[ $RC -eq 0 ]] && \
+   grep -q "ITEMS \['C-1-Y2'\]" <<< "$OUT" && \
+   ! grep -q "C-2-2" <<< "$OUT"; then
+    pass "T1.f10 — follow-through section filtered; canonical §Action items wins"
+else
+    fail "T1.f10 — follow-through filter (rc=$RC out=$OUT)"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f11 — _parse_retro_action_items: Form 2 with letter-suffix sub-id +
+#          bold-wrapped col 1 + parenthetical annotation (v0.1.31 issue #1
+#          empirical BMad format).
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f11.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md" <<'MD'
+# Epic 1 Retrospective
+
+## 五、Action items（行动项）
+
+| ID | 行动 |
+| --- | --- |
+| AI-1.Y2 | 字母后缀编号 |
+| **AI-1.X (二次升级)** | bold + 括号注释 |
+| AI-4.X1 (升级) | 半角括号注释 |
+| AI-2.3 | 纯数字（向后兼容）|
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+items = hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md', 'A')
+print('ITEMS', sorted([c for c, t, cat in items]))
+" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && \
+   grep -q "ITEMS \['A-1-X', 'A-1-Y2', 'A-2-3', 'A-4-X1'\]" <<< "$OUT"; then
+    pass "T1.f11 — Form 2 accepts letter-suffix / bold-wrap / paren annotation"
+else
+    fail "T1.f11 — Form 2 expansion (rc=$RC out=$OUT)"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f12 — _parse_retro_action_items: hybrid retro layout — §8.1-8.4 table
+#          + §8.5 bullets — Form 2 + Form 3 both fire and merge (dedup by code).
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f12.XXXXXX")"
+deploy_fixture_scripts "${TMP}"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md" <<'MD'
+# Epic 1 Retrospective
+
+## 五、Action items（行动项）
+
+### 5.1 表格类
+
+| ID | 行动 |
+| --- | --- |
+| AI-1.Y2 | 表格行 |
+
+### 5.2 团队约定 bullets
+
+- **A7** 自我约束第七条（旧 Form 3）
+- **A8（自我约束第八条）**：whole-bold form
+MD
+
+OUT=$(cd "${TMP}" && python3 -c "
+import sys
+sys.path.insert(0, '.claude/harness/scripts')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '.claude/harness/scripts/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+items = hc._parse_retro_action_items('_bmad-output/implementation-artifacts/epic-1-retro-2026-05-07.md', 'A')
+print('ITEMS', sorted([c for c, t, cat in items]))
+" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && \
+   grep -q "ITEMS \['A-1-Y2', 'A7', 'A8'\]" <<< "$OUT" && \
+   grep -q "Form 2.*+.*Form 3" <<< "$OUT"; then
+    pass "T1.f12 — hybrid Form 2 + Form 3 fire and merge, dual-WARN emitted"
+else
+    fail "T1.f12 — hybrid merge (rc=$RC out=$OUT)"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f13 — matches_blacklist: business filenames containing "credentials"
+#          substring must NOT match (v0.1.32 issue #2 — old `**/*credentials*`
+#          was too wide; replaced with precise credential-file naming set +
+#          BMad artifacts allow-list).
+# ----------------------------------------------------------------------------
+OUT=$(HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '${SCRIPT_DIR}/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+
+cases_pass = [
+    # issue #2 halt site — BMad spec md with 'credentials' in slug
+    '_bmad-output/implementation-artifacts/53-1-db-migration-credentials-表.md',
+    '_bmad-output/implementation-artifacts/foo-credentials-table.md',
+    '_bmad-output/implementation-artifacts/codex-review-credentials.json',
+    # Business source / migration / test filenames
+    'migrations/V53_create_credentials_table.sql',
+    'src/credentials.py',
+    'src/credentials_service.go',
+    'internal/credentials/service.go',
+    'test/credentials_test.go',
+]
+cases_block = [
+    # Actual credential files — must still be blacklisted
+    'sub/credentials',
+    'sub/credentials.json',
+    'sub/credentials.yaml',
+    'sub/aws-credentials.json',
+    'sub/kong-credentials.yaml',
+    'sub/kong.credentials',
+    'configs/credentials.ini',
+    # Other unchanged rules — no regression
+    'sub/foo.pem',
+    'subdir/.env.local',
+    'sub/secrets/api-key.txt',
+    # Allow-list doesn't over-exempt: .pem under artifacts/ still blocked
+    '_bmad-output/implementation-artifacts/credentials.pem',
+]
+errors = 0
+for p in cases_pass:
+    r = hc.matches_blacklist(p)
+    if r is not None:
+        print(f'FAIL_PASS {p!r} → {r}')
+        errors += 1
+for p in cases_block:
+    r = hc.matches_blacklist(p)
+    if r is None:
+        print(f'FAIL_BLOCK {p!r}')
+        errors += 1
+print(f'ERRORS={errors}')
+" 2>&1)
+RC=$?
+if [[ $RC -eq 0 ]] && grep -q "^ERRORS=0$" <<< "$OUT"; then
+    pass "T1.f13 — blacklist: business names PASS, real credential files BLOCK (issue #2)"
+else
+    fail "T1.f13 — blacklist coverage (rc=$RC out=$OUT)"
+fi
+
+# ----------------------------------------------------------------------------
+# T1.f14 — _seed_retro_action_items: top-level `retro_action_items:` parent key
+#          ABSENT → auto-bootstrap at EOF instead of halt (v0.1.36 issue #6).
+#          Input file deliberately ends WITHOUT a trailing newline (the
+#          human-edit footgun): script must own its own newlines so the parent
+#          key and the `  epic-N-retro:` subblock never merge onto one physical
+#          line. Result must be well-formed YAML; re-run idempotent.
+# ----------------------------------------------------------------------------
+TMP="$(mktemp -d "${SANDBOX}/t1f14.XXXXXX")"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts"
+# No `retro_action_items:` key at all, AND no trailing newline at EOF.
+printf 'last_updated: 2026-06-03\n\ndevelopment_status:\n  54-6-foo: done\n\ntest_status: {}' \
+    > "${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"
+cat > "${TMP}/_bmad-output/implementation-artifacts/epic-54-retro-2026-06-03.md" <<'MD'
+# Epic 54 Retrospective
+
+## 6. Action Items
+
+### BB1 — first thing
+### BB2 — second thing
+### BB3 — third thing
+MD
+SS="${TMP}/_bmad-output/implementation-artifacts/sprint-status.yaml"
+F14_ERR="${TMP}/f14-stderr.txt"
+OUT=$(cd "${TMP}" && HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hc', '${SCRIPT_DIR}/harness-commit.py')
+hc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hc)
+md = '_bmad-output/implementation-artifacts/epic-54-retro-2026-06-03.md'
+ss = '_bmad-output/implementation-artifacts/sprint-status.yaml'
+try:
+    s1 = hc._seed_retro_action_items('54', md, ss)
+    s2 = hc._seed_retro_action_items('54', md, ss)  # idempotent
+    print('SEEDED1', [c for c, t, cat in s1])
+    print('SEEDED2', len(s2))
+except RuntimeError as e:
+    print('UNEXPECTED_RAISE', str(e))
+" 2>"$F14_ERR")
+RC=$?
+# Footgun guard: the merged-line malformation looked like `retro_action_items:  epic-54-retro:`
+MERGED=$(grep -cE 'retro_action_items:.*epic-54-retro:' "${SS}" 2>/dev/null || true)
+# YAML well-formedness + structural check via python (PyYAML if present, else skip)
+YAML_OK=$(python3 -c "
+try:
+    import yaml
+except ImportError:
+    print('SKIP'); raise SystemExit
+d = yaml.safe_load(open('${SS}'))
+rai = d.get('retro_action_items') or {}
+blk = rai.get('epic-54-retro') or {}
+# v0.2.0: nested mapping form (`BB1: {status: pending}`)
+print('OK' if set(blk) == {'BB1','BB2','BB3'} and all(isinstance(v, dict) and v.get('status')=='pending' for v in blk.values()) else 'BAD '+repr(rai))
+" 2>/dev/null)
+if [[ $RC -eq 0 ]] && \
+   grep -q "SEEDED1 \['BB1', 'BB2', 'BB3'\]" <<< "$OUT" && \
+   grep -q "SEEDED2 0" <<< "$OUT" && \
+   [[ "$MERGED" -eq 0 ]] && \
+   { [[ "$YAML_OK" == "OK" ]] || [[ "$YAML_OK" == "SKIP" ]]; }; then
+    pass "T1.f14 — absent retro_action_items: parent auto-bootstraps, no halt, no merged line (issue #6)"
+else
+    fail "T1.f14 — parent auto-bootstrap (rc=$RC merged=$MERGED yaml=$YAML_OK out=$OUT err=$(cat "$F14_ERR" 2>/dev/null))"
+    cat "${SS}"
+fi
+
+# ============================================================================
+# T2 — stage 5.5 commit message suffix unification
+# ============================================================================
+
+echo ""
+echo "=== T2 group (3 fixtures) — stage 5.5 commit message suffix ==="
+
+# T2.f1 — T4 stage commit_msg has suffix
+T4_MATCH=$(awk '/"T4":/,/^    \}/' "${SCRIPT_DIR}/harness-commit.py" | grep -c 'atdd + e2e (run-sprint stage 5.5)' || true)
+if [[ "$T4_MATCH" -ge 1 ]]; then
+    pass "T2.f1 — T4 STAGES.commit_msg 含 \"(run-sprint stage 5.5)\""
+else
+    fail "T2.f1 — T4 commit_msg suffix missing"
+fi
+
+# T2.f2 — 5-5 stage commit_msg has suffix
+F55_MATCH=$(awk '/"5-5":/,/^    \}/' "${SCRIPT_DIR}/harness-commit.py" | grep -c 'atdd + e2e (run-sprint stage 5.5)' || true)
+if [[ "$F55_MATCH" -ge 1 ]]; then
+    pass "T2.f2 — 5-5 STAGES.commit_msg 含 \"(run-sprint stage 5.5)\""
+else
+    fail "T2.f2 — 5-5 commit_msg suffix missing"
+fi
+
+# T2.f3 — run-test.md T4 row in expected-output table has suffix.
+# Source-tree-direct (finding #12): grep the plugin source commands/run-test.md
+# next to this script — the ${REPO_ROOT}/.claude/commands/ deployed copy does
+# not exist in the source tree (only /super-harness:init materializes it).
+RTS_TABLE_MATCH=$(grep -c "atdd + e2e (run-sprint stage 5.5)" "${SCRIPT_DIR}/../commands/run-test.md" || true)
+if [[ "$RTS_TABLE_MATCH" -ge 1 ]]; then
+    pass "T2.f3 — commands/run-test.md 含 \"(run-sprint stage 5.5)\" 后缀"
+else
+    fail "T2.f3 — commands/run-test.md suffix missing"
+fi
+
+# ============================================================================
+# T3 — harness-state.py --resume-prompt --stage 2 enhanced fields
+# ============================================================================
+
+echo ""
+echo "=== T3 group (4 fixtures) — resume-prompt stage 2 enhancements ==="
+
+# T3.f1 — _format_worktree_landing_summary exposes "worktree 落地清单" and
+#         groups real porcelain output by first-level dir. Loads the source
+#         tree via ${SCRIPT_DIR} (finding #12 — was CWD-relative .claude/...).
+TMP="$(mktemp -d "${SANDBOX}/t3f1.XXXXXX")"
+git -C "${TMP}" init -q
+mkdir -p "${TMP}/src"
+echo "alpha" > "${TMP}/src/a.ts"
+echo "beta" > "${TMP}/src/b.ts"
+echo "root-level" > "${TMP}/notes.txt"
+T3F1_ERR="${SANDBOX}/t3f1-stderr.txt"
+OUT=$(cd "${TMP}" && HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hs', '${SCRIPT_DIR}/harness-state.py')
+hs = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hs)
+print(hs._format_worktree_landing_summary())
+" 2>"$T3F1_ERR")
+if grep -q "worktree 落地清单" <<< "$OUT" && grep -q "src/" <<< "$OUT"; then
+    pass "T3.f1 — _format_worktree_landing_summary 输出含 'worktree 落地清单' + src/ 分组"
+else
+    fail "T3.f1 — worktree landing summary helper (out=$OUT err=$(cat "$T3F1_ERR" 2>/dev/null))"
+fi
+
+# T3.f2 — _format_git_diff_stat_summary exposes "git diff --stat 摘要" with a
+#         real tracked-file modification in the fixture repo.
+TMP="$(mktemp -d "${SANDBOX}/t3f2.XXXXXX")"
+git -C "${TMP}" init -q
+echo "v1" > "${TMP}/tracked.txt"
+git -C "${TMP}" add tracked.txt
+git -C "${TMP}" -c user.email=harness@test -c user.name=harness -c commit.gpgsign=false \
+    commit -qm "init" >/dev/null
+echo "v2" >> "${TMP}/tracked.txt"
+T3F2_ERR="${SANDBOX}/t3f2-stderr.txt"
+OUT=$(cd "${TMP}" && HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hs', '${SCRIPT_DIR}/harness-state.py')
+hs = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hs)
+print(hs._format_git_diff_stat_summary())
+" 2>"$T3F2_ERR")
+if grep -q "git diff --stat 摘要" <<< "$OUT" && grep -q "tracked.txt" <<< "$OUT"; then
+    pass "T3.f2 — _format_git_diff_stat_summary 输出含 'git diff --stat 摘要' + tracked.txt"
+else
+    fail "T3.f2 — git diff stat helper (out=$OUT err=$(cat "$T3F2_ERR" 2>/dev/null))"
+fi
+
+# T3.f3 — _format_dev_result_summary 处理缺失文件路径输出 "**未写**"
+TMP="$(mktemp -d "${SANDBOX}/t3f3.XXXXXX")"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts"
+T3F3_ERR="${SANDBOX}/t3f3-stderr.txt"
+OUT=$(cd "${TMP}" && HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hs', '${SCRIPT_DIR}/harness-state.py')
+hs = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hs)
+print(hs._format_dev_result_summary('nonexistent-key'))
+" 2>"$T3F3_ERR")
+if grep -q "未写" <<< "$OUT" && grep -q "机器可读完成门必交付" <<< "$OUT"; then
+    pass "T3.f3 — dev-result.json 缺失 → '**未写**' 标记"
+else
+    fail "T3.f3 — dev-result missing-file path (out=$OUT err=$(cat "$T3F3_ERR" 2>/dev/null))"
+fi
+
+# T3.f4 — _format_dev_result_summary 字段一览（已写）
+TMP="$(mktemp -d "${SANDBOX}/t3f4.XXXXXX")"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts"
+cat > "${TMP}/_bmad-output/implementation-artifacts/4-fixture-test.dev-result.json" <<'JSON'
+{"story_key": "4-fixture-test", "checks": {"tests": "pass", "lint": "skip"}, "files_changed_count": 18, "final_story_status": "review"}
+JSON
+T3F4_ERR="${SANDBOX}/t3f4-stderr.txt"
+OUT=$(cd "${TMP}" && HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 -c "
+import sys
+sys.path.insert(0, '${SCRIPT_DIR}')
+import importlib.util
+spec = importlib.util.spec_from_file_location('hs', '${SCRIPT_DIR}/harness-state.py')
+hs = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hs)
+print(hs._format_dev_result_summary('4-fixture-test'))
+" 2>"$T3F4_ERR")
+if grep -q "已写，字段一览" <<< "$OUT" && grep -q "files_changed_count: 18" <<< "$OUT" && \
+   grep -q "final_story_status:" <<< "$OUT"; then
+    pass "T3.f4 — dev-result.json 字段一览（checks / files_changed_count / final_story_status）"
+else
+    fail "T3.f4 — dev-result field overview (out=$OUT err=$(cat "$T3F4_ERR" 2>/dev/null))"
+fi
+
+# ============================================================================
+# T4 — halt-recovery-check 三态
+#
+# Finding #12: stdout and stderr are captured SEPARATELY — the verdict is the
+# first line of STDOUT only. The old `2>&1` merge let any legitimate stderr
+# WARN (e.g. harness_config fallback notices) land on line 1 and fail the
+# fixture even when the verdict was correct.
+# ============================================================================
+
+echo ""
+echo "=== T4 group (5 fixtures) — halt-recovery-check 3 verdict ==="
+
+# T4.f1 — stage 5 work-done-but-msg-lost (READY_TO_COMMIT)
+TMP="$(mktemp -d "${SANDBOX}/t4f1.XXXXXX")"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts"
+cat > "${TMP}/_bmad-output/implementation-artifacts/4-1-fix.md" <<'MD'
+# 4-1 fix story
+
+Status: done
+
+## Tasks
+- [x] something
+MD
+echo '{"unresolved": {"critical": 0, "high": 0, "medium": 0, "low": 0}, "final_story_status": "done"}' \
+    > "${TMP}/_bmad-output/implementation-artifacts/4-1-fix.review-findings.json"
+echo '{"phase": "done", "findings": {}}' \
+    > "${TMP}/_bmad-output/implementation-artifacts/4-1-fix.review-progress.json"
+T4F1_ERR="${SANDBOX}/t4f1-stderr.txt"
+OUT=$(cd "${TMP}" && HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 "${HARNESS_STATE}" 4-1-fix --halt-recovery-check --stage 5 2>"$T4F1_ERR")
+RC=$?
+FIRST_LINE=$(printf '%s\n' "$OUT" | head -n 1)
+if [[ $RC -eq 0 ]] && [[ "$FIRST_LINE" == "READY_TO_COMMIT" ]]; then
+    pass "T4.f1 — stage 5 work-done-but-msg-lost → READY_TO_COMMIT"
+else
+    fail "T4.f1 — stage 5 READY (rc=$RC first=$FIRST_LINE)"
+    echo "--- stdout ---"; echo "$OUT"
+    echo "--- stderr ---"; cat "$T4F1_ERR" 2>/dev/null
+fi
+
+# T4.f2 — stage 5 work-not-done (NEED_RESUME)
+TMP="$(mktemp -d "${SANDBOX}/t4f2.XXXXXX")"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts"
+# 没有 review-findings.json，story md Status=review (stage 2 done)
+cat > "${TMP}/_bmad-output/implementation-artifacts/4-2-fix.md" <<'MD'
+# 4-2 fix story
+
+Status: review
+
+## Tasks
+- [ ] not yet done
+MD
+T4F2_ERR="${SANDBOX}/t4f2-stderr.txt"
+OUT=$(cd "${TMP}" && HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 "${HARNESS_STATE}" 4-2-fix --halt-recovery-check --stage 5 2>"$T4F2_ERR")
+RC=$?
+FIRST_LINE=$(printf '%s\n' "$OUT" | head -n 1)
+if [[ $RC -eq 0 ]] && [[ "$FIRST_LINE" == "NEED_RESUME" ]]; then
+    pass "T4.f2 — stage 5 work-not-done → NEED_RESUME"
+else
+    fail "T4.f2 — stage 5 NEED_RESUME (rc=$RC first=$FIRST_LINE)"
+    echo "--- stdout ---"; echo "$OUT"
+    echo "--- stderr ---"; cat "$T4F2_ERR" 2>/dev/null
+fi
+
+# T4.f3 — stage 5 partial齐 (INCONSISTENT — review-progress 在但 findings 缺)
+TMP="$(mktemp -d "${SANDBOX}/t4f3.XXXXXX")"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts"
+cat > "${TMP}/_bmad-output/implementation-artifacts/4-3-fix.md" <<'MD'
+# 4-3 fix story
+
+Status: review
+
+## Tasks
+- [x] partial done
+MD
+echo '{"phase": "patching", "findings": {"F1": {"status": "patched"}}}' \
+    > "${TMP}/_bmad-output/implementation-artifacts/4-3-fix.review-progress.json"
+T4F3_ERR="${SANDBOX}/t4f3-stderr.txt"
+OUT=$(cd "${TMP}" && HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 "${HARNESS_STATE}" 4-3-fix --halt-recovery-check --stage 5 2>"$T4F3_ERR")
+RC=$?
+FIRST_LINE=$(printf '%s\n' "$OUT" | head -n 1)
+if [[ $RC -eq 0 ]] && [[ "$FIRST_LINE" == "INCONSISTENT" ]]; then
+    pass "T4.f3 — stage 5 partial齐 → INCONSISTENT"
+else
+    fail "T4.f3 — stage 5 INCONSISTENT (rc=$RC first=$FIRST_LINE)"
+    echo "--- stdout ---"; echo "$OUT"
+    echo "--- stderr ---"; cat "$T4F3_ERR" 2>/dev/null
+fi
+
+# T4.f4 — unknown stage exit 1（诊断行走 stderr）
+T4F4_ERR="${SANDBOX}/t4f4-stderr.txt"
+OUT=$(cd "${SANDBOX}" && HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 "${HARNESS_STATE}" 4-4-fix --halt-recovery-check --stage 6 2>"$T4F4_ERR")
+RC=$?
+T4F4_STDERR="$(cat "$T4F4_ERR" 2>/dev/null)"
+# stage 6 not in HALT_RECOVERY_SPECS → unknown stage exit 1
+if [[ $RC -eq 1 ]] && grep -q "unknown stage" <<< "$T4F4_STDERR"; then
+    pass "T4.f4 — unknown stage 6 → exit 1 + 'unknown stage' on stderr"
+else
+    fail "T4.f4 — unknown stage (rc=$RC out=$OUT stderr=$T4F4_STDERR)"
+fi
+
+# T4.f5 — stage 2 READY (md Status=review + dev-result.json)
+TMP="$(mktemp -d "${SANDBOX}/t4f5.XXXXXX")"
+mkdir -p "${TMP}/_bmad-output/implementation-artifacts"
+cat > "${TMP}/_bmad-output/implementation-artifacts/4-5-fix.md" <<'MD'
+# 4-5 fix story
+
+Status: review
+
+## Tasks
+- [x] done
+MD
+echo '{"checks": {"tests": "pass"}, "final_story_status": "review"}' \
+    > "${TMP}/_bmad-output/implementation-artifacts/4-5-fix.dev-result.json"
+T4F5_ERR="${SANDBOX}/t4f5-stderr.txt"
+OUT=$(cd "${TMP}" && HARNESS_CONFIG_PATH="${FIXTURE_CONFIG}" python3 "${HARNESS_STATE}" 4-5-fix --halt-recovery-check --stage 2 2>"$T4F5_ERR")
+RC=$?
+FIRST_LINE=$(printf '%s\n' "$OUT" | head -n 1)
+if [[ $RC -eq 0 ]] && [[ "$FIRST_LINE" == "READY_TO_COMMIT" ]]; then
+    pass "T4.f5 — stage 2 READY (md Status=review + dev-result.json)"
+else
+    fail "T4.f5 — stage 2 READY (rc=$RC first=$FIRST_LINE)"
+    echo "--- stdout ---"; echo "$OUT"
+    echo "--- stderr ---"; cat "$T4F5_ERR" 2>/dev/null
+fi
+
+# ============================================================================
+# Summary
+# ============================================================================
+
+echo ""
+echo "=== Summary ==="
+echo "PASS: $PASS  FAIL: $FAIL"
+
+if [[ $FAIL -gt 0 ]]; then
+    exit 1
+fi
+exit 0

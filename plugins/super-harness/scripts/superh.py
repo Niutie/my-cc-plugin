@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""superh — super-harness 调度层 CLI（多路并行跑 harness-zh story）。
+"""superh — super-harness 并行调度 CLI（/super-harness:run 用）。
 
-super-harness 不重写单条 story 的流水线：B0-B3 由 worker 在独立 worktree 里按
-harness-zh run.md 执行，B4 及之后（build-sync / 测试 / retro）由主 worktree 的
-调度者串行执行。本脚本负责调度层所有确定性的部分：就绪判定、worktree 准备、
+单条 story 的流水线写在 .claude/harness/pipeline.md：B0-B3 由 worker 在独立
+worktree 里按 lane 模式执行，B4 及之后（build-sync / 测试 / retro）由主 worktree
+的调度者串行执行。本脚本负责调度层所有确定性的部分：就绪判定、worktree 准备、
 worker 进程启动、合流（rebase + 账本冲突自动消解 + tag 搬迁 + ff 合并）、看板。
 
 状态存放在 `$(git rev-parse --git-common-dir)/super-harness/`，不进 git，所有
@@ -63,7 +63,7 @@ DEFAULT_CONFIG = {
     "retro_barrier": True,
     "worktree_root": "",                 # 空 = <repo 上级目录>/<repo 名>.worktrees
     "branch_prefix": "story/",
-    "copy_paths": [".claude/harness", ".claude/commands", ".claude/skills", "_bmad",
+    "copy_paths": [".claude/harness", ".claude/skills", "_bmad",
                    ".claude/settings.local.json"],
     "link_paths": [],
     "prepare_command": "",
@@ -148,9 +148,17 @@ class Ctx:
         self.state = self.common / "super-harness"
         self.lanes = self.state / "lanes"
         self.logs = self.state / "logs"
-        self.sh_dir = self.root / ".claude" / "super-harness"
-        self.harness_scripts = self.root / ".claude" / "harness" / "scripts"
-        self.config = load_config(self.sh_dir / "config.yaml")
+        self.harness_dir = self.root / ".claude" / "harness"
+        self.harness_scripts = self.harness_dir / "scripts"
+        self.config_path = self.harness_dir / "parallel.yaml"
+        # super-harness 0.1.0 kept its config at .claude/super-harness/config.yaml.
+        # Falling back to defaults would silently drop deps_overrides and let
+        # stories that must be serial run in parallel, so refuse instead.
+        self.legacy_config = self.root / ".claude" / "super-harness" / "config.yaml"
+        if not self.config_path.exists() and self.legacy_config.exists():
+            die("发现 0.1.0 的并行配置 .claude/super-harness/config.yaml，但没有 .claude/harness/parallel.yaml",
+                "先跑 /super-harness:update（会把旧配置原样搬到新位置），或手工把旧文件复制成 .claude/harness/parallel.yaml")
+        self.config = load_config(self.config_path)
         slots = (read_json(self.state / "run.json") or {}).get("max_slots")
         if isinstance(slots, int) and slots > 0:
             self.config["max_slots"] = slots
@@ -162,11 +170,11 @@ class Ctx:
             self.wt_root = self.root.parent / f"{self.root.name}.worktrees"
         self._harness = None
 
-    # harness-zh libs (deployed copy in the main worktree)
+    # harness libs (deployed copy in the main worktree)
     def harness(self):
         if self._harness is None:
             if not (self.harness_scripts / "harness_spec.py").exists():
-                die("没找到 .claude/harness/scripts/harness_spec.py：super-harness 依赖 harness-zh ≥ 0.2.1，请先跑 /harness-zh:init")
+                die("没找到 .claude/harness/scripts/harness_spec.py：请先跑 /super-harness:init")
             sys.path.insert(0, str(self.harness_scripts))
             import harness_config  # noqa: E402
             import harness_spec  # noqa: E402
@@ -352,7 +360,7 @@ def parse_sprint(path: Path):
     stories: list of {key, status, deps} in file order; deps is None when the entry
     has no depends_on field (unknown), a list otherwise ([] = explicitly independent).
     epic_keys: {"epic-N": status, "epic-N-retrospective": status}.
-    Mirrors harness-zh sprint-status.py layout handling (single-line + block entries)."""
+    Mirrors sprint-status.py layout handling (single-line + block entries)."""
     if not path.exists():
         die(f"没找到 {path}：请先跑 bmad-sprint-planning")
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -531,7 +539,7 @@ def analyze(ctx):
         elif k in inflight:
             row["state"] = "inflight"
             if k not in active_lane:
-                row["reasons"].append("有 harness/<KEY>/start tag 但没有 super-harness lane（harness-zh 单路跑过、未完成）")
+                row["reasons"].append("有 harness/<KEY>/start tag 但没有 lane（用 run-inline 跑过、未完成；用 /super-harness:run-inline --continue 收尾）")
         elif st != "backlog":
             row["state"] = "waiting"
             row["reasons"].append(f"status={st}，不是 backlog，super-harness 不接手")
@@ -583,7 +591,7 @@ def analyze(ctx):
 def cmd_env(ctx, _a):
     print(json.dumps({
         "main_root": str(ctx.root), "state_dir": str(ctx.state), "worktree_root": str(ctx.wt_root),
-        "sprint_branch": ctx.sprint_branch(), "config": ctx.config,
+        "sprint_branch": ctx.sprint_branch(), "config_file": str(ctx.config_path), "config": ctx.config,
     }, ensure_ascii=False, indent=2))
     return 0
 
@@ -866,14 +874,14 @@ def cmd_prepare(ctx, a):
 # ------------------------------------------------------------------------ launch
 
 def render_worker_prompt(ctx, lane, attempt) -> str:
-    tpl_path = ctx.sh_dir / "prompts" / "worker.md"
+    tpl_path = ctx.harness_dir / "prompts" / "worker.md"
     if not tpl_path.exists():
         die(f"没找到 {tpl_path}：先跑 /super-harness:init")
     text = tpl_path.read_text(encoding="utf-8")
     subs = {
         "KEY": lane["key"], "WORKTREE": lane["worktree"], "BRANCH": lane["branch"],
         "SPRINT_BRANCH": lane["sprint_branch"], "ATTEMPT": str(attempt),
-        "SUPERH": f"python3 {ctx.sh_dir / 'scripts' / 'superh.py'}", "MAIN_ROOT": str(ctx.root),
+        "SUPERH": f"python3 {ctx.harness_scripts / 'superh.py'}", "MAIN_ROOT": str(ctx.root),
     }
     for k, v in subs.items():
         text = text.replace("{{" + k + "}}", v)
@@ -1249,7 +1257,7 @@ def _artifact_rel(ctx, name: str) -> str:
 
 def _tests_recorded_in_head(ctx, key: str) -> bool:
     """⑤.5 leaves a committed result (`<KEY>-test-result.json`) or a sandbox-skip
-    report (`skipped-<KEY>-*.md`) under test_artifacts/ (harness-zh run-test T4)."""
+    report (`skipped-<KEY>-*.md`) under test_artifacts/ (run-test T4)."""
     d = _artifact_rel(ctx, "test_artifacts")
     r = git(["ls-tree", "-r", "--name-only", "HEAD", "--", d], cwd=ctx.root)
     for p in r.stdout.splitlines():
@@ -1445,6 +1453,9 @@ def cmd_doctor(ctx, _a):
             print(f"PROBLEM={rel}：软链需要 .gitignore 里有不带结尾斜杠的规则（`{rel}/` 匹配不到软链）")
     for ln in _gitignore_hint(problems):
         print(ln)
+    if ctx.legacy_config.parent.exists():
+        print("WARN=.claude/super-harness/ 是 super-harness 0.1.0 的旧目录，0.2.0 起不再读取"
+              "（配置已改用 .claude/harness/parallel.yaml），确认新配置无误后可以删除")
     print("STATUS=" + ("attention" if problems else "ok"))
     return 0
 
@@ -1507,7 +1518,7 @@ def cmd_start_run(ctx, a):
         for d in dirty[:20]:
             print(f"DIRTY={d}")
     print(f"WORKTREE_ROOT={ctx.wt_root}")
-    print(f"MAX_SLOTS={info.get('max_slots') or load_config(ctx.sh_dir / 'config.yaml')['max_slots']}")
+    print(f"MAX_SLOTS={info.get('max_slots') or load_config(ctx.config_path)['max_slots']}")
     return 0
 
 

@@ -2,6 +2,8 @@
 
 > Part of the [my-cc-plugin](../../README.md) marketplace — see it for install steps and the other plugin.
 
+> **Deprecated.** harness-zh was merged into [super-harness](../super-harness/README.md) 0.2.0 and is frozen at 0.2.1. To migrate a project: `/plugin install super-harness@my-cc-plugin`, run `/super-harness:init` in the project root (your `harness-project-config.yaml`, `harness/<KEY>/*` tags and sprint state carry over; the old command copies under `.claude/commands/` are backed up and removed), then `/plugin uninstall harness-zh`. `/harness-zh:run` becomes `/super-harness:run-inline` with the same flags; `/super-harness:run` adds parallel execution.
+
 A sprint orchestration loop (`/harness-zh:run`) plus a test-automation loop (`/harness-zh:run-test`) layered on top of [BMad Method](https://github.com/bmad-code-org/BMAD-METHOD). Designed for **solo developer + AI agent** workflows where:
 
 - One developer drives multiple AI subagents (BMad agents, Codex review, etc.)

@@ -1,11 +1,13 @@
-# super-harness 项目配置（/super-harness:init 首次投放，之后不会被覆盖）
+# super-harness 并行调度配置（/super-harness:run 用；/super-harness:init 首次投放到
+# .claude/harness/parallel.yaml，之后 init / update 都不会覆盖）。
+# 单路的 /super-harness:run-inline 不读这个文件。
 
 # 同时运行的 worker 数。每一路是一个独立的 claude 进程 + 一个 worktree，
 # token 消耗大致按路数线性增长。建议先用 2，跑顺了再加。
 max_slots: 2
 
 # sprint-status.yaml 里没有 depends_on 字段的 story 怎么处理：
-#   serial         当作依赖它前面所有 story（等价于 harness-zh 的串行），默认
+#   serial         当作依赖它前面所有 story（效果等于一次一条），默认
 #   epic-parallel  同一 epic 内视为互相独立，只受 epic 屏障约束
 # 写了 depends_on 的 story（包括 depends_on: []）总是按声明来。
 no_deps_policy: serial
@@ -20,10 +22,9 @@ worktree_root: ''
 branch_prefix: story/
 
 # 主 worktree 里存在、但没进 git 的路径，开 lane 时复制进去（已在 worktree 里的不动）。
-# harness-zh 的脚本按自身文件位置推算仓库根目录，所以 .claude/harness 必须复制，不能软链。
+# .claude/harness 下的脚本按自身文件位置推算仓库根目录，所以它必须复制，不能软链。
 copy_paths:
   - .claude/harness
-  - .claude/commands
   - .claude/skills
   - _bmad
   - .claude/settings.local.json

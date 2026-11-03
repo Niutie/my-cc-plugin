@@ -1,0 +1,252 @@
+#!/bin/bash
+# Harness pre-commit hook
+#
+# Gate ①：retro action items checker — staged diff 新建任一 story spec 时触发；
+#         harness-project-config.yaml `retro_gate: block` 才拒 commit，默认 warn
+#         （`<N>-<M>-*.md` 旧布局 / `spec-<N>-<M>-*.md` bmad-build 布局，任意 epic）
+#
+# 其它 commit 一概放行（包括 C2-C9 自身、Epic 1-3 改动、文档、tests、删除
+# 老 4-x-*.md 等清理操作）。
+#
+# `git commit --no-verify` 显式保留；solo-dev 必要时绕过——但应**在被绕过的
+# retro action item 自身的 sprint-status.yaml 行注释里**加备注，让未来 retro
+# 审计能看到跳过痕迹（commit message 是 ephemeral 的；yaml 注释持久）。
+#
+# 仓库源：.claude/harness/git-hooks/pre-commit  → 由 .claude/harness/scripts/install_git_hooks.sh
+# 安装到 .git/hooks/pre-commit（git 不追踪 .git/hooks/ 内文件）。
+#
+# v1 → v1.1 (review patches 2026-05-03)：E10 checker 缺失 distinct error、
+# E11 `--diff-filter=A` 排除 rename / delete、A8 bypass 文字对齐 spec frozen。
+# v1.2 → v1.3 (2026-05-05)：删除 D5 引入的 gate ② 继承段约束（零实战 +
+# false positive 阻塞 epic-5 stage ③ codex-review.md）；继承段质量回归
+# spec 作者人肉守门 + retro-time 抽查（check_inheritance_block.sh 保留作为
+# 抽查工具，不再被 hook 调用）。
+# v1.4 (2026-05-04)：加 gate ② deferred-work schema v1 — staged diff 含
+# deferred-work.md 改动时校验新增 FU bullet 必带 4-tag 头 + 拒绝老 inline
+# 后缀模式 + 拒绝 FU-RETRO-* 命名空间。仅扫新增行，不溯历史。详
+# .claude/harness/conventions/deferred-work-schema.md §2.1.
+# v1.5 (2026-05-05)：retro automation B 方案 — checker 按 category 分流，
+# gate ① 只阻 dev 类 pending；harness 类仅 stderr WARN（不 block）。详
+# .claude/harness/architecture.md §六 Q4 决策段。
+# v0.2.0 (2026-10-27)：触发不再写死 epic 4-6（模板项目遗留，epic ≥ 7 的项目里
+# gate ① 从没触发过），改为任意 epic 的新 story spec；文件名带第二个 `.`
+# 的 sidecar（`<KEY>.codex-review.md` 等）不触发。bmad-build-auto 自己 commit，
+# 本 hook 拦下它的 commit 会让它 HALT「finalization left repository dirty」——
+# pipeline.md §0.A.0 因此在 dispatch 前就把待兑现 dev 项清零或 halt。
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+RETRO_TRIGGER='_bmad-output/implementation-artifacts/(spec-)?[0-9]+-[0-9]+[a-z]?-[^/.]*\.md$'
+RETRO_CHECKER=".claude/harness/scripts/check_retro_action_items.sh"
+DEFERRED_WORK_PATH="_bmad-output/implementation-artifacts/deferred-work.md"
+SCHEMA_LIB="$REPO_ROOT/.claude/harness/scripts/deferred_work_schema_lib.sh"
+
+cd "$REPO_ROOT"
+
+# Source the shared schema validation library if present (v0.1.27+). Falls
+# back to inline regexes below if missing (e.g. project not yet updated).
+if [ -f "$SCHEMA_LIB" ]; then
+    # shellcheck disable=SC1090
+    source "$SCHEMA_LIB"
+fi
+
+# `-c core.quotepath=false` 让 git 对 CJK 路径返回原始 UTF-8 而非 C-style
+# 八进制转义；否则中文 retro / story 文件名会被双引号包裹，gate 触发 grep
+# 漏匹配。当前 trigger pattern 都是 ASCII，但任何未来的 CJK retro 命名会
+# 直接踩坑——一行防御性补丁，零成本。
+GIT="git -c core.quotepath=false"
+
+# E11: --diff-filter=A 仅命中"新增"路径；rename / delete / modify 现有 4-x-*.md
+# 不触发（避免清理 / 重命名旧 spec 时被本 hook 误阻）。
+ADDED_PATHS="$($GIT diff --cached --name-only --diff-filter=A || true)"
+
+# ── Gate ① retro action items ─────────────────────────────────────────
+if echo "$ADDED_PATHS" | grep -qE "$RETRO_TRIGGER"; then
+    # E10: checker 文件存在性 + 可执行性 distinct probe，避免与"块缺失"撞 exit 1
+    if [ ! -f "$RETRO_CHECKER" ]; then
+        echo "ERROR: retro action items checker missing at $RETRO_CHECKER —" >&2
+        echo "       expected to ship in repo per Epic 3 retro §C1." >&2
+        echo "       cannot enforce; commit blocked. Run 'git stash && just install-git-hooks'" >&2
+        echo "       or restore $RETRO_CHECKER from upstream." >&2
+        exit 1
+    fi
+
+    # v0.2.0: retro_gate (harness-project-config.yaml) — `block` 拒 commit；
+    # `warn`（默认）只打印同一份提示后放行。gate ① 扩到任意 epic、并且
+    # checker 开始认 nested 形态后，存量 dev 项会第一次被看见；默认 block
+    # 会让升级当天所有新 story spec 的 commit（含手工 bmad-build）全被拒。
+    RETRO_GATE_MODE="warn"
+    if [ -f "$REPO_ROOT/.claude/harness/scripts/harness_config.py" ]; then
+        RETRO_GATE_MODE="$(PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_ROOT/.claude/harness/scripts/harness_config.py" --get retro_gate --default warn --quiet 2>/dev/null || echo warn)"
+    fi
+    RETRO_RC=0
+    bash "$RETRO_CHECKER" || RETRO_RC=$?
+    if [ "$RETRO_RC" -ne 0 ] && [ "$RETRO_GATE_MODE" != "block" ]; then
+        echo "WARN: 仍有未兑现 dev 类 retro action items（retro_gate=$RETRO_GATE_MODE，不阻 commit；设为 block 才拦截）。明细：bash $RETRO_CHECKER" >&2
+    elif [ "$RETRO_RC" -ne 0 ]; then
+        cat >&2 <<'EOF'
+
+ERROR: 仍有未兑现 dev 类 retro action items；不能创建新的 story spec
+─────────────────────────────────────────────────────
+注：仅 category: dev 的 pending/in-progress 项阻断本 gate；harness 类
+    （流程脚本 / hook / skill / template / convention 等）显示为 WARN
+    但不阻 epic 推进 — 详 .claude/harness/architecture.md §六 Q4。
+
+处理路径：
+  ① 兑现：跑掉缺失的 dev retro action item，把 sprint-status.yaml 对应 status
+     翻 done / partial / deferred
+  ② 显式跳过：git commit --no-verify
+     爆炸半径：让 retro fail-safe 失效；必须**在被绕过的 retro action item
+     自身 sprint-status.yaml 行注释里**加备注（commit message 是 ephemeral 的；
+     yaml 注释持久，未来 retro 审计能看到跳过痕迹）
+  ③ 查看明细：bash .claude/harness/scripts/check_retro_action_items.sh
+  ④ harness 类待评估：tell main agent "评估 harness 优化" 进入 chore 实施流程
+─────────────────────────────────────────────────────
+依据：epic-3-retro-2026-05-03.md §C1 + §9.2 Epic 4 启动前 P0 列表
+      + 2026-05-05 retro automation B 方案 category 分流
+EOF
+        exit 1
+    fi
+fi
+
+# ── Gate ② deferred-work schema v1 ─────────────────────────────────────
+# Triggered when staged diff modifies the deferred-work.md (any path component).
+# Only ADDED lines (+ lines, excluding the +++ file header) are scanned —
+# historical lines stay untouched. Three sub-checks:
+#   (a) Any "- **FU-..." bullet head must carry the 4-tag block exactly once
+#   (b) Legacy inline status suffix "— Resolved by Story X.Y (date):" forbidden
+#   (c) FU-RETRO-* namespace forbidden (retro action items live in
+#       sprint-status.yaml.retro_action_items)
+#   (d) target tag value must match schema §3.3 enumeration (v0.1.20):
+#       Story X.Y[.<letter|digit>] / Epic N[ retro| production lockdown] /
+#       vX.Y+ <kebab> / customer-feedback / N/A.
+#       Rejects common drift like `[target:1-7-全名]` (story-key style with
+#       hyphens) which silently breaks `grep_pending_deferred_for_story.sh`
+#       (expects `Story X.Y` short form).
+if $GIT diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
+    # extract added lines (drop "+++" header marker; keep "+" body lines)
+    # `|| true`：纯删除 diff（清理/归档 FU 条目）时 grep -v 滤掉 +++ 头后输出为空、
+    # 管道末命令 exit 1，set -e 下整个 hook 无声崩死阻断 commit——与 line 55
+    # ADDED_PATHS 写法对齐；空值路径由下方 [ -n "$ADDED" ] 守卫天然安全。
+    ADDED="$($GIT diff --cached --unified=0 -- "$DEFERRED_WORK_PATH" \
+             | grep -E '^\+' | grep -vE '^\+\+\+' || true)"
+
+    BAD_HEAD=""
+    BAD_LEGACY=""
+    BAD_RETRO=""
+    BAD_TARGET=""
+
+    # Use lib regexes if sourced, else fall back to inline (kept verbatim for
+    # back-compat when project hasn't yet pulled v0.1.27 update). NOTE: we use
+    # explicit `if` instead of `${VAR:-default}` because the default values
+    # contain `{4}` quantifiers — bash sees the inner `}` as the substitution
+    # terminator and truncates the regex (introduced 2026-05-09; caught by
+    # pre_commit_deferred_schema_test.sh fixture 3 in CI bootstrap).
+    if [ -n "${DWSL_HEAD_FULL_RE:-}" ]; then
+        HEAD_FULL_RE_LOCAL="$DWSL_HEAD_FULL_RE"
+        TARGET_VALID_RE_LOCAL="$DWSL_TARGET_VALID_RE"
+        LEGACY_INLINE_RE_LOCAL="$DWSL_LEGACY_INLINE_RE"
+    else
+        HEAD_FULL_RE_LOCAL='^- \*\*FU-[A-Za-z0-9._\-]+\*\* `\[status:[a-z\-]+\]` `\[bucket:[a-zA-Z0-9.+\-]+\]` `\[target:[^]`]*\]` `\[source:[^]`]*\]`'
+        TARGET_VALID_RE_LOCAL='^(Story [0-9]+\.[0-9]+[a-z]?([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
+        LEGACY_INLINE_RE_LOCAL='— (\*\*)?(Resolved|Partial resolution) by Story [0-9.]+(\*\*)? \([0-9]{4}-'
+    fi
+
+    if [ -n "$ADDED" ]; then
+        # All "+ ..." added lines (excluding +++ header) are passed in as
+        # ADDED already. Strip the leading "+" before applying lib regexes
+        # (which expect plain content lines).
+        STRIPPED="$(echo "$ADDED" | sed -E 's/^\+//')"
+
+        # (a) FU bullet head must match 4-tag schema
+        BAD_HEAD="$(echo "$STRIPPED" \
+            | grep -E '^- \*\*FU-' \
+            | grep -vE "$HEAD_FULL_RE_LOCAL" \
+            || true)"
+
+        # (b) legacy inline suffix
+        BAD_LEGACY="$(echo "$STRIPPED" \
+            | grep -E "$LEGACY_INLINE_RE_LOCAL" \
+            || true)"
+
+        # (c) FU-RETRO-* namespace
+        BAD_RETRO="$(echo "$STRIPPED" \
+            | grep -E '^- \*\*FU-RETRO-' \
+            || true)"
+
+        # (d) target tag value enumeration: only check well-formed FU bullet
+        # heads (the ones that passed (a)); extract [target:<v>] and validate.
+        BAD_TARGET="$(echo "$STRIPPED" \
+            | grep -E "$HEAD_FULL_RE_LOCAL" \
+            | while IFS= read -r line; do
+                target_val="$(printf '%s' "$line" | sed -nE "s/.*\`\[target:([^]\`]*)\]\`.*/\1/p")"
+                if ! printf '%s' "$target_val" | grep -qE "$TARGET_VALID_RE_LOCAL"; then
+                    printf '%s\n' "$line"
+                fi
+              done \
+            || true)"
+    fi
+
+    if [ -n "$BAD_HEAD$BAD_LEGACY$BAD_RETRO$BAD_TARGET" ]; then
+        cat >&2 <<'EOF'
+
+ERROR: deferred-work.md 新增内容违反 schema v1
+─────────────────────────────────────────────────────
+EOF
+        if [ -n "$BAD_HEAD" ]; then
+            echo "(a) FU bullet 头不符合 schema v1 4-tag 格式（新增行）：" >&2
+            echo "$BAD_HEAD" | head -5 >&2
+            cnt="$(echo "$BAD_HEAD" | wc -l | tr -d ' ')"
+            [ "$cnt" -gt 5 ] && echo "    ... 还有 $((cnt-5)) 行未列出" >&2
+            echo "" >&2
+            echo "    期望：- **FU-X.Y.Z** \`[status:S]\` \`[bucket:B]\` \`[target:T]\` \`[source:O]\` — desc" >&2
+            echo "    详见 .claude/harness/conventions/deferred-work-schema.md §2.1" >&2
+            echo "" >&2
+        fi
+        if [ -n "$BAD_LEGACY" ]; then
+            echo "(b) 老 inline 后缀模式已废弃（schema v1 §3.1）：" >&2
+            echo "$BAD_LEGACY" | head -3 >&2
+            echo "" >&2
+            echo "    改为 [status:resolved] tag + 历史 audit log 子段。" >&2
+            echo "" >&2
+        fi
+        if [ -n "$BAD_RETRO" ]; then
+            echo "(c) FU-RETRO-* 命名空间禁止进 deferred-work.md（schema v1 §3.2）：" >&2
+            echo "$BAD_RETRO" | head -3 >&2
+            echo "" >&2
+            echo "    retro action items 100% 归 sprint-status.yaml.retro_action_items。" >&2
+            echo "" >&2
+        fi
+        if [ -n "$BAD_TARGET" ]; then
+            echo "(d) [target:...] tag 值不符合 schema §3.3 枚举（新增行）：" >&2
+            echo "$BAD_TARGET" | head -5 >&2
+            cnt="$(echo "$BAD_TARGET" | wc -l | tr -d ' ')"
+            [ "$cnt" -gt 5 ] && echo "    ... 还有 $((cnt-5)) 行未列出" >&2
+            echo "" >&2
+            echo "    合法形式（schema §3.3）：" >&2
+            echo "      Story X.Y                  e.g. [target:Story 1.7]" >&2
+            echo "      Story X.Y.Z                e.g. [target:Story 1.11.A]" >&2
+            echo "      Epic N                     e.g. [target:Epic 6]" >&2
+            echo "      Epic N retro               e.g. [target:Epic 6 retro]" >&2
+            echo "      Epic N <kebab phrase>      e.g. [target:Epic 6 production lockdown]" >&2
+            echo "      vX.Y+ <kebab>              e.g. [target:v0.2+ customer-feedback]" >&2
+            echo "      customer-feedback / N/A" >&2
+            echo "" >&2
+            echo "    常见漂移：[target:1-7-单机一键启动-...]（story-key 风格）→ 改 [target:Story 1.7]。" >&2
+            echo "    grep_pending_deferred_for_story.sh 只识别 'Story X.Y' 短格式；漂移会让该工具空命中。" >&2
+            echo "" >&2
+        fi
+        cat >&2 <<'EOF'
+处理路径：
+  ① 修复：按 schema v1 改新增 FU bullet 头 / 删 inline 后缀 / 把 FU-RETRO-* 移到 sprint-status retro_action_items
+  ② 显式跳过：git commit --no-verify  （会 silently 引入 schema drift 风险，仅极端急修使用）
+  ③ Schema 文档：.claude/harness/conventions/deferred-work-schema.md
+  ④ 工具链：bash .claude/harness/scripts/grep_deferred_buckets.sh   # 看当前总账
+─────────────────────────────────────────────────────
+EOF
+        exit 1
+    fi
+fi
+
+exit 0
