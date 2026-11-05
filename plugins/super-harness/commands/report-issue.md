@@ -35,7 +35,7 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
 | `--story` | story KEY，如 `1-3-login-flow` | 当前 story 上下文 |
 | `--epic` | epic 编号 | 当前 epic 上下文 |
 | `--halt-command` | `run` / `run-inline` / `init` / `update` / `upgrade-deferred-work` / `other` | halt 来自哪个命令 |
-| `--halt-stage` | 阶段编号（如 `2` / `5` / `T3` / `A.3.d`） | halt 在哪个 stage |
+| `--halt-stage` | 阶段编号（如 `B1` / `B2.3` / `⑥` / `A.3.d`） | halt 在哪个 stage |
 | `--halt-reason` | 一句话现场摘要 | halt 触发条件 / 报错关键句 |
 
 如 `$ARGUMENTS` 含 `--halt` 但无 `--type`，自动设 `--type halt`。
@@ -204,7 +204,7 @@ echo "ℹ️ 已取消；未提交 issue。"
 
 ## 6. TaskCreate 收尾 + 报告
 
-把 §0 创建的 TaskCreate 任务标 `completed`，emit 一行总结：
+用 TaskUpdate 把 §1 创建的任务标 `completed`，emit 一行总结：
 
 ```
 ✅ /super-harness:report-issue 完成
@@ -227,7 +227,7 @@ echo "ℹ️ 已取消；未提交 issue。"
 2. §1 / §2 `collect_issue_context.sh` exit ≠ 0 且 ≠ 2（参数 bug / 内部错）→ halt + 贴 stderr verbatim
 3. §4 A 路径 `gh` 未装 / 未登录 → 不 halt（已在脚本内 emit 引导文字）；exit 1 给主 agent 知道，主 agent emit 一行"装好 gh 后重跑 /super-harness:report-issue"，正常退出
 4. §4 A 路径 `gh issue create` exit ≠ 0（rate limit / repo 权限问题 / 网络问题）→ 不 halt；emit 失败原因 + body 文件路径 + 手工 fallback 指令（已在脚本内）；正常退出。注：label `not found` 类失败先走 §4 的自动降级重试（剥非默认 label 重提一次），重试仍失败才进本条
-5. runtime quota 信号 → 与 init / run 同款配额模板（emit halt 模板请求用户授权重启）
+5. Claude 运行时额度耗尽（判定方法同 `pipeline.md` §−1 (a)：返回第一行是运行时额度报错，不在正文里搜关键词）→ 与 init / run 同款配额模板（emit halt 模板请求用户授权重启）
 
 **Halt 模板**（仅 §7-2 / 7-5 适用）：
 

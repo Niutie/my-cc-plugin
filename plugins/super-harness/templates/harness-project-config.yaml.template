@@ -14,6 +14,12 @@
 #
 # extra: map 放项目特定字段，harness 文档和脚本按 ${key} 引用。
 #
+# 空值写法：`[]` / `''` 表示"有意留空"，合法且不告警；整行删掉才算"未配置"，
+# 读取时打 WARN 并用中性默认（path_classifiers 为空、verification_commands
+# 提示 agent 按项目自己的文档找 test/lint 命令）。改完可跑
+#   python3 .claude/harness/scripts/harness_config.py check
+# 检查结构（exit 0 = 可用；exit 3 = 有 ERROR 行）。
+#
 # 0.3.0 起 e2e_framework 和 extra.e2e_test_subdir 两个字段退役（测试阶段已移除），
 # 老项目里留着也不会被读，可以手动删掉。
 
@@ -39,6 +45,12 @@ deferred_work_mode: 'strict'
 #           run-inline / run 也只提示、不先跑兑现循环
 #   block — 拒绝新 story spec 的 commit，run-inline / run 起跑前先兑现这些项
 retro_gate: 'warn'
+
+# 挂起状态：sprint-status 里暂时不开发、但要留在板上的 story 用的自定义状态
+# （例如等另一条主线契约定稿的占位 story、等规格补齐的 story）。这些 story
+# 不派发，不挡 epic 屏障，也不挡 epic retro；retro 报告里以 EPIC_PARKED= 单列。
+# 不能和 BMad 标准状态或 done / wont-do / cancelled 重名。空 = 不用。
+parked_statuses: []
 
 # ============================================================================
 # extra — 项目特定扩展字段（任何 harness 文档 / 评估脚本可引用 ${key}）

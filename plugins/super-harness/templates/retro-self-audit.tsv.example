@@ -1,0 +1,23 @@
+# retro self-audit 检查项示例（run_retro_self_audit.sh 读取的格式）
+#
+# 用法：复制到 .claude/harness/retro-self-audit.tsv（项目自己维护，init / update
+# 不会覆盖或删除），按本项目 retro action items 改写。没有这个文件时脚本输出
+# `RETRO_SELF_AUDIT: no-config`，retro 照常手工填 §2。
+#
+# 字段用 TAB 分隔：min_prev_epic  id  描述  kind  arg1  [arg2]
+#   连续两个 TAB 会被合并，所以描述不要留空。
+# kind：file / exec / dir <path>；grep / nogrep <path> <ERE>；cmd <shell 命令>；
+#       manual <evidence 文本>。路径相对仓库根，可写 `a|b` 取第一个存在的。
+#
+# 下面几行取自 harness 最初服务的项目（Aegis）的 epic 1-3 retro，只演示写法，
+# 换到别的项目照抄会全部判 pending / unknown。
+1	A1	端到端 smoke + sizing 实测	nogrep	docs/sizing/story-1-12-sizing-report.md	TBD|<待实测>
+1	A2	sink_mode 默认 forward 重置	manual	trigger 未到期 — Epic 6 启动 OR 客户实测反馈触发
+1	A3	dev-story 5-question self-review gate	grep	.claude/harness/prompt-suffixes/bmad-build-implement-suffix.md	可观测性反向验证|状态机边界|Self-review|self-review
+1	A5	NFR52 baseline 拍板	nogrep	_bmad-output/planning-artifacts/prd/non-functional-requirements.md|_bmad-output/planning-artifacts/prd.md	TODO|<待实测>|TBD|待操作员|retrospective 阶段拍板
+1	A6	deferred-work §1 物化	grep	_bmad-output/implementation-artifacts/deferred-work.md	## 1\.|^# Deferred
+1	A8	architecture index D-decisions 索引	grep	_bmad-output/planning-artifacts/architecture/index.md|_bmad-output/planning-artifacts/architecture.md	^## D-decisions 总索引
+2	B1	retro action items skill prepend	exec	.claude/harness/scripts/grep_prev_retro_action_items.sh
+2	B8	跨栈 mirror codegen 守门	grep	console-web/package.json	"gen:permissions"|"gen:masking-types"
+3	C4	codegen 守门 5 脚本	cmd	[ "$(grep -cE '"gen:[a-z-]+"' console-web/package.json)" -ge 5 ]
+3	C8	resource-safety-tests fixture	dir	proxy/addon/parser/resource_safety_tests

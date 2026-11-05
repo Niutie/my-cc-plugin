@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Chore C10 — process_retro_residue.sh self-test
 #
-# 3 fixture：
-#   (a) 首次：6 项 pending → stdout 列出 6 项 + prompt 完整 + exit 0
-#   (b) 幂等：上一轮已写 chore_spec 字段全 → stdout no residue + exit 2
-#   (c) 增量：5 项已 process / 1 项新增 pending → stdout 仅列 1 项 + exit 0
+# fixture：
+#   (a) 首次：6 项 pending → exit 0；stdout 只有 5 行摘要（PROMPT_FILE /
+#       PENDING_COUNT / PENDING_CODES / ARTIFACT_DIR）；PROMPT_FILE 在 TMPDIR 下，
+#       内容含 prompt 模板 + 6 项待 process 列表
+#   (b) 幂等：上一轮已写 chore_spec 字段全 → no residue + exit 2，不留临时文件
+#   (c) 增量：5 项已 process / 1 项新增 pending → prompt 文件仅列 1 项 + exit 0
+#   (d) alphanumeric-dash code
+#   (e) --stdout：整段 prompt 直出 stdout，不建临时文件
 #
-# 用 mktemp 临时 yaml + retro md fixture，跑后清理。
+# 用 mktemp 临时 yaml + retro md fixture；TMPDIR 指到 fixture 目录内，prompt
+# 临时文件随 fixture 一起清理。
 
 set -euo pipefail
 
@@ -39,6 +44,20 @@ cleanup() {
     local d="$1"
     if [[ -n "$d" && -d "$d" ]]; then
         rm -rf "$d"
+    fi
+}
+
+# 从摘要 stdout 取某个 KEY=value 的 value
+summary_field() {  # $1 = summary text, $2 = key
+    sed -n "s/^$2=//p" <<< "$1" | head -n 1
+}
+
+# 摘要里 PROMPT_FILE 指向的文件内容（不存在时输出空）
+prompt_of() {  # $1 = summary text
+    local pf
+    pf="$(summary_field "$1" PROMPT_FILE)"
+    if [[ -n "$pf" && -f "$pf" ]]; then
+        cat "$pf"
     fi
 }
 
@@ -84,13 +103,39 @@ Action: partial work to upgrade
 ### Z8 — fake deferred item
 MD
 
-if out_a=$("$ENTRY" --epic 7 \
+mkdir -p "${FX_A}/tmp"
+if sum_a=$(TMPDIR="${FX_A}/tmp" "$ENTRY" --epic 7 \
     --sprint-status "${ART_A}/sprint-status.yaml" \
     --retro-md "${ART_A}/epic-7-retro-2026-05-03.md" \
-    --artifact-dir "$ART_A" 2>&1); then
+    --artifact-dir "$ART_A" 2>/dev/null); then
     rc_a=$?
 else
     rc_a=$?
+fi
+out_a="$(prompt_of "$sum_a")"
+pf_a="$(summary_field "$sum_a" PROMPT_FILE)"
+art_abs_a="$(cd "$ART_A" && pwd)"
+
+# 摘要契约：stdout 恰好 5 行、远小于 prompt；PROMPT_FILE 落在 TMPDIR 下（仓库外）
+if [[ $rc_a -eq 0 ]] && \
+   [[ "$(wc -l <<< "$sum_a" | tr -d ' ')" -eq 5 ]] && \
+   [[ ${#sum_a} -lt 1024 ]] && \
+   [[ "$pf_a" == "${FX_A}/tmp/retro-residue-epic7."* ]] && \
+   [[ -s "$pf_a" ]] && \
+   [[ "$(summary_field "$sum_a" PENDING_COUNT)" = 6 ]] && \
+   [[ "$(summary_field "$sum_a" PENDING_CODES)" = "Z1 Z2 Z3 Z4 Z5 Z6" ]] && \
+   [[ "$(summary_field "$sum_a" ARTIFACT_DIR)" = "$art_abs_a" ]] && \
+   ! grep -q "=== FILE:" <<< "$out_a" && \
+   ! grep -q "=== END FILE" <<< "$out_a" && \
+   grep -qF "${art_abs_a}/chore-retro-c7-<code>-<slug>.md" <<< "$out_a"; then
+    echo "${GREEN}PASS${RESET}: Fixture (a) — stdout 仅 5 行摘要 + PROMPT_FILE 在 TMPDIR + 字段正确"
+    PASS=$((PASS + 1))
+else
+    echo "${RED}FAIL${RESET}: Fixture (a) summary — rc=$rc_a"
+    echo "--- stdout ---"
+    echo "$sum_a" | head -10
+    echo "--------------"
+    FAIL=$((FAIL + 1))
 fi
 
 # 期望：rc=0 + 列表 6 项 + 含 prompt 模板内容
@@ -147,15 +192,18 @@ cat > "${ART_B}/epic-7-retro-2026-05-03.md" <<'MD'
 ### Z1 ### Z2 ### Z3 ### Z4
 MD
 
+mkdir -p "${FX_B}/tmp"
 set +e
-out_b=$("$ENTRY" --epic 7 \
+out_b=$(TMPDIR="${FX_B}/tmp" "$ENTRY" --epic 7 \
     --sprint-status "${ART_B}/sprint-status.yaml" \
     --retro-md "${ART_B}/epic-7-retro-2026-05-03.md" \
     --artifact-dir "$ART_B" 2>&1)
 rc_b=$?
 set -e
 
-if [[ $rc_b -eq 2 ]] && grep -q "no residue" <<< "$out_b"; then
+# exit 2 时不建 prompt 临时文件
+if [[ $rc_b -eq 2 ]] && grep -q "no residue" <<< "$out_b" && \
+   [[ -z "$(ls -A "${FX_B}/tmp")" ]] && ! grep -q "^PROMPT_FILE=" <<< "$out_b"; then
     echo "${GREEN}PASS${RESET}: Fixture (b) — exit 2 + 'no residue' (rc=$rc_b)"
     PASS=$((PASS + 1))
 else
@@ -203,16 +251,19 @@ cat > "${ART_C}/epic-7-retro-2026-05-03.md" <<'MD'
 Action: do the new thing
 MD
 
+mkdir -p "${FX_C}/tmp"
 set +e
-out_c=$("$ENTRY" --epic 7 \
+sum_c=$(TMPDIR="${FX_C}/tmp" "$ENTRY" --epic 7 \
     --sprint-status "${ART_C}/sprint-status.yaml" \
     --retro-md "${ART_C}/epic-7-retro-2026-05-03.md" \
-    --artifact-dir "$ART_C" 2>&1)
+    --artifact-dir "$ART_C" 2>/dev/null)
 rc_c=$?
 set -e
+out_c="$(prompt_of "$sum_c")"
 
 # 期望：rc=0 + 仅 Z6 在待 process 列表 + Z1-Z5 在 chore_spec 已有清单
 if [[ $rc_c -eq 0 ]] && \
+   [[ "$(summary_field "$sum_c" PENDING_CODES)" = Z6 ]] && \
    grep -qE "^- \`Z6\` \(status=" <<< "$out_c" && \
    ! grep -qE "^- \`Z1\` \(status=" <<< "$out_c" && \
    grep -q "Z1=chore-retro-c7-Z1-foo.md" <<< "$out_c"; then
@@ -258,13 +309,15 @@ cat > "${ART_D}/epic-7-retro-2026-05-03.md" <<'MD'
 ### Z2 — done
 MD
 
+mkdir -p "${FX_D}/tmp"
 set +e
-out_d=$("$ENTRY" --epic 7 \
+sum_d=$(TMPDIR="${FX_D}/tmp" "$ENTRY" --epic 7 \
     --sprint-status "${ART_D}/sprint-status.yaml" \
     --retro-md "${ART_D}/epic-7-retro-2026-05-03.md" \
-    --artifact-dir "$ART_D" 2>&1)
+    --artifact-dir "$ART_D" 2>/dev/null)
 rc_d=$?
 set -e
+out_d="$(prompt_of "$sum_d")"
 
 # 期望：rc=0 + 列表含 Z1 / C-bootstrap / C-foo-bar 三项 + skip Z2（done）
 if [[ $rc_d -eq 0 ]] && \
@@ -282,6 +335,40 @@ else
     FAIL=$((FAIL + 1))
 fi
 cleanup "$FX_D"
+
+# ---------------------------------------------------------------------------
+# Fixture (e) — --stdout：整段 prompt 直出 stdout，不建临时文件
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Fixture (e) — --stdout 调试模式 ==="
+FX_E=$(make_fixture)
+mkdir -p "${FX_E}/_bmad-output/implementation-artifacts" "${FX_E}/tmp"
+ART_E="${FX_E}/_bmad-output/implementation-artifacts"
+printf '%s\n' 'retro_action_items:' '  epic-7-retro:' '    Z1: pending' '    Z2: done' > "${ART_E}/sprint-status.yaml"
+printf '%s\n' '# Epic 7 Retrospective' '' '### Z1 — item' '### Z2 — done' > "${ART_E}/epic-7-retro-2026-05-03.md"
+
+set +e
+out_e=$(TMPDIR="${FX_E}/tmp" "$ENTRY" --epic 7 --stdout \
+    --sprint-status "${ART_E}/sprint-status.yaml" \
+    --retro-md "${ART_E}/epic-7-retro-2026-05-03.md" \
+    --artifact-dir "$ART_E" 2>/dev/null)
+rc_e=$?
+set -e
+
+if [[ $rc_e -eq 0 ]] && \
+   grep -q "RETRO RESIDUE PROCESSOR" <<< "$out_e" && \
+   grep -qE "^- \`Z1\` \(status=" <<< "$out_e" && \
+   grep -q "=== MANIFEST ===" <<< "$out_e" && \
+   ! grep -q "^PROMPT_FILE=" <<< "$out_e" && \
+   [[ -z "$(ls -A "${FX_E}/tmp")" ]]; then
+    echo "${GREEN}PASS${RESET}: Fixture (e) — --stdout 直出 prompt，无临时文件 (rc=$rc_e)"
+    PASS=$((PASS + 1))
+else
+    echo "${RED}FAIL${RESET}: Fixture (e) — rc=$rc_e"
+    echo "$out_e" | head -5
+    FAIL=$((FAIL + 1))
+fi
+cleanup "$FX_E"
 
 # ---------------------------------------------------------------------------
 # 汇总

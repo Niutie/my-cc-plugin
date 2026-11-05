@@ -140,7 +140,7 @@ BMad 6.11 把 `bmad-create-story` / `bmad-dev-story` / `bmad-quick-dev` 合并�
 **run.md 编排层**：
 - **§0.A.0 retro DEV 项兑现前置 gate**（v0.1.33，issue #3）：`/super-harness:run-inline` 启动时先跑 `grep_pending_dev_retro_items.sh`，`category: dev` 的 pending retro 项 N>0 → 先进兑现循环（有 `chore_spec` 的自动兑现、缺 spec 的列给用户二选一），清零后才进 stage ①——否则 stage ① commit 必被 pre-commit gate ① 拦
 - **retro-only 路径（§0.C）**：`--epic` 指定 epic 全 done 但 retro 未 done 时直接跳到阶段 ⑥；入口已预先用 `epic-all-done` + `epic-retro-status` 验证
-- **stage 3 quota 例外**：配额关键词命中一般 stage 即 halt，唯独阶段 ③ 改走 §③.1 skip+marker 路径（catchup-friendly）
+- **stage 3 quota 例外**：Claude 运行时额度耗尽一般 stage 即 halt；codex 自己的额度 / 登录 / 超时问题改走 §③.1 skip+marker 路径（catchup-friendly）。0.3.1 起两者都不再靠搜关键词：前者看子 agent 返回第一行是否为运行时额度报错（pipeline.md §−1 (a)），后者看 `run_codex_review.sh` 的 `CODEX_STATUS:` 与退出码
 
 **harness-commit.py 安全门（review 2026-06-10 #1/#7 修复，v0.1.38）**：
 - worktree 扫描改 `git status --porcelain -uall -z`：`-uall` 展开 untracked 新目录内的每个文件（此前整目录折叠成一行，目录内 blacklist 文件不可见）；`-z` 拿 NUL 分隔的原始字节路径（含双引号 / 换行 / CJK 文件名不再被 C-quote 干扰）
@@ -586,9 +586,9 @@ run.md 的子 agent prompt 模板**逐字包含**格式契约段（v0.2.0 起 bu
 
 - B1/B3：跑 bmad-build-auto 的 subagent 在 step-02 写 spec 前 Read `.claude/harness/prompt-suffixes/bmad-build-auto-suffix.md`——slug = story key、frontmatter `context:` 挂实现清单、cross_story_artifacts / planning_artifacts 声明、Epic 第一个 story 继承段（C7，`check_inheritance_block.sh` 自检）、deferred 注入项处理。旧 create-story suffix 的 `check_spec_length.sh` / `extract_d_decisions.sh` 两个 Finalize 步骤退役（bmad-build-auto 自带 900–1600 token 范围标准与 `oversized` warning）
 - 实现子 agent：通过 spec `context:` 读 `bmad-build-implement-suffix.md`，再拉取 `harness-prompt-suffix.py implement`（Q6 / ledger 格式 / marker 禁令）
-- 阶段 ⑥：`先 Read .claude/harness/prompt-suffixes/bmad-retrospective-suffix.md`——Form 1 action-items 格式 + 每项 `**Category**: dev|harness` 声明 + pre-retro self-audit（`run_retro_self_audit.sh <prev_epic_num>` 输出 paste 进 §2 cross-reference 草稿）。**Category 声明被真实消费**：harness-commit.py stage 6 commit 时 `_parse_retro_action_items` 解析出 `(code, title, category)` 三元组，seeder 写 `retro_action_items.<id>.category` 子键（stage 6-5 不做 seeding，仅给已处理条目补 `chore_spec` 子键），pre-commit gate ① 按 dev 阻 / harness WARN 分流（§六 Q4）。§0.C retro-only 路径同样必须带本契约段
+- 阶段 ⑥：`先 Read .claude/harness/prompt-suffixes/bmad-retrospective-suffix.md`——Form 1 action-items 格式 + 每项 `**Category**: dev|harness` 声明 + pre-retro self-audit（`run_retro_self_audit.sh <prev_epic_num>` 输出是表格时 paste 进 §2 cross-reference 草稿；输出 `RETRO_SELF_AUDIT: no-config` 时不贴）。**Category 声明被真实消费**：harness-commit.py stage 6 commit 时 `_parse_retro_action_items` 解析出 `(code, title, category)` 三元组，seeder 写 `retro_action_items.<id>.category` 子键（stage 6-5 不做 seeding，仅给已处理条目补 `chore_spec` 子键），pre-commit gate ① 按 dev 阻 / harness WARN 分流（§六 Q4）。§0.C retro-only 路径同样必须带本契约段
 
-### 通道 2：`harness-prompt-suffix.py <stage>` stdout 拼接（build / implement / chore / 3 / 4 / 6；旧流水线 1 / 2 / 5）
+### 通道 2：`harness-prompt-suffix.py <stage>` stdout 拼接（build / implement / chore / 4 / 6；旧流水线 1 / 2 / 5。`3` 仍保留但 0.3.1 起不再使用：B2.2 改由主 agent 直接跑 `run_codex_review.sh`，不再派子 agent）
 
 每个子 agent prompt 末尾拼 `python3 .claude/harness/scripts/harness-prompt-suffix.py <stage>` 的 stdout，自动包含：
 
@@ -702,7 +702,7 @@ helper：[`scripts/run_sprint_init_check_prereq.sh`](scripts/run_sprint_init_che
 **写入策略（Q2 / Q3 / Q6）**：
 - Edit 工具逐字段替换（保留顶部 schema 文档注释）
 - merge 模式：既有不动 + 缺失补全；force 模式：列 "field: old → new" + 二次确认 prompt → 全替换
-- 写完跑 `harness_config.py` smoke + `simulate_clone_test.sh` 验证；fail → rollback yaml + halt
+- 写完跑 `harness_config.py check`（0.3.1 起；退出码非 0 才回滚，`WARN` 行不算）；fail → rollback yaml + halt。init 不再跑 `simulate_clone_test.sh`，它只适用于本仓库的部署树
 - **不**自动 commit yaml — solo-dev review 后自决（与 §-1.d "禁止主 agent 自己 git 操作"同精神）
 
 **self-test**：[`scripts/run_sprint_init_test.sh`](scripts/run_sprint_init_test.sh) — 3 fixtures（全新 / mid-project / MUST-EXIST 缺失）；mechanically 测 §1 prereq gate 行为，§2-§4 LLM-driven 部分由人工 spot-check（`--dry-run` 真实跑 + 字段填值合理性）。
@@ -794,7 +794,7 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 │           │   ├── grep_prev_retro_action_items.sh                上轮 retro action items 提取
 │           │   ├── grep_pending_dev_retro_items.sh + _test.sh     §0.A.0 前置 gate 的 pending dev 项扫描（v0.1.33+）
 │           │   ├── process_retro_residue.sh + _test.sh + _prompt.md  fresh agent 残留处理 → chore spec + MANIFEST
-│           │   └── ⚠️ run_retro_self_audit.sh + run_retro_self_audit_test.sh  **项目特定**（hardcoded check_XN 函数体；clone 后必须重写或删除）
+│           │   └── run_retro_self_audit.sh + run_retro_self_audit_test.sh  0.3.1 起通用化：检查项读项目侧 `.claude/harness/retro-self-audit.tsv`，没有就输出 `RETRO_SELF_AUDIT: no-config`
 │           │
 │           ├── [Deferred-work 流]
 │           │   ├── grep_deferred_buckets.sh                       bucket 总账（含 §1 §1.1/§1.2/§1.3）
@@ -877,7 +877,7 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 | 文件 | 改什么 | 自动化 |
 |---|---|---|
 | `.claude/harness/harness-project-config.yaml` | BMad-sourced 字段（12 描述 + 2 注入语境：project_context / fullstack_review_steps；e2e 两个字段 0.3.0 退役）+ 3 派生字段 | ✅ `/super-harness:init` 自动从 BMad planning artifacts 提取 |
-| `.claude/harness/scripts/run_retro_self_audit.sh` | 重写所有 `check_AN/BN/CN()` 函数体（hardcoded 检查路径 + grep target，对应原项目 retro action items）；或整个删除 | ❌ 手工（脚本头已 ⚠️ 标注） |
+| `.claude/harness/retro-self-audit.tsv` | 0.3.1 起脚本本身不再写死检查项。需要 retro 前自查时按 `templates/retro-self-audit.tsv.example` 写这个文件；不写就跳过 | 可选 |
 
 **不需要再改的文件**（已通过 yaml-driven 动态注入解耦项目特定）：
 - `.claude/harness/answer-policy.md` — 项目语境段已删除；改 yaml `extra.project_context` 即可（subagent 通过 `harness-prompt-suffix.py` inline 注入拿到）
@@ -886,4 +886,4 @@ C-cond-triggers 落地前的老 chore spec（c1-A1 / c2-B5 等含 "7 容器栈" 
 **新项目 onboarding 三步**：
 1. clone 整个 `.claude/` + `_bmad/custom/` + `CLAUDE.md`
 2. 跑 `/super-harness:init` 让主 agent 从 BMad planning artifacts 自动填字段到 `harness-project-config.yaml`
-3. 删 `run_retro_self_audit.sh`（或按新项目 retro 重写 check_XN()）+ 验证 `bash .claude/harness/scripts/simulate_clone_test.sh` 退出 0
+3. （0.3.1 起不需要）`run_retro_self_audit.sh` 已通用化，项目自查项写在 `.claude/harness/retro-self-audit.tsv`

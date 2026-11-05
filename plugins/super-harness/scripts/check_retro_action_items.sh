@@ -21,6 +21,10 @@
 #   250   retro_action_items 块存在但内含 0 个 action item（merge 误删 / yaml indent shift 兜底）
 #   251   多个 retro_action_items: 顶层 key（重复 paste / merge 冲突未解决）
 #
+#   退出码 1 有两种含义，调用方不能只看码。pre-commit gate ①（0.3.1 起）在调用
+#   本脚本前先自己检查 sprint-status.yaml 是否存在、块是否存在：块缺失是第一次
+#   epic retro 之前的常态，直接放行，不调用本脚本。
+#
 # v1 → v1.1 (review patches 2026-05-03)：E1 CRLF 容错、E3 status enum 白名单
 # warn、E4 空块检测、E5 flexible indent、E6 重复 header 检测、E2 exit cap 200。
 # v2 (2026-05-05): category 分流 — dev 计 exit / harness WARN 不计；扩展 item

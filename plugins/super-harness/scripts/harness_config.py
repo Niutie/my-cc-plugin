@@ -16,8 +16,10 @@ supporting the subset our config uses:
           go vet ...
           pnpm --filter ...
 
-Fallback policy: missing field / missing file / parse error → return hardcoded
-default + stderr WARN. Never raise.
+Fallback policy: missing field / missing file / parse error → return a
+project-neutral default + stderr WARN. Never raise. An explicitly empty value
+(`key: []`, `key: ''`) is legal and does NOT warn; only an absent key does.
+`python3 harness_config.py check` validates structure (exit 3 + ERROR lines).
 
 Usage:
     from harness_config import (
@@ -75,27 +77,18 @@ class _ConfigPathProxy:
 
 CONFIG_PATH = _ConfigPathProxy()
 
-# Hardcoded defaults — used when harness-project-config.yaml is missing
-# the corresponding field. Project owners should override via yaml; the
-# fallback values below reflect the original project's layout for zero-config
-# operation.
+# Hardcoded defaults — used when harness-project-config.yaml does not set the
+# corresponding field. They are deliberately project-neutral: an unconfigured
+# project gets "no classification" and "use your own test/lint commands", never
+# another project's directory layout.
 _DEFAULT_ARTIFACTS_ROOT = "_bmad-output/implementation-artifacts"
-_DEFAULT_PATH_CLASSIFIERS = [
-    ("backend Go source",      r"^console-api/(?!.*_test\.go$)"),
-    ("backend Go tests",       r"^console-api/.*_test\.go$|^tests/integration/"),
-    ("backend SQL/migrations", r"^console-api/.*\.sql$|^console-api/internal/migrations/"),
-    ("backend i18n",           r"^console-api/locales/"),
-    ("frontend TS source",     r"^console-web/src/(?!.*\.test\.)"),
-    ("frontend TS tests",      r"^console-web/(tests|e2e)/"),
-    ("frontend i18n",          r"^console-web/locales/"),
-    ("frontend config",        r"^console-web/(eslint|vitest|next|package|pnpm|tsconfig)"),
-    ("proxy/Go",               r"^proxy/"),
-    ("infra/deploy",           r"^(deploy|docker-compose|Justfile|scripts/)"),
-    ("docs/spec",              r"^docs/"),
-]
+# Empty = every changed path lands in the catch-all 'other' bucket.
+_DEFAULT_PATH_CLASSIFIERS: list[tuple[str, str]] = []
+# One line on purpose: consumers render it inline / as a single bullet.
 _DEFAULT_VERIFICATION_COMMANDS = (
-    "go vet/build/test ./console-api/...\n"
-    "pnpm --filter console-web typecheck/test/lint --max-warnings=0/build"
+    "（未配置 extra.verification_commands）按项目自己的文档"
+    "（README / CONTRIBUTING / Makefile / justfile / package.json scripts 等）"
+    "找到并运行该项目的 test、lint、build 命令"
 )
 _DEFAULT_PROJECT_CONTEXT = (
     "项目语境未配置：此 harness clone 后请在 .claude/harness/harness-project-config.yaml\n"
@@ -106,6 +99,12 @@ _DEFAULT_PROJECT_CONTEXT = (
 # fullstack_review_steps fallback：空 list（对应 dev-story Q6 的"项目无新审计字段
 # 全栈追溯链"语义；新项目按本表 yaml 字段填即可）。
 _DEFAULT_FULLSTACK_REVIEW_STEPS: list[dict[str, str]] = []
+
+# Explicit-empty spellings. `key: []`, `key: ''`, `key: ""` and a bare `key:`
+# (YAML null) all mean "set, deliberately empty": legal, no WARN. Only a key
+# that does not appear at all counts as "not set" and WARNs.
+_EMPTY_SCALARS = ("", "''", '""', "~", "null")
+_BLOCK_MARKERS = ("|", "|-", "|+", ">", ">-", ">+")
 
 
 def _warn(msg: str) -> None:
@@ -137,6 +136,19 @@ def _strip_yaml_scalar(val: str) -> str:
     return val
 
 
+def _strip_inline_comment(val: str) -> str:
+    """Drop a trailing `# comment` from an unquoted value (`[]  # e.g. ...`).
+    Quoted values are returned verbatim (minus surrounding whitespace)."""
+    val = val.strip()
+    if val and val[0] in ("'", '"'):
+        end = val.find(val[0], 1)
+        if end > 0 and val[end + 1:].lstrip().startswith("#"):
+            return val[:end + 1]
+        return val
+    idx = val.find("#")
+    return val[:idx].rstrip() if idx >= 0 else val
+
+
 def _read_lines() -> list[str] | None:
     cfg = _resolve_config_path()
     if not cfg.exists():
@@ -159,135 +171,158 @@ def _read_top_level_scalar(key: str) -> str | None:
     return None
 
 
-def _read_extra_scalar(key: str) -> str | None:
-    """读 `extra:\n  <key>: <value>` 形式的二级 scalar。"""
-    lines = _read_lines()
-    if lines is None:
-        return None
+def _find_extra_key(lines: list[str], key: str) -> tuple[int, int, str] | None:
+    """Locate `extra:\\n  <key>: <raw>` → (line index, key indent, raw value).
+
+    Only direct children of `extra:` match (indent == indent of the first child
+    line), so a nested `label:` / `regex:` or a line inside a `|` block is never
+    mistaken for an extra key."""
     in_extra = False
-    pat = re.compile(rf"^\s+{re.escape(key)}:\s*(.*)$")
-    top_pat = re.compile(r"^[^\s#]")
-    for line in lines:
-        if line.startswith("extra:"):
-            in_extra = True
+    child_indent: int | None = None
+    pat = re.compile(rf"^(\s+){re.escape(key)}:(?:\s+(.*))?$")
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line[0].isspace():
+            in_extra = line.startswith("extra:")
+            child_indent = None
             continue
         if not in_extra:
             continue
-        if top_pat.match(line):
-            in_extra = False
+        leading = len(line) - len(line.lstrip())
+        if child_indent is None:
+            child_indent = leading
+        if leading != child_indent:
             continue
         m = pat.match(line)
         if m:
-            val = m.group(1)
-            # 排除嵌套结构起始（list / multi-line block 起始 — 留给专用 reader）
-            if val.strip() in ("|", ">", "|-", ">-"):
-                return None  # 走 multiline reader
-            if val.strip() == "":
-                return None  # 嵌套结构（list 起始） — 走 list reader
-            return _strip_yaml_scalar(val)
+            return i, leading, (m.group(2) or "")
     return None
 
 
-def _read_extra_multiline_block(key: str) -> str | None:
-    """读 `extra:\n  <key>: |\n    line1\n    line2`。返回不含末尾 \\n 的 str。"""
-    lines = _read_lines()
-    if lines is None:
-        return None
-    in_extra = False
-    target_indent: int | None = None
-    block_lines: list[str] = []
-    block_active = False
-    pat = re.compile(rf"^(\s+){re.escape(key)}:\s*\|\s*$")
-    top_pat = re.compile(r"^[^\s#]")
-    for line in lines:
-        if line.startswith("extra:"):
-            in_extra = True
-            continue
-        if not in_extra:
-            continue
-        if not block_active:
-            if top_pat.match(line):
-                in_extra = False
-                continue
-            m = pat.match(line)
-            if m:
-                target_indent = len(m.group(1))
-                block_active = True
-            continue
-        # 块体：缩进必须深于 target_indent；遇浅缩进或顶级行结束块
+def _block_body(lines: list[str], idx: int, key_indent: int) -> list[str]:
+    """Lines after `idx` that belong to the key (deeper indent, or blank)."""
+    body: list[str] = []
+    for line in lines[idx + 1:]:
         if line.strip() == "":
-            block_lines.append("")
+            body.append("")
             continue
-        leading = len(line) - len(line.lstrip())
-        if leading <= target_indent:
+        if len(line) - len(line.lstrip()) <= key_indent:
             break
-        # 剥离 target_indent + 2 空格（YAML `|` 块标准）
-        strip_n = target_indent + 2
-        block_lines.append(line[strip_n:] if len(line) >= strip_n else line.lstrip())
-    if not block_active:
-        return None
-    # 去末尾空行
-    while block_lines and block_lines[-1] == "":
-        block_lines.pop()
-    return "\n".join(block_lines)
+        body.append(line)
+    while body and body[-1] == "":
+        body.pop()
+    return body
 
 
-def _read_extra_list_of_dict(key: str, sub_keys: tuple[str, ...]) -> list[dict[str, str]] | None:
-    """读 `extra:\n  <key>:\n    - sk1: v1\n      sk2: v2\n    - sk1: v3\n...`。"""
+def _read_extra_scalar(key: str) -> str | None:
+    """读 `extra:\\n  <key>: <value>` 形式的二级 scalar（list / 块标量起始返回 None）。"""
     lines = _read_lines()
     if lines is None:
         return None
-    in_extra = False
-    in_list = False
-    list_indent: int | None = None
+    hit = _find_extra_key(lines, key)
+    if hit is None:
+        return None
+    head = _strip_inline_comment(hit[2])
+    # 排除嵌套结构起始（list / multi-line block 起始 — 留给专用 reader）
+    if head == "" or head in _BLOCK_MARKERS:
+        return None
+    return _strip_yaml_scalar(hit[2])
+
+
+def _parse_extra_text(key: str) -> tuple[str | None, str | None]:
+    """Text field: `|` block, or a one-line scalar. Returns (value, error);
+    value None = key absent (or unparseable), "" = explicitly empty."""
+    lines = _read_lines()
+    if lines is None:
+        return None, None
+    hit = _find_extra_key(lines, key)
+    if hit is None:
+        return None, None
+    idx, indent, raw = hit
+    head = _strip_inline_comment(raw)
+    if head in _BLOCK_MARKERS:
+        body = _block_body(lines, idx, indent)
+        nonblank = [ln for ln in body if ln.strip()]
+        if not nonblank:
+            return "", None
+        cut = min(len(ln) - len(ln.lstrip()) for ln in nonblank)
+        text_lines = [ln[cut:] if ln.strip() else "" for ln in body]
+        if head.startswith(">"):
+            return " ".join(ln.strip() for ln in text_lines if ln.strip()), None
+        return "\n".join(text_lines), None
+    if head in _EMPTY_SCALARS:
+        if head == "" and _block_body(lines, idx, indent):
+            return None, (f"extra.{key}: 值写在下一行但缺少 `|` 块标记"
+                          f"（应写成 `{key}: |`）")
+        return "", None
+    return _strip_yaml_scalar(raw), None
+
+
+def _read_extra_multiline_block(key: str) -> str | None:
+    """读 `extra:\\n  <key>: |\\n    line1\\n    line2`（也接受单行 scalar）。
+    None = key 缺失；"" = 显式空值。"""
+    return _parse_extra_text(key)[0]
+
+
+def _parse_extra_list_of_dict(
+    key: str, sub_keys: tuple[str, ...]
+) -> tuple[list[dict[str, str]] | None, str | None]:
+    """List-of-dict field. Returns (value, error): value None = key absent (or
+    unparseable, see error); [] = explicitly empty (`key: []`, `key: ''`, or a
+    bare `key:` with no items).
+
+    Items use the block form only:
+        <key>:
+          - sk1: v1
+            sk2: v2
+    """
+    lines = _read_lines()
+    if lines is None:
+        return None, None
+    hit = _find_extra_key(lines, key)
+    if hit is None:
+        return None, None
+    idx, indent, raw = hit
+    head = _strip_inline_comment(raw)
+    if re.fullmatch(r"\[\s*\]", head) or (head != "" and head in _EMPTY_SCALARS):
+        return [], None
+    if head != "":
+        return None, (f"extra.{key}: 无法解析的值 {head!r}（写成 `{key}: []`，"
+                      f"或在下一行起用 `- {sub_keys[0]}: ...` 块列表）")
+    item_start_pat = re.compile(r"^(\s*)-\s+([^:]+):\s*(.*)$")
+    item_cont_pat = re.compile(r"^(\s*)([^:\-#][^:]*?):\s*(.*)$")
     out: list[dict[str, str]] = []
-    cur: dict[str, str] = {}
-    list_start_pat = re.compile(rf"^(\s+){re.escape(key)}:\s*$")
-    item_start_pat = re.compile(r"^(\s+)-\s+([^:]+):\s*(.*)$")
-    item_cont_pat = re.compile(r"^(\s+)([^:\-][^:]*?):\s*(.*)$")
-    top_pat = re.compile(r"^[^\s#]")
-    for line in lines:
-        if line.startswith("extra:"):
-            in_extra = True
+    cur: dict[str, str] | None = None
+    for line in _block_body(lines, idx, indent):
+        s = line.strip()
+        if not s or s.startswith("#"):
             continue
-        if not in_extra:
-            continue
-        if not in_list:
-            if top_pat.match(line):
-                in_extra = False
-                continue
-            m = list_start_pat.match(line)
-            if m:
-                list_indent = len(m.group(1))
-                in_list = True
-            continue
-        # in_list：项要么以 `- ` 开头（缩进 > list_indent），要么是续行
-        if line.strip() == "":
-            continue
-        leading = len(line) - len(line.lstrip())
-        if leading <= list_indent:
-            break  # 结束 list
         m_item = item_start_pat.match(line)
         if m_item:
-            if cur:
+            if cur is not None:
                 out.append(cur)
             cur = {}
             sk = m_item.group(2).strip()
-            sv = _strip_yaml_scalar(m_item.group(3))
             if sk in sub_keys:
-                cur[sk] = sv
+                cur[sk] = _strip_yaml_scalar(m_item.group(3))
             continue
         m_cont = item_cont_pat.match(line)
-        if m_cont:
+        if m_cont and cur is not None:
             sk = m_cont.group(2).strip()
-            sv = _strip_yaml_scalar(m_cont.group(3))
             if sk in sub_keys:
-                cur[sk] = sv
-    if cur:
+                cur[sk] = _strip_yaml_scalar(m_cont.group(3))
+            continue
+        return None, f"extra.{key}: 无法解析的行 {s!r}"
+    if cur is not None:
         out.append(cur)
-    if not in_list:
-        return None
-    return out
+    return out, None
+
+
+def _read_extra_list_of_dict(key: str, sub_keys: tuple[str, ...]) -> list[dict[str, str]] | None:
+    """读 `extra:\\n  <key>:\\n    - sk1: v1\\n      sk2: v2`。None = 缺失或无法解析；[] = 显式空。"""
+    return _parse_extra_list_of_dict(key, sub_keys)[0]
 
 
 # ---- public API ----
@@ -310,7 +345,9 @@ def get_artifacts_root() -> Path:
     """
     val = _read_top_level_scalar("artifacts_root")
     if val is None or val == "":
-        _warn(f"artifacts_root not set, using default '{_DEFAULT_ARTIFACTS_ROOT}'")
+        # explicit `artifacts_root: ''` (template default) is legal → silent
+        if val is None:
+            _warn(f"artifacts_root not set, using default '{_DEFAULT_ARTIFACTS_ROOT}'")
         val = _DEFAULT_ARTIFACTS_ROOT
     repo_root = Path(__file__).resolve().parents[3]
     candidate = repo_root / val  # pathlib: absolute val replaces the left side
@@ -349,18 +386,15 @@ def get_deferred_work_path() -> Path:
 
 
 def get_path_classifiers() -> list[tuple[str, "re.Pattern[str]"]]:
-    """Return [(label, compiled_regex), ...]. Falls back to hardcoded defaults on miss."""
-    raw = _read_extra_list_of_dict("path_classifiers", ("label", "regex"))
-    if not raw:
-        if raw is None:
-            _warn(
-                "path_classifiers not set, using hardcoded defaults "
-                f"({len(_DEFAULT_PATH_CLASSIFIERS)} entries)"
-            )
-        # raw == [] 是合法（"全归 other"）— 不 warn
-        if raw is None:
-            return [(label, re.compile(rgx)) for label, rgx in _DEFAULT_PATH_CLASSIFIERS]
-        return []
+    """Return [(label, compiled_regex), ...]. Unset → empty list (every path
+    goes to 'other'); `path_classifiers: []` is legal and silent."""
+    raw, err = _parse_extra_list_of_dict("path_classifiers", ("label", "regex"))
+    if err:
+        _warn(err + "；按未配置处理（全部归 'other'）")
+    elif raw is None:
+        _warn("path_classifiers not set, every path goes to 'other'")
+    if raw is None:
+        return [(label, re.compile(rgx)) for label, rgx in _DEFAULT_PATH_CLASSIFIERS]
     out: list[tuple[str, re.Pattern[str]]] = []
     for d in raw:
         label = d.get("label", "")
@@ -376,9 +410,15 @@ def get_path_classifiers() -> list[tuple[str, "re.Pattern[str]"]]:
 
 
 def get_verification_commands() -> str:
-    val = _read_extra_multiline_block("verification_commands")
-    if val is None:
-        _warn("verification_commands not set, using hardcoded default")
+    """Newline-separated commands. Unset or explicitly empty → a neutral one-line
+    notice telling the agent to use the project's own commands (never empty, so
+    every consumer has something to show)."""
+    val, err = _parse_extra_text("verification_commands")
+    if err:
+        _warn(err)
+    elif val is None:
+        _warn("verification_commands not set, using neutral notice")
+    if val is None or val.strip() == "":
         return _DEFAULT_VERIFICATION_COMMANDS
     return val
 
@@ -386,9 +426,12 @@ def get_verification_commands() -> str:
 def get_project_context() -> str:
     """Return extra.project_context multiline block. Used by harness-prompt-suffix.py
     to inline project-specific decision context into ANSWER_POLICY_BLOCK."""
-    val = _read_extra_multiline_block("project_context")
-    if val is None or val.strip() == "":
+    val, err = _parse_extra_text("project_context")
+    if err:
+        _warn(err)
+    elif val is None:
         _warn("extra.project_context not set, using fallback notice")
+    if val is None or val.strip() == "":
         return _DEFAULT_PROJECT_CONTEXT
     return val
 
@@ -397,9 +440,12 @@ def get_fullstack_review_steps() -> list[dict[str, str]]:
     """Return extra.fullstack_review_steps as list of {label, file_path} dicts.
     Used by harness-prompt-suffix.py `implement` (and legacy stage 2) to render Q6 (a)-(z)
     bullets dynamically from project config rather than hardcoded paths."""
-    raw = _read_extra_list_of_dict("fullstack_review_steps", ("label", "file_path"))
-    if raw is None:
+    raw, err = _parse_extra_list_of_dict("fullstack_review_steps", ("label", "file_path"))
+    if err:
+        _warn(err + "；按空 list 处理（Q6 disabled）")
+    elif raw is None:
         _warn("extra.fullstack_review_steps not set, using empty list (Q6 disabled)")
+    if raw is None:
         return list(_DEFAULT_FULLSTACK_REVIEW_STEPS)
     out: list[dict[str, str]] = []
     for d in raw:
@@ -410,6 +456,77 @@ def get_fullstack_review_steps() -> list[dict[str, str]]:
             continue
         out.append({"label": label, "file_path": file_path})
     return out
+
+
+def get_parked_statuses() -> tuple[str, ...]:
+    """Top-level `parked_statuses:` — sprint-status story statuses that mean
+    "kept on the board, not to be developed for now" (placeholders waiting for
+    outside input, stories waiting for a spec). Such stories are never dispatched,
+    do not hold back the epic barrier or the epic retro, and are reported as
+    EPIC_PARKED= next to EPIC_WONT_DO= (issue #15). Inline `[a, b]` or a block
+    list; absent / empty → ()."""
+    lines = _read_lines()
+    if lines is None:
+        return ()
+    out: list[str] = []
+    in_list = False
+    for line in lines:
+        if not in_list:
+            m = re.match(r"^parked_statuses:\s*(.*)$", line)
+            if not m:
+                continue
+            raw = _strip_yaml_scalar(m.group(1))
+            if raw.startswith("["):
+                inner = raw[1:raw.rfind("]")] if "]" in raw else raw[1:]
+                out = [x.strip().strip("'\"") for x in inner.split(",")]
+                break
+            if raw:
+                out = [raw.strip("'\"")]
+                break
+            in_list = True
+            continue
+        st = line.strip()
+        if not st or st.startswith("#"):
+            continue
+        if not line[0].isspace() or not st.startswith("- "):
+            break
+        out.append(_strip_yaml_scalar(st[2:]).strip("'\""))
+    reserved = {"backlog", "ready-for-dev", "in-progress", "review", "done",
+                "wont-do", "cancelled", "canceled"}
+    return tuple(x for x in out if x and x not in reserved)
+
+
+def check_config() -> list[str]:
+    """Structural validation behind `harness_config.py check` (init §4.5 gate).
+
+    Returns error strings; empty list = usable config. Explicit empty values
+    (`[]`, `''`) are fine and absent keys are not errors (their getters WARN
+    and fall back). Errors are what a getter would otherwise drop silently:
+    unreadable file, unparseable list or block, list items missing a sub-key,
+    regexes that do not compile."""
+    if _read_lines() is None:
+        return [f"config file missing or unreadable: {_resolve_config_path()}"]
+    errors: list[str] = []
+    for key, sub_keys in (("path_classifiers", ("label", "regex")),
+                          ("fullstack_review_steps", ("label", "file_path"))):
+        raw, err = _parse_extra_list_of_dict(key, sub_keys)
+        if err:
+            errors.append(err)
+            continue
+        for n, d in enumerate(raw or [], 1):
+            missing = [k for k in sub_keys if not d.get(k, "").strip()]
+            if missing:
+                errors.append(f"extra.{key} 第 {n} 项缺 {'/'.join(missing)}: {d}")
+            elif key == "path_classifiers":
+                try:
+                    re.compile(d["regex"])
+                except re.error as e:
+                    errors.append(f"extra.path_classifiers 第 {n} 项 regex 编译失败（{d['label']}）: {e}")
+    for key in ("verification_commands", "project_context"):
+        _, err = _parse_extra_text(key)
+        if err:
+            errors.append(err)
+    return errors
 
 
 def _cli_get(key: str, default: str | None = None) -> tuple[str, str]:
@@ -456,6 +573,11 @@ def _cli_main(argv: list[str]) -> int:
     )
 
     sub.add_parser("smoke", help="smoke-print all known fields (legacy __main__ behavior)")
+    sub.add_parser(
+        "check",
+        help=("validate structure (init §4.5 gate): exit 0 + 'CONFIG_OK' on stdout, or "
+              "exit 3 + one 'ERROR [harness_config]:' line per problem on stderr"),
+    )
 
     # bash convenience: `--get` as top-level flag (no subcommand). We handle
     # this by detecting `--get` before parse and rewriting to the subcommand
@@ -495,6 +617,15 @@ def _cli_main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
         print(value)
+        return 0
+
+    if args.cmd == "check":
+        errors = check_config()
+        for e in errors:
+            print(f"ERROR [harness_config]: {e}", file=sys.stderr)
+        if errors:
+            return 3
+        print("CONFIG_OK")
         return 0
 
     if args.cmd == "smoke" or args.cmd is None:

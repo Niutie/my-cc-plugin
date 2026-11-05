@@ -29,6 +29,20 @@ allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 
 ---
 
+## ⛔ 第一步：项目已由 super-harness 管理时拒绝执行（0.2.2+）
+
+harness-zh 已停止维护，并入 super-harness 0.2.0。在 super-harness 管理的项目里运行本命令，manifest purge 会删掉 super-harness 的资产（`superh.py`、`pipeline.md`、`prompts/worker.md`、`templates/parallel.yaml` 等），还会写入不带命名空间的 `.claude/commands/init.md`、`run.md`。在做任何其他事（包括 TaskCreate、探测 plugin 路径）之前先跑：
+
+```bash
+[ -f .claude/harness/scripts/superh.py ] && echo "SUPER_HARNESS_PROJECT=yes" || echo "SUPER_HARNESS_PROJECT=no"
+```
+
+- `SUPER_HARNESS_PROJECT=yes` → **立即停止**，不写任何文件，原样告诉用户：
+  > 这个项目已经由 super-harness 管理（`.claude/harness/scripts/superh.py` 存在）。harness-zh 已停止维护，在这里运行会删掉 super-harness 的文件。请改用 `/super-harness:update`，然后执行 `/plugin uninstall harness-zh` 卸载旧 plugin。
+- `SUPER_HARNESS_PROJECT=no` → 按下文继续。（`deploy_assets.sh` 自己也有同样的检查，命中时 exit 3。）
+
+---
+
 ## 1. Plugin 路径探测（同 init §A.0；最小 12 行 inline bootstrap）
 
 完整发现逻辑在 `scripts/discover_plugin_root.sh`，但 update 也可能遇上"项目侧旧脚本

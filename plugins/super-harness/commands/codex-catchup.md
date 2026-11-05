@@ -27,7 +27,7 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 
 **共享行为契约**（与 init / update / run 一致）：
 
-- 代答政策：subagent prompt 末尾必须含 `harness-prompt-suffix.py 3` 与 `4` 输出
+- 代答政策：stage 4 修复 subagent 的 prompt 末尾必须含 `harness-prompt-suffix.py 4` 输出（stage 3 codex review 由主 agent 直接跑 `run_codex_review.sh`，不起子 agent）
 - TaskCreate 任务 `Codex Catchup: <count> stories`（§1 启动 in_progress；§5 完成 completed）
 - Commit：每条 story 跑 `harness-commit.py 3 <KEY>` 与 `4 <KEY>`，与主流水线同 stage 命名空间
 - 不允许 `git add -A`；不动 sprint-status 的 dev_status 字段（catchup 不改 review/done state）
@@ -53,7 +53,7 @@ CODEX_PROBE_JSON="$(bash .claude/harness/scripts/check_codex_availability.sh)"
 CODEX_AVAILABLE="$(printf '%s' "$CODEX_PROBE_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["available"])')"
 ```
 
-若 `CODEX_AVAILABLE != True` → **halt + 引导**（不归档 marker，不写 commit）：
+若 `CODEX_AVAILABLE != True` → 打印下面的通知框，然后**结束本命令**（halt：不扫描、不归档 marker、不写 commit）：
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -67,7 +67,7 @@ CODEX_AVAILABLE="$(printf '%s' "$CODEX_PROBE_JSON" | python3 -c 'import json,sys
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-进入 §3。
+只有 `CODEX_AVAILABLE == True` 时才进入 §3。
 
 ## 3. 扫描 marker
 
@@ -124,11 +124,12 @@ markers=( _bmad-output/implementation-artifacts/*.codex-skipped.json )
       处理，然后继续当前 story。
   - 含任何**其它**路径 → halt 告知用户先 commit/stash（既有规则不变）。
 
-### 4.3 调度 stage 3 codex review subagent
-**完全复用 `pipeline.md §1 B2.2` 的 prompt 模板**（不要在本文件复粘，让主 agent 引用
-pipeline.md 的同款 prompt），但 catchup 比正常流水线多一步 **(a) review 窗口锚定**：
+### 4.3 跑 stage 3 codex review
+**完全复用 `pipeline.md §1 B2.2` 的做法**（主 agent 直接跑 `run_codex_review.sh`，Bash 显式
+`timeout: 600000`，按输出第一行 `CODEX_STATUS:` 分支），但 catchup 比正常流水线多一步
+**(a) review 窗口锚定**：
 
-**(a) review 窗口锚定（catchup 专属，spawn 之前先做）**：正常流水线里 B2.2 紧跟 B1，
+**(a) review 窗口锚定（catchup 专属，跑 review 之前先做）**：正常流水线里 B2.2 紧跟 B1，
 `--base <STAGE2_BASE>` 的隐式 diff 终点（当前 HEAD）恰好就是本 story 的实现；但 catchup 的
 典型场景是 sprint 跑完后补跑——HEAD 已包含之后所有 story 的代码与 retro/chore commit，直接
 复用会让 review 窗口被大量无关 diff 污染。先锚定本 story 自己的提交窗口终点 `<STAGE3_HEAD>`：
@@ -171,38 +172,37 @@ echo "HEAD_NOW=$HEAD_NOW"
   echo "CATCHUP_WT_ACTIVE=$CATCHUP_WT_ACTIVE"
   ```
 
-**(b) spawn**：
+**(b) 跑 review**：
 
-- 解析 `<CODEX_COMPANION_PATH>`（同 pipeline.md §1 B2.2 解析逻辑）
-- 解析 `<STAGE2_BASE>` ← marker JSON 里的 `stage2_base_sha` 字段；缺失则依次 fallback：spec
+- `<STAGE2_BASE>` ← marker JSON 里的 `stage2_base_sha` 字段；缺失则依次 fallback：spec
   frontmatter `baseline_revision`（新流水线）→ `harness-state.py <KEY>` 的 `stage2_base_sha`
   （旧流水线）→ `git rev-parse harness/<KEY>/start`
-- spawn general-purpose subagent，prompt = pipeline.md §1 B2.2 同款两步指令 + `harness-prompt-suffix.py 3`，
-  外加两处 catchup 改写：
-  1. `CATCHUP_WT_ACTIVE=1` 时，第 1 步的 node 命令追加 `--cwd "<CATCHUP_WT>"`（review diff
-     即被钉在 `<STAGE2_BASE>..<STAGE3_HEAD>`）；
-  2. 第 2 步写报告的目标路径保持**主仓库**的
-     `_bmad-output/implementation-artifacts/<KEY>.codex-review.md`（绝不写进临时 worktree）；
-     frontmatter 的 `head:` 按窗口锚定结果填**实际 diff 终点**（不要另跑
-     `git rev-parse HEAD` 充当 head）：
-     - `CATCHUP_WT_ACTIVE=1`（worktree 锚定成功）→ `head:` 填 `<STAGE3_HEAD>`；
-     - `CATCHUP_WT_ACTIVE=0` 且 `STAGE3_HEAD == HEAD_NOW`（窗口本就精确，无需 worktree）→
-       `head:` 填 `<HEAD_NOW>`（与 `<STAGE3_HEAD>` 等值）；
-     - `CATCHUP_WT_ACTIVE=0` 且 `STAGE3_HEAD != HEAD_NOW`（worktree add 失败的降级口径，
-       diff 实际终点是当前 HEAD）→ `head:` 填 `<HEAD_NOW>`，且 frontmatter **追加一行**
-       `window: degraded`（如实标记窗口可能混入后续 story 的 diff——不许填
-       `<STAGE3_HEAD>` 假装锚定成功）。
-- 等返回。
-- **收尾（无论下面验收 / in-flight 检测结果如何都先做）**：`CATCHUP_WT_ACTIVE=1` 时跑
+- 在**主仓库**根目录跑（报告必须写进主仓库的
+  `_bmad-output/implementation-artifacts/<KEY>.codex-review.md`，绝不写进临时 worktree）：
+
+  ```bash
+  bash .claude/harness/scripts/run_codex_review.sh --key "<KEY>" --base "<STAGE2_BASE>" --spec "<spec 路径>" \
+      [--cwd "<CATCHUP_WT>"] [--window-degraded]
+  ```
+
+  - `CATCHUP_WT_ACTIVE=1` → 加 `--cwd "<CATCHUP_WT>"`：review diff 钉在 `<STAGE2_BASE>..<STAGE3_HEAD>`，
+    脚本写的 frontmatter `head:` 取临时 worktree 的 HEAD，即 `<STAGE3_HEAD>`；
+  - `CATCHUP_WT_ACTIVE=0` 且 `STAGE3_HEAD == HEAD_NOW`（窗口本就精确）→ 两个参数都不加，`head:` 是 `<HEAD_NOW>`；
+  - `CATCHUP_WT_ACTIVE=0` 且 `STAGE3_HEAD != HEAD_NOW`（worktree add 失败的降级口径，diff 实际终点是
+    当前 HEAD）→ 加 `--window-degraded`：`head:` 是 `<HEAD_NOW>`，frontmatter 多一行 `window: degraded`，
+    如实标记窗口可能混入后续 story 的 diff。
+- **收尾（无论结果如何都先做）**：`CATCHUP_WT_ACTIVE=1` 时跑
   `git worktree remove --force "$CATCHUP_WT"`；失败仅 stderr WARN（泄漏一个临时目录，不影响
   主仓库），不 halt。
-- 验收：`<KEY>.codex-review.md` 存在 + 含 `base: <STAGE2_BASE>` 行 + `head:` 等于**实际
-  diff 终点**（锚定成功 = `<STAGE3_HEAD>`；降级 = `<HEAD_NOW>` 且 frontmatter 含
-  `window: degraded` 行）——head 与实际窗口一致即锚定/降级口径如实落盘的证据。
-
-**in-flight 配额/auth 检测**：subagent 返回文本若含 `hit your limit` / `rate limit` /
-`usage limit` / `quota` / `not logged in` / `unauthorized` → halt + §6 重新 marker 模板
-（保留原 marker 不归档，因为 catchup 自身被打断）。
+- 按输出第一行分支（只看这一行和退出码，不在输出里搜关键词）：
+  - `CODEX_STATUS: ok`（退出码 0）→ 记下 `CODEX_FINDINGS=`，进 §4.4。验收：`REPORT_FILE=` 存在、含
+    `base: <STAGE2_BASE>` 行、`head:` 等于实际 diff 终点（锚定成功 = `<STAGE3_HEAD>`；降级 = `<HEAD_NOW>`
+    且有 `window: degraded` 行）。
+  - `CODEX_STATUS: quota` / `auth` / `unavailable` / `timeout`（退出码 2），或 Bash 被工具超时打断、
+    没有 `CODEX_STATUS:` 行 → halt + §6 模板，故障 reason 填 `CODEX_REASON=`（超时打断填 `timeout`）。
+    保留原 marker，不归档。脚本失败时不写 `<KEY>.codex-review.md`；万一工作区里有一个未入库的，按
+    `pipeline.md §1 B2.1 c)` 的命令删掉。
+  - `CODEX_STATUS: error`（退出码 1）→ halt，贴脚本完整输出，marker 同样保留。
 
 ### 4.4 commit stage 3
 `python3 .claude/harness/scripts/harness-commit.py 3 <KEY>`，按 §−1.d 退出码处理。
@@ -215,10 +215,12 @@ echo "HEAD_NOW=$HEAD_NOW"
 ### 4.5 调度 stage 4 dev fix subagent
 同 `pipeline.md §1 B2.3`：
 
-- spawn fresh general-purpose subagent
-- prompt = `harness-state.py <KEY> --resume-prompt --stage 4` 输出 + pipeline.md §1 B2.3 同款指令 +
-  `harness-prompt-suffix.py 4`
-- 等返回，验收 story spec 的 `### Codex Review Handling (Stage 3)` 段每条 finding 都有处理记录
+- `CODEX_FINDINGS=0`（codex 报告 `No material findings.`）→ 不 spawn，按 `pipeline.md §1 B2.3` 的 0 条分支
+  在 spec 末尾写那条 `- [none]` 处理记录，直接验收
+- 否则 spawn fresh general-purpose subagent，prompt = `harness-state.py <KEY> --resume-prompt --stage 4`
+  输出 + pipeline.md §1 B2.3 同款指令 + `harness-prompt-suffix.py 4`，等返回
+- 按 `pipeline.md §1 B2.3` 的"验收"核对（`harness-state.py <KEY>` 的 `codex_handling_rows` /
+  `codex_handling_none` 对 `codex_findings`）
 - 注意：若 §4.3 走了降级口径（`CATCHUP_WT_ACTIVE=0` 且窗口未锚定成功），review 报告可能混入
   后续 story 的 finding——dev fix prompt 里追加一句"只处理属于 `<KEY>` 实现范围内的 finding，
   明显属于其它 story 代码的 finding 标 `wontfix: out of catchup window` 即可"。
@@ -272,7 +274,7 @@ stage 4 的 expected 产物清单已含 `<KEY>.codex-skipped.json`（删除态�
 │                                                                  │
 │   故障 story  : <KEY>                                            │
 │   故障 stage  : 3 / 4                                            │
-│   故障 reason : quota_exhausted / auth_failed                    │
+│   故障 reason : quota_exhausted / auth_failed / timeout / ...    │
 │                                                                  │
 │ 已 resolve 的 N 条 marker 已归档（不会重跑）。                   │
 │ 失败的 <KEY> marker 保持原样。                                   │

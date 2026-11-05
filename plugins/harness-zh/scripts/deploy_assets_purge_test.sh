@@ -13,6 +13,8 @@
 #        symlink) are ALL refused with WARN, never deleted, and NOT written
 #        back to the new manifest
 #   T6 — FAILED>0: exit 2, purge skipped, manifest NOT updated
+#   T7 — 0.2.2 guard: a super-harness project (superh.py present) is refused
+#        with exit 3 before anything is written or purged
 #
 # Sandbox: fake PLUGIN_ROOT + DEST project under mktemp; nothing touches the
 # real plugin or repo. Exit code = FAIL count.
@@ -249,6 +251,27 @@ if cmp -s "$MANIFEST" "$WORKDIR/manifest.t6" \
     ok "T6 manifest preserved + no purge happened on broken deploy"
 else
     bad "T6 manifest/file mutated during failed deploy"
+fi
+
+# ============================================================================
+# T7 — super-harness project: refuse, change nothing
+# ============================================================================
+printf 'arch v1\n' > "$PLUGIN/architecture.md"
+DEST7="$WORKDIR/super-harness-project"
+mkdir -p "$DEST7/.claude/harness/scripts" "$DEST7/.claude/harness/prompts"
+printf 'superh\n'   > "$DEST7/.claude/harness/scripts/superh.py"
+printf 'worker\n'   > "$DEST7/.claude/harness/prompts/worker.md"
+printf '%s\n' .claude/harness/scripts/superh.py .claude/harness/prompts/worker.md \
+    > "$DEST7/.claude/harness/.deploy-manifest.txt"
+( cd "$DEST7" && find . -type f | sort | xargs cksum ) > "$WORKDIR/t7.before"
+run_deploy 1 "$DEST7"
+( cd "$DEST7" && find . -type f | sort | xargs cksum ) > "$WORKDIR/t7.after"
+if [ "$RC" = 3 ] && printf '%s\n' "$ERR" | grep -q "managed by super-harness" \
+   && printf '%s\n' "$ERR" | grep -q "/plugin uninstall harness-zh" \
+   && cmp -s "$WORKDIR/t7.before" "$WORKDIR/t7.after" && [ ! -d "$DEST7/.claude/commands" ]; then
+    ok "T7 super-harness project refused (exit 3), nothing written or purged"
+else
+    bad "T7 guard: rc=$RC err='$ERR'"
 fi
 
 echo ""

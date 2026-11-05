@@ -26,27 +26,31 @@ retro skill 完成 Phase 1 Gather、进入 Phase 2 Analyze 之前先运行：
 bash .claude/harness/scripts/run_retro_self_audit.sh <prev_epic_num>
 ```
 
-参数 `<prev_epic_num>` = 上一 epic 编号（如 Epic 4 retro 启动时跑 `... 3`，
-扫 epic-1 + epic-2 + epic-3 全表）。
+参数 `<prev_epic_num>` = 上一 epic 编号（如 Epic 4 retro 启动时跑 `... 3`）。
 
-输出 markdown 表格 4 列（id / 描述 / 自动判定 status / evidence）。retro
-agent 把表格 paste 到 retro 文档 §2 cross-reference 作草稿基础，再增补
-evidence / 调整 status / 写跨 epic 兑现度评估。
+检查项由项目自己在 `.claude/harness/retro-self-audit.tsv` 里配置（格式见脚本头注释和
+`.claude/harness/templates/retro-self-audit.tsv.example`），plugin 不内置任何检查。按输出分两种情况：
 
-**hint 不阻断**：脚本失败（如新 epic 脚本 case 还没写完）不阻 retro 继续
-——stderr WARN 一行后照常手工填 §2 表格，**不要 halt / 不要等人确认**。
-每加新 epic action items 时同步更新脚本规则（在
-`.claude/harness/scripts/run_retro_self_audit.sh` 加 `check_DN()` function）。
+- **首行是 `RETRO_SELF_AUDIT: no-config`**（末行 `_CHECKS_:0`）：项目没配检查项。**不要**把这段输出
+  贴进 retro 文档，也不要照着示例文件自己编表格行。§2 cross-reference 按 `sprint-status.yaml` 的
+  `retro_action_items` / `action_items` 和上一份 retro 文档手工填。
+- **输出是 markdown 表格**（4 列 id / 描述 / 自动判定 status / evidence，末行 `_CHECKS_:<N>`）：
+  把表格行（不含 `_CHECKS_` 行）贴到 retro 文档 §2 cross-reference 作草稿，再按下一节逐行复核。
+  表里只有项目配置过的检查项；sprint-status 里有、表里没有的 action item 照常手工补行。
+
+**hint 不阻断**：脚本失败（非 0 退出）不阻 retro 继续：stderr WARN 一行后照常手工填 §2 表格，
+不要 halt，也不要等人确认。想让后续 retro 自动核对某个新 action item，就在
+`.claude/harness/retro-self-audit.tsv` 加一行（这个文件归项目所有，init / update 不会覆盖）。
 
 ---
 
 ## §2 cross-reference 表格使用约定
 
-脚本输出的 4 列 status 自动判定 = `done / partial / pending / unknown`：
-- `done` — grep 命中 + file-exist 通过
-- `partial` — 部分命中 / via spec-pattern 但 SKILL 未集成
-- `pending` — 无命中 / 文件缺失
-- `unknown` — 无法机械判定（如 trigger 未到期；deferred 类）
+脚本输出的 status 自动判定取 `done / pending / unknown`，复核后可改成 `partial`：
+- `done`：配置的检查通过（文件存在 / grep 命中 / 命令退出 0 等）
+- `partial`：脚本不产出，retro agent 复核后手工改成这个值
+- `pending`：检查没通过（文件缺失 / 无命中 / 命令非 0）
+- `unknown`：无法机械判定（`manual` 类检查，或要 grep 的文件不存在）
 
 retro agent 在 paste 后必须为每行：
 1. 复核 evidence 真实性（脚本是 grep 兜底，不替代判断）

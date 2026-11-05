@@ -6,13 +6,22 @@
 # token 消耗大致按路数线性增长。建议先用 2，跑顺了再加。
 max_slots: 2
 
-# sprint-status.yaml 里没有 depends_on 字段的 story 怎么处理：
+# 依赖来源，优先级从高到低：本文件的 deps_overrides → sprint-status.yaml 顶层的
+# story_dependencies（推荐，BMad 6.12.4 的脚本只认单行写法，依赖写在这里）→
+# development_status 多行块里的 depends_on。依赖里 ext- 开头的项是外部条件，
+# 永远不会自动满足，条件满足后从依赖里删掉。
+# 三处都没声明依赖的 story 怎么处理：
 #   serial         当作依赖它前面所有 story（效果等于一次一条），默认
 #   epic-parallel  同一 epic 内视为互相独立，只受 epic 屏障约束
 # 写了 depends_on 的 story（包括 depends_on: []）总是按声明来。
 no_deps_policy: serial
 
-# epic N 的 story 要等 epic 1..N-1 的 retrospective 为 done 才启动。
+# epic N 的 story 要等 epic 1..N-1 的 story 全部完成才启动（挂起状态的 story 不算，
+# 见 harness-project-config.yaml 的 parked_statuses）。依赖写全的项目可以设成 false：
+# 只按依赖调度，允许跨 epic 并行；retro 仍然按 epic 在该 epic 全部完成后跑。
+epic_barrier: true
+
+# epic N 的 story 要等 epic 1..N-1 的 retrospective 为 done 才启动（epic_barrier 为 true 时才生效）。
 retro_barrier: true
 
 # lane worktree 放在哪。空 = <仓库上级目录>/<仓库名>.worktrees
@@ -36,6 +45,7 @@ link_paths: []
 
 # lane worktree 准备好后在其中执行一次的命令（sh -c），例如 'pnpm install --frozen-lockfile'。
 # 环境变量：SUPERH_KEY / SUPERH_WORKTREE / SUPERH_MAIN_ROOT
+# 超时后整个进程组（包括命令自己再起的子进程）都会被结束，这一路记为 held。
 prepare_command: ''
 prepare_timeout_sec: 600
 
@@ -45,19 +55,22 @@ prepare_timeout_sec: 600
 # 记为 held，sprint 分支不动；在 lane worktree 里修好并 commit，再重跑 integrate。
 # 没有被 rebase 的 lane 不跑（代码没变，B1 已经验过）。留空 = 不验证。
 # 环境变量同 prepare_command。lane 用 link_paths 软链了依赖目录时，命令里别写会改动它的步骤。
+# 超时算作验证失败，处理方式同上，命令起的整个进程组都会被结束。
 verify_command: ''
 verify_timeout_sec: 1800
 
 # worker（headless claude -p）的权限模式。无人值守需要 bypassPermissions；
 # 改成更严格的模式时，worker 会在需要授权的地方失败退出。
 worker_permission_mode: bypassPermissions
+# worker 用的模型，例如 opus、sonnet，或完整模型 id。留空 = 跟随 claude 的默认设置
+# （~/.claude/settings.json 的 model）。worker 里 bmad-build-auto 派的子 agent 继承这个模型。
 worker_model: ''
 claude_bin: claude
 
 # story done 之后保留 worktree 和分支（调试用）
 keep_worktrees: false
 
-# 手工补充 / 覆盖依赖，优先于 sprint-status.yaml 的 depends_on。
+# 手工补充 / 覆盖依赖，优先于 sprint-status.yaml 的 story_dependencies 和 depends_on。
 # 值可以是 story key、短号（3.2 或 3-2）、epic-N。
 # deps_overrides:
 #   3-4-export-csv: [3-2-digest-delivery]

@@ -16,6 +16,9 @@
 #   2. 缺字段 (artifacts_root unset) → fallback to default + WARN
 #   3. yaml 文件缺失                  → fallback to default + WARN
 #   4. yaml 含自定义 artifacts_root   → 真用新值
+#   5. 显式空值（[] / '' — 模板形态） → 0 WARN + check 通过（含模板文件本身）
+#   6. extra 字段缺失                 → 中性默认（0 条 classifier，无 console-* / go vet）
+#   7. 结构错误                       → `check` exit 3 + ERROR 行
 
 set -uo pipefail
 
@@ -179,6 +182,85 @@ assert_not_contains "$F4_PY" "WARN [harness_config]: artifacts_root" "F4.py"
 F4_SH="$(bash -c "source '$F4_HELPER_DIR/read_harness_config.sh' 2>&1; echo \"ART=\$HARNESS_ARTIFACTS_ROOT\"" 2>&1)"
 assert_contains "$F4_SH" "docs/specs" "F4.sh"
 assert_not_contains "$F4_SH" "WARN [read_harness_config]: artifacts_root not set" "F4.sh"
+
+# Fixture 5: 显式空值（与模板同形：[] / ''）→ 合法，0 WARN；check 通过
+# （0.3.1 回归：此前 `fullstack_review_steps: []` / `project_context: ''` 必 WARN，
+#  init §4.5 "任何 WARN 即 rollback" 让新项目 init 一定失败）
+echo ""
+echo "=== Fixture 5: explicit empty values (template shape) ==="
+TMP_F5="$WORKDIR/f5"
+F5_HELPER_DIR="$(make_helper_dir "$TMP_F5")"
+cat > "$TMP_F5/.claude/harness/harness-project-config.yaml" <<'YAML'
+project_display_name: 'Fixture 5'
+artifacts_root: ''
+extra:
+  frontend_dir: ''
+  path_classifiers: []
+  # 示例注释（不应被当成条目）：
+  #   - label: 'x'
+  #     regex: '^x/'
+  verification_commands: ''
+  project_context: ""
+  fullstack_review_steps: []   # inline comment
+YAML
+F5_PY="$(python3 "$F5_HELPER_DIR/harness_config.py" 2>&1)"
+assert_not_contains "$F5_PY" "WARN" "F5.py"
+assert_contains "$F5_PY" "path_classifiers: 0 entries" "F5.py"
+assert_contains "$F5_PY" "fullstack_review_steps: 0 entries" "F5.py"
+F5_CHECK="$(python3 "$F5_HELPER_DIR/harness_config.py" check 2>&1)"; F5_RC=$?
+assert_contains "$F5_CHECK rc=$F5_RC" "CONFIG_OK rc=0" "F5.check"
+F5_SH="$(bash -c "source '$F5_HELPER_DIR/read_harness_config.sh' 2>&1; echo \"ART=\$HARNESS_ARTIFACTS_ROOT\"" 2>&1)"
+assert_not_contains "$F5_SH" "WARN" "F5.sh"
+assert_contains "$F5_SH" "_bmad-output/implementation-artifacts" "F5.sh"
+# shipped template itself must be warning-free and pass check
+TPL="$SCRIPT_DIR/../templates/harness-project-config.yaml.template"
+if [ -f "$TPL" ]; then
+    TPL_OUT="$(python3 "$PY_HELPER" --config-path "$TPL" smoke 2>&1)"
+    assert_not_contains "$TPL_OUT" "WARN" "template.smoke"
+    TPL_CHECK="$(python3 "$PY_HELPER" --config-path "$TPL" check 2>&1)"; TPL_RC=$?
+    assert_contains "$TPL_CHECK rc=$TPL_RC" "CONFIG_OK rc=0" "template.check"
+fi
+
+# Fixture 6: 字段缺失 → 中性默认（不得回落到别的项目的 console-api / console-web）
+echo ""
+echo "=== Fixture 6: absent extra fields → project-neutral defaults ==="
+TMP_F6="$WORKDIR/f6"
+F6_HELPER_DIR="$(make_helper_dir "$TMP_F6")"
+printf "project_display_name: 'Fixture 6'\nartifacts_root: '_bmad-output/implementation-artifacts'\n" \
+    > "$TMP_F6/.claude/harness/harness-project-config.yaml"
+F6_PY="$(python3 "$F6_HELPER_DIR/harness_config.py" 2>&1)"
+assert_contains "$F6_PY" "path_classifiers: 0 entries" "F6.py"
+assert_contains "$F6_PY" "WARN [harness_config]: path_classifiers not set" "F6.py"
+assert_contains "$F6_PY" "WARN [harness_config]: verification_commands not set" "F6.py"
+assert_not_contains "$F6_PY" "console-" "F6.py"
+assert_not_contains "$F6_PY" "go vet" "F6.py"
+F6_CHECK="$(python3 "$F6_HELPER_DIR/harness_config.py" check 2>/dev/null)"; F6_RC=$?
+assert_contains "$F6_CHECK rc=$F6_RC" "CONFIG_OK rc=0" "F6.check (absent ≠ error)"
+
+# Fixture 7: 结构错误 → check exit 3 + ERROR 行（init §4.5 rollback 依据）
+echo ""
+echo "=== Fixture 7: malformed structure → check exit 3 ==="
+TMP_F7="$WORKDIR/f7"
+F7_HELPER_DIR="$(make_helper_dir "$TMP_F7")"
+cat > "$TMP_F7/.claude/harness/harness-project-config.yaml" <<'YAML'
+extra:
+  path_classifiers:
+    - label: 'bad regex'
+      regex: '^api/(('
+  fullstack_review_steps:
+    - label: 'no path'
+  verification_commands:
+    go test ./...
+YAML
+F7_CHECK="$(python3 "$F7_HELPER_DIR/harness_config.py" check 2>&1)"; F7_RC=$?
+assert_contains "rc=$F7_RC" "rc=3" "F7.check exit"
+assert_contains "$F7_CHECK" "ERROR [harness_config]: extra.path_classifiers 第 1 项 regex" "F7.check"
+assert_contains "$F7_CHECK" "ERROR [harness_config]: extra.fullstack_review_steps 第 1 项缺 file_path" "F7.check"
+assert_contains "$F7_CHECK" "ERROR [harness_config]: extra.verification_commands" "F7.check"
+assert_not_contains "$F7_CHECK" "CONFIG_OK" "F7.check"
+# missing file → check fails too
+F7B="$(python3 "$PY_HELPER" --config-path "$WORKDIR/nope.yaml" check 2>&1)"; F7B_RC=$?
+assert_contains "rc=$F7B_RC $F7B" "rc=3 ERROR [harness_config]: config file missing" "F7.check missing file"
 
 # Summary
 echo ""

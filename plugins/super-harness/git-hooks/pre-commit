@@ -33,16 +33,46 @@
 # 的 sidecar（`<KEY>.codex-review.md` 等）不触发。bmad-build-auto 自己 commit，
 # 本 hook 拦下它的 commit 会让它 HALT「finalization left repository dirty」——
 # pipeline.md §0.A.0 因此在 dispatch 前就把待兑现 dev 项清零或 halt。
+# 0.3.1：(1) 去掉所有 `producer | grep -q`（SIGPIPE 141 让 gate 静默失效）；
+# (2) gate ① 在 retro_action_items 块缺失（首个 epic retro 之前）时静默放行，
+# 250/251/异常退出各给准确提示；(3) artifacts 目录改读 artifacts_root 配置。
 
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-RETRO_TRIGGER='_bmad-output/implementation-artifacts/(spec-)?[0-9]+-[0-9]+[a-z]?-[^/.]*\.md$'
-RETRO_CHECKER=".claude/harness/scripts/check_retro_action_items.sh"
-DEFERRED_WORK_PATH="_bmad-output/implementation-artifacts/deferred-work.md"
-SCHEMA_LIB="$REPO_ROOT/.claude/harness/scripts/deferred_work_schema_lib.sh"
-
 cd "$REPO_ROOT"
+
+# 本 hook 以拷贝形式装进 .git/hooks/（install_git_hooks.sh），自身位置不可依赖；
+# 一律按 $REPO_ROOT/.claude/harness/scripts 找部署的脚本。
+HARNESS_SCRIPTS="$REPO_ROOT/.claude/harness/scripts"
+RETRO_CHECKER=".claude/harness/scripts/check_retro_action_items.sh"
+SCHEMA_LIB="$HARNESS_SCRIPTS/deferred_work_schema_lib.sh"
+
+# 0.3.1：artifacts 目录与工具链其它脚本同源——source read_harness_config.sh 取
+# harness-project-config.yaml 的 artifacts_root（它自带缺省兜底）。此前写死
+# `_bmad-output/implementation-artifacts`，自定义 artifacts_root 的项目里两个
+# gate 都不触发。source 期 stderr 丢弃：config 缺 artifacts_root 时它每次都打
+# WARN，pre-commit 不该每个 commit 刷一遍。脚本缺失（部分部署）时用同一缺省值。
+ARTIFACTS_REL="_bmad-output/implementation-artifacts"
+SPRINT_STATUS_ABS="$REPO_ROOT/${ARTIFACTS_REL}/sprint-status.yaml"
+if [ -f "$HARNESS_SCRIPTS/read_harness_config.sh" ]; then
+    # shellcheck disable=SC1090,SC1091
+    if source "$HARNESS_SCRIPTS/read_harness_config.sh" 2>/dev/null \
+       && [ -n "${HARNESS_ARTIFACTS_ROOT:-}" ] && [ -n "${HARNESS_REPO_ROOT:-}" ]; then
+        _rel="${HARNESS_ARTIFACTS_ROOT#"${HARNESS_REPO_ROOT}"/}"
+        _rel="${_rel#./}"
+        while [ "${_rel%/}" != "$_rel" ]; do _rel="${_rel%/}"; done
+        if [ -n "$_rel" ]; then ARTIFACTS_REL="$_rel"; fi
+        SPRINT_STATUS_ABS="${HARNESS_SPRINT_STATUS_PATH:-$REPO_ROOT/${ARTIFACTS_REL}/sprint-status.yaml}"
+    fi
+    set -euo pipefail   # read_harness_config.sh 会改 shell 选项；恢复本 hook 的
+fi
+# artifacts 目录做 ERE 转义后拼进 gate ① 触发正则（目录名里的 `.` `+` 等按字面）。
+ARTIFACTS_RE="$(printf '%s' "$ARTIFACTS_REL" | sed 's/[][\.*^$+?(){}|]/\\&/g')"
+# 文件名部分单独成变量：build_pipeline_test.sh G1 直接抽这一行做回归。
+RETRO_SPEC_NAME_RE='(spec-)?[0-9]+-[0-9]+[a-z]?-[^/.]*\.md$'
+RETRO_TRIGGER="^${ARTIFACTS_RE}/${RETRO_SPEC_NAME_RE}"
+DEFERRED_WORK_PATH="${ARTIFACTS_REL}/deferred-work.md"
 
 # Source the shared schema validation library if present (v0.1.27+). Falls
 # back to inline regexes below if missing (e.g. project not yet updated).
@@ -57,12 +87,17 @@ fi
 # 直接踩坑——一行防御性补丁，零成本。
 GIT="git -c core.quotepath=false"
 
+# 0.3.1：本 hook 不再出现 `producer | grep -q`。pipefail 下 grep -q 命中即退出，
+# 上游还在写（> 64KB 管道缓冲，几千个 staged 文件就够）会吃 SIGPIPE，整条管道
+# 返回 141，`if` 判假，gate 被静默跳过。改为先收进变量、再用 here-string 喂 grep。
+
 # E11: --diff-filter=A 仅命中"新增"路径；rename / delete / modify 现有 4-x-*.md
 # 不触发（避免清理 / 重命名旧 spec 时被本 hook 误阻）。
 ADDED_PATHS="$($GIT diff --cached --name-only --diff-filter=A || true)"
+STAGED_PATHS="$($GIT diff --cached --name-only || true)"
 
 # ── Gate ① retro action items ─────────────────────────────────────────
-if echo "$ADDED_PATHS" | grep -qE "$RETRO_TRIGGER"; then
+if grep -qE "$RETRO_TRIGGER" <<<"$ADDED_PATHS"; then
     # E10: checker 文件存在性 + 可执行性 distinct probe，避免与"块缺失"撞 exit 1
     if [ ! -f "$RETRO_CHECKER" ]; then
         echo "ERROR: retro action items checker missing at $RETRO_CHECKER —" >&2
@@ -80,11 +115,59 @@ if echo "$ADDED_PATHS" | grep -qE "$RETRO_TRIGGER"; then
     if [ -f "$REPO_ROOT/.claude/harness/scripts/harness_config.py" ]; then
         RETRO_GATE_MODE="$(PYTHONDONTWRITEBYTECODE=1 python3 "$REPO_ROOT/.claude/harness/scripts/harness_config.py" --get retro_gate --default warn --quiet 2>/dev/null || echo warn)"
     fi
-    RETRO_RC=0
-    bash "$RETRO_CHECKER" || RETRO_RC=$?
-    if [ "$RETRO_RC" -ne 0 ] && [ "$RETRO_GATE_MODE" != "block" ]; then
+    # 0.3.1：按 check_retro_action_items.sh 的退出码契约逐个处理，只有「确有
+    # 未兑现 dev 项」才走拦截 / WARN 文案：
+    #   sprint-status.yaml 不存在   → 还没 sprint-planning，无从检查，提示一行放行
+    #   retro_action_items 块缺失   → 第一次 epic retro 之前的常态，静默放行
+    #                                （checker 此时 exit 1，与「1 个 dev 项」撞码，
+    #                                 所以先在这里自己判块是否存在）
+    #   0                           → 放行（harness 类 WARN 照常转出）
+    #   1-200                       → N 个未兑现 dev 项（原有逻辑）
+    #   250 / 251                   → 块存在但 0 项 / 顶层 key 重复：yaml 结构问题
+    #   其它                        → checker 自身异常
+    # 250/251/其它在 block 模式下拦（无法确认没有 pending，fail-closed），warn 模式只提示。
+    # grep_pending_dev_retro_items.sh 对「文件缺失 / 块缺失」同样按 0 项处理，
+    # dispatcher 放行的情形本 hook 不能再拦，否则 bmad-build-auto 收尾 commit 失败。
+    if [ ! -f "$SPRINT_STATUS_ABS" ]; then
+        echo "NOTE: gate ① 跳过：未找到 sprint-status.yaml（${SPRINT_STATUS_ABS}），无 retro action items 可查。" >&2
+        RETRO_RC=-1
+    elif ! grep -qE '^retro_action_items:' "$SPRINT_STATUS_ABS"; then
+        RETRO_RC=-1
+    else
+        RETRO_RC=0
+        RETRO_ERR="$(bash "$RETRO_CHECKER" "$SPRINT_STATUS_ABS" 2>&1 >/dev/null)" || RETRO_RC=$?
+        # checker source read_harness_config.sh 时可能打 config WARN，与 gate 无关，滤掉
+        RETRO_ERR="$(grep -v '^WARN \[read_harness_config\]' <<<"$RETRO_ERR" || true)"
+        if [ -n "$RETRO_ERR" ]; then printf '%s\n' "$RETRO_ERR" >&2; fi
+    fi
+
+    RETRO_KIND="none"
+    if [ "$RETRO_RC" -ge 1 ] && [ "$RETRO_RC" -le 200 ]; then
+        RETRO_KIND="pending"
+    elif [ "$RETRO_RC" -eq 250 ]; then
+        RETRO_KIND="structure"
+        RETRO_WHY="retro_action_items 块存在但解析出 0 个 action item（merge 误删 / 缩进错位？）"
+    elif [ "$RETRO_RC" -eq 251 ]; then
+        RETRO_KIND="structure"
+        RETRO_WHY="sprint-status.yaml 有多个 retro_action_items: 顶层 key（重复粘贴 / merge 冲突未解决）"
+    elif [ "$RETRO_RC" -gt 0 ]; then
+        RETRO_KIND="structure"
+        RETRO_WHY="check_retro_action_items.sh 异常退出（rc=${RETRO_RC}）"
+    fi
+
+    if [ "$RETRO_KIND" = "structure" ]; then
+        if [ "$RETRO_GATE_MODE" != "block" ]; then
+            echo "WARN: gate ① 无法确认 retro action items 状态：${RETRO_WHY}。retro_gate=${RETRO_GATE_MODE}，不阻 commit。修好 ${SPRINT_STATUS_ABS} 后可跑 bash ${RETRO_CHECKER} 复核。" >&2
+        else
+            echo "" >&2
+            echo "ERROR: gate ① 无法确认 retro action items 状态：${RETRO_WHY}" >&2
+            echo "       retro_gate=block 下按失败处理。修好 ${SPRINT_STATUS_ABS} 后重试；" >&2
+            echo "       复核：bash ${RETRO_CHECKER}；确需跳过：git commit --no-verify" >&2
+            exit 1
+        fi
+    elif [ "$RETRO_KIND" = "pending" ] && [ "$RETRO_GATE_MODE" != "block" ]; then
         echo "WARN: 仍有未兑现 dev 类 retro action items（retro_gate=${RETRO_GATE_MODE}，不阻 commit；设为 block 才拦截）。明细：bash $RETRO_CHECKER" >&2
-    elif [ "$RETRO_RC" -ne 0 ]; then
+    elif [ "$RETRO_KIND" = "pending" ]; then
         cat >&2 <<'EOF'
 
 ERROR: 仍有未兑现 dev 类 retro action items；不能创建新的 story spec
@@ -124,7 +207,7 @@ fi
 #       Rejects common drift like `[target:1-7-全名]` (story-key style with
 #       hyphens) which silently breaks `grep_pending_deferred_for_story.sh`
 #       (expects `Story X.Y` short form).
-if $GIT diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
+if grep -qFx -- "$DEFERRED_WORK_PATH" <<<"$STAGED_PATHS"; then
     # extract added lines (drop "+++" header marker; keep "+" body lines)
     # `|| true`：纯删除 diff（清理/归档 FU 条目）时 grep -v 滤掉 +++ 头后输出为空、
     # 管道末命令 exit 1，set -e 下整个 hook 无声崩死阻断 commit——与 line 55
@@ -181,7 +264,7 @@ if $GIT diff --cached --name-only | grep -qFx "$DEFERRED_WORK_PATH"; then
             | grep -E "$HEAD_FULL_RE_LOCAL" \
             | while IFS= read -r line; do
                 target_val="$(printf '%s' "$line" | sed -nE "s/.*\`\[target:([^]\`]*)\]\`.*/\1/p")"
-                if ! printf '%s' "$target_val" | grep -qE "$TARGET_VALID_RE_LOCAL"; then
+                if ! grep -qE "$TARGET_VALID_RE_LOCAL" <<<"$target_val"; then
                     printf '%s\n' "$line"
                 fi
               done \
@@ -196,7 +279,7 @@ ERROR: deferred-work.md 新增内容违反 schema v1
 EOF
         if [ -n "$BAD_HEAD" ]; then
             echo "(a) FU bullet 头不符合 schema v1 4-tag 格式（新增行）：" >&2
-            echo "$BAD_HEAD" | head -5 >&2
+            head -5 <<<"$BAD_HEAD" >&2
             cnt="$(echo "$BAD_HEAD" | wc -l | tr -d ' ')"
             [ "$cnt" -gt 5 ] && echo "    ... 还有 $((cnt-5)) 行未列出" >&2
             echo "" >&2
@@ -206,21 +289,21 @@ EOF
         fi
         if [ -n "$BAD_LEGACY" ]; then
             echo "(b) 老 inline 后缀模式已废弃（schema v1 §3.1）：" >&2
-            echo "$BAD_LEGACY" | head -3 >&2
+            head -3 <<<"$BAD_LEGACY" >&2
             echo "" >&2
             echo "    改为 [status:resolved] tag + 历史 audit log 子段。" >&2
             echo "" >&2
         fi
         if [ -n "$BAD_RETRO" ]; then
             echo "(c) FU-RETRO-* 命名空间禁止进 deferred-work.md（schema v1 §3.2）：" >&2
-            echo "$BAD_RETRO" | head -3 >&2
+            head -3 <<<"$BAD_RETRO" >&2
             echo "" >&2
             echo "    retro action items 100% 归 sprint-status.yaml.retro_action_items。" >&2
             echo "" >&2
         fi
         if [ -n "$BAD_TARGET" ]; then
             echo "(d) [target:...] tag 值不符合 schema §3.3 枚举（新增行）：" >&2
-            echo "$BAD_TARGET" | head -5 >&2
+            head -5 <<<"$BAD_TARGET" >&2
             cnt="$(echo "$BAD_TARGET" | wc -l | tr -d ' ')"
             [ "$cnt" -gt 5 ] && echo "    ... 还有 $((cnt-5)) 行未列出" >&2
             echo "" >&2

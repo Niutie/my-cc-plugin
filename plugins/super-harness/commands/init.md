@@ -6,20 +6,20 @@ allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 
 # /super-harness:init — 项目 bootstrap + config 初始化
 
-你是这个 init 的**主 orchestrator**。当用户触发 `/super-harness:init`，按 **§A → §0 → §6** 顺序执行：先把 plugin 资产投递到用户项目（§A），再按 BMad artifacts 是否齐全（§A.5 检测）决定是否进 §0+ 跑 yaml 字段提取流程。
+你是这个 init 的**主 orchestrator**。当用户触发 `/super-harness:init`，按 **§A → §0 → §5** 顺序执行：先把 plugin 资产投递到用户项目（§A），再按 BMad artifacts 是否齐全（§A.5 检测）决定是否进 §0+ 跑 yaml 字段提取流程。
 
 **触发场景**：
 1. 新项目装 plugin 后**首次** init（资产未部署 + 可能无 BMad）
 2. clone 到全新项目 + 已跑完 BMad（资产未部署 + 完整 BMad）
 3. mid-project 启用 harness（资产部分部署 + 部分 yaml 已填 + 完整 BMad）
 4. plugin 升级后（**建议改用** `/super-harness:update` —— 只刷资产不动 yaml）
-5. 从 harness-zh 迁移过来（项目里已有 `.claude/harness/` 和 `harness-project-config.yaml`）：yaml、tag、sprint 状态都原样沿用；§A.2 的 purge 会清掉 harness-zh 以前复制进 `.claude/commands/` 的命令副本（先备份）。跑完提示用户 `/plugin uninstall harness-zh`，两个 plugin 都往 `.claude/harness/` 写资产，留着旧的会在下次 `/harness-zh:update` 时把资产刷回旧版
+5. 从 harness-zh 迁移过来（项目里已有 `.claude/harness/` 和 `harness-project-config.yaml`）：yaml、tag、sprint 状态都原样沿用；§A.2 的 purge 会清掉 harness-zh 以前复制进 `.claude/commands/` 的命令副本（先备份）。跑完提示用户 `/plugin uninstall harness-zh`，两个 plugin 都往 `.claude/harness/` 写资产，留着旧的会在下次 `/harness-zh:update` 时把资产刷回旧版（harness-zh 0.2.2 起会检测到 super-harness 并拒绝执行，更早的版本不会）
 
 **与流水线（`pipeline.md`）共享的行为契约**：
 
 - **代答政策**：本命令不调度 BMad/codex 子 agent，直接由主 agent 操作文件系统 + 读 BMad markdown + 写 yaml；无 prompt 后缀注入步骤。决策若不显然 → 按 `.claude/harness/answer-policy.md` 自决，不发问。
-- **进度可视化**：**全流程只建一个任务**：TaskCreate `Harness Init: <项目根目录名>`（§A.0 启动时建 + in_progress；§0.1 不再新建，只 TaskUpdate 追加 MODE；§6 完成或 §A.7 早结束时 completed）。任务名用项目根目录名（§A.0 时点 `project_display_name` 尚未提取，不可用）。
-- **不自动 commit yaml（Q6）**：§6 报告完成后**不**调 `git add` / `git commit`；让 solo-dev review yaml 后自决。
+- **进度可视化**：**全流程只建一个任务**：TaskCreate `Harness Init: <项目根目录名>`（§A.0 启动时建 + in_progress；§0.1 不再新建，只 TaskUpdate 追加 MODE；§5 完成或 §A.7 早结束时 completed）。任务名用项目根目录名（§A.0 时点 `project_display_name` 尚未提取，不可用）。
+- **不自动 commit（Q6）**：init 会改 `.gitignore`（§A.3.e）和 yaml，但**不**调 `git add` / `git commit`；§5 报告列出要提交的文件，由 solo-dev review 后自己提交。
 - **资产部署幂等**：§A 用 cmp 比较内容；相同则 unchanged，不同则备份后覆盖（沿用 `install_git_hooks.sh` 模式 — 不丢用户本地修改）。
 - **yaml 永不被资产投递覆盖**：`harness-project-config.yaml` 若已存在，§A.3 不动它；只在文件缺失时从 template 投放。
 
@@ -27,9 +27,29 @@ allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 
 ## A. Plugin Asset Deployment（首部 — 项目资产投递）
 
-### A.0 探测 plugin 安装路径
+### A.0 仓库根检查 + 探测 plugin 安装路径
 
-完整发现逻辑（env var → cache scan with semver sort → marketplaces fallback → halt）已抽到
+**第一步：确认当前目录是 git 仓库的根目录。** 后面的脚本对"项目根"的认定并不一致：`deploy_assets.sh`、`read_harness_config.sh` 认当前目录，`install_git_hooks.sh` 认 `git rev-parse --show-toplevel`。在子目录里跑 init，资产会落进子目录，hook 却装在仓库根，之后每条命令都找不到配置。所以在写任何文件之前先检查：
+
+```bash
+TOP="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$TOP" ]; then
+    echo "REPO_CHECK=not-a-repo PWD=$(pwd -P)"
+elif [ "$(cd "$TOP" && pwd -P)" != "$(pwd -P)" ]; then
+    echo "REPO_CHECK=subdir TOP=$TOP PWD=$(pwd -P)"
+else
+    echo "REPO_CHECK=ok TOP=$TOP"
+    git rev-parse --verify --quiet HEAD >/dev/null && echo "HAS_COMMITS=yes" || echo "HAS_COMMITS=no"
+fi
+```
+
+- `REPO_CHECK=ok` → 继续。`HAS_COMMITS` 绑定到上下文，§5 报告要用
+- `REPO_CHECK=subdir` → **halt**，什么都不写。告诉用户：「当前目录 `<PWD>` 是仓库 `<TOP>` 的子目录。请在仓库根目录启动 Claude Code 后重跑 `/super-harness:init`」
+- `REPO_CHECK=not-a-repo` → **用 `AskUserQuestion` 询问**（不要悄悄 `git init`，用户可能在 scratch 目录）：「当前目录 `<PWD>` 不是 git 仓库。super-harness 依赖 git（pre-commit hook、干净工作树检查、story tag、并行 lane 的 worktree）。是否在这里 `git init`？」
+  - **Yes** → 跑 `git init`，记 `HAS_COMMITS=no`，继续
+  - **No** → **halt**，什么都不写
+
+**第二步：探测 plugin 安装路径。** 完整发现逻辑（env var → cache scan with semver sort → marketplaces fallback → halt）已抽到
 `scripts/discover_plugin_root.sh`，由 init/update/upgrade-deferred-work 共用，避免
 三处复制粘贴漂移（v0.1.23 sort -V 修复就是 drift 实证）。但 init 首跑时项目侧还没
 部署 helper，所以保留 **2-tier inline bootstrap** 自举（cache 优先 + marketplaces 兜底；
@@ -133,7 +153,7 @@ echo "$SUMMARY"
 # 例：deploy: installed=69 unchanged=0 updated=0 purged=0
 ```
 
-**退出码硬规则**：`DEPLOY_EXIT ≠ 0` **或** summary 含 `FAILED=` → **halt**（§7 条款 6；与
+**退出码硬规则**：`DEPLOY_EXIT ≠ 0` **或** summary 含 `FAILED=` → **halt**（§6 条款 5；与
 update.md §7.2 同款）：报告已部署计数 + deploy stderr verbatim，**不**进 §A.3 ——
 资产部分缺失时继续走，后续对 `.claude/harness/scripts/*.sh` 的调用会在离根因很远的
 地方接连失败（deploy_assets.sh 契约：任一失败 exit 2 + manifest 不写入）。
@@ -141,11 +161,13 @@ update.md §7.2 同款）：报告已部署计数 + deploy stderr verbatim，**�
 deploy_assets.sh 自身的状态语义：
 - `installed=N` — 新增到项目侧（dst 之前不存在）
 - `unchanged=M` — 内容相同，跳过（cmp -s 命中）
-- `updated=K` — dst 已有但与 src 不同；备份到 `<dst>.bak.<TS>` 后覆盖
-- `purged=P` — 删除项目侧的"plugin 已不存在"孤儿（全新项目恒为 0；从 harness-zh 迁移时通常是旧的 `.claude/commands/*.md` 副本，备份在同目录 `.bak.<TS>`）
+- `updated=K` — dst 已有但与 src 不同；先备份到 `.claude/harness/.backup/<TS>/<原路径>` 再覆盖
+- `purged=P` — 删除项目侧的"plugin 已不存在"孤儿（全新项目恒为 0；从 harness-zh 迁移时通常是旧的 `.claude/commands/*.md` 副本），同样先备份到 `.claude/harness/.backup/<TS>/<原路径>`
+
+备份统一放在 `.claude/harness/.backup/<TS>/` 下（0.3.1 起；更早版本写在文件旁边的 `<file>.bak.<TS>`），这个目录被 §A.3.e 写入的 `.gitignore` 规则覆盖，不会弄脏工作树。
 
 把 summary 绑定上下文，§A.6 报告时引用。**solo-dev 看到 `updated=K > 0` 时**应该
-在 §A.6 后人工审看 `.bak.<TS>` 文件确认没丢自己的本地改动。
+在 §A.6 后对比 `.claude/harness/.backup/<TS>/` 里的旧文件，确认没丢自己的本地改动。
 
 ### A.3 投放 yaml（仅当不存在 — 永不覆盖既有 yaml）
 
@@ -161,6 +183,23 @@ echo "YAML_BOOTSTRAPPED=$YAML_BOOTSTRAPPED"
 ```
 
 **绝对不能**覆盖既有 yaml — 含 solo-dev 已填的项目字段（mid-project / 升级场景必须 preserve）。
+
+### A.3.a artifacts_root 对齐 BMad 配置（仅当 yaml 未填）
+
+运行时所有脚本（sprint-status、deferred-work、提交、并行调度）都按 yaml 的 `artifacts_root` 找文件；BMad 自己按 `_bmad/bmm/config.yaml` 的 `implementation_artifacts` 写文件。两者不一致时，harness 会去错误的目录找 sprint-status.yaml。项目改过 BMad 输出目录、yaml 又还没填 `artifacts_root` 时，在这里先补上，后面 §A.3.b 等步骤才能用对路径：
+
+```bash
+PRE_JSON="$(bash .claude/harness/scripts/run_sprint_init_check_prereq.sh --root "$PWD" 2>/dev/null | head -1)"
+printf '%s' "$PRE_JSON" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read() or "{}")
+print("BMAD_IMPL_DIR=" + (d.get("implementation_dir", "") if d.get("implementation_source") == "bmad-config" else ""))'
+echo "CUR_ARTIFACTS_ROOT=$(python3 .claude/harness/scripts/harness_config.py --get artifacts_root --quiet)"
+```
+
+- `BMAD_IMPL_DIR` 非空、不以 `/` 开头、`CUR_ARTIFACTS_ROOT` 为空 → 用 Edit 工具把 yaml 的 `artifacts_root: ''` 改成 `artifacts_root: '<BMAD_IMPL_DIR>'`（这是 §4 之前唯一提前写的字段，因为后面每一步都从它推导路径），§A.6 报告里注明
+- `BMAD_IMPL_DIR` 和 `CUR_ARTIFACTS_ROOT` 都非空且不同 → 不改，§A.6 报告里出一行 WARN，请用户确认哪个才对
+- 其他情况 → 不动
 
 ### A.3.b 投放 deferred-work.md 骨架（仅当父目录存在且文件不存在）
 
@@ -368,15 +407,18 @@ emit OK：
 `/super-harness:report-issue` 把还想反馈的项目逐条提为 issue。**不**自动改 yaml、**不**调任何脚本。
 
 ```bash
+# 路径按 yaml artifacts_root 派生（§A.3.a 已和 BMad 配置对齐），不写死 _bmad-output/
+source .claude/harness/scripts/read_harness_config.sh
+SS_PATH="$HARNESS_SPRINT_STATUS_PATH"
 HR_RESULT="skipped — no sprint-status.yaml"
-if [ -f "_bmad-output/implementation-artifacts/sprint-status.yaml" ]; then
+if [ -f "$SS_PATH" ]; then
     # 用 grep 简单计数：retro_action_items 块内 "category: harness" 行数
     HR_LEGACY_COUNT="$(awk '
       /^retro_action_items:/ { in_block=1; next }
       in_block && /^[^[:space:]#]/ { in_block=0 }
       in_block && /^[[:space:]]+category:[[:space:]]*['\''"]?harness['\''"]?[[:space:]]*$/ { c++ }
       END { print c+0 }
-    ' "_bmad-output/implementation-artifacts/sprint-status.yaml")"
+    ' "$SS_PATH")"
     HR_RESULT="clean (0 legacy harness entries)"
     if [ "${HR_LEGACY_COUNT:-0}" -gt 0 ]; then
         echo "ℹ️  sprint-status.yaml.retro_action_items 内发现 ${HR_LEGACY_COUNT} 条 legacy"
@@ -396,17 +438,35 @@ echo "HR_RESULT=$HR_RESULT"
 
 把 `$HR_RESULT` 绑定到上下文，§A.6 报告时引用。**本节绝不交互、绝不改文件**。
 
-### A.4 装 git hooks
+### A.3.e git 跟踪策略：写 .gitignore
 
-先检测当前目录是否在 git 工作树内：
+super-harness 的约定（0.3.1 起）：`.claude/harness/` 下部署进来的资产**不入库**（它们是 plugin 的副本，每次 `/super-harness:update` 都会刷新），用户自己编辑的两份配置**入库**。对应三行 `.gitignore`：
 
-```bash
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 && echo "in_git=yes" || echo "in_git=no"
+```
+/.claude/harness/*
+!/.claude/harness/harness-project-config.yaml
+!/.claude/harness/parallel.yaml
 ```
 
-#### A.4.a `in_git=yes`（已在 git 仓库 — 含 parent 有 .git/ 的子目录场景）
+super-harness 不往 `.claude/harness/` 以外放任何文件（slash 命令由 plugin 直接提供，不复制进 `.claude/commands/`），所以这三行覆盖了全部部署文件、`.deploy-manifest.txt` 和 `.backup/`。
 
-直接跑 installer：
+```bash
+bash .claude/harness/scripts/ensure_gitignore.sh "$PWD"
+echo "GITIGNORE_EXIT=$?"
+```
+
+脚本是幂等的：只追加缺的行，`.gitignore` 不存在就新建；≤ 0.3.0 的 `superh.py doctor` 曾建议加的 `/.claude/harness` 那一行会被删掉并输出 `GITIGNORE_REPLACED=`（它忽略的是整个目录，git 无法再把目录里的两份配置加回来）。按输出处理：
+
+- `GITIGNORE_STATUS=added` / `unchanged` → §A.6 报告里写一行，`added` 时列出 `GITIGNORE_ADDED=` 的内容
+- `GITIGNORE_CONFLICT=<配置> <- <来源>` → 另有更宽的规则（例如 `.claude/`、全局 excludes）把配置也忽略了。原样告诉用户，请用户自己改那条规则；你不要改
+- `GITIGNORE_TRACKED_ASSETS=<N>` + `GITIGNORE_UNTRACK_HINT=<命令>` → 项目以前把部署文件整个提交过，忽略规则对已跟踪文件不生效，以后每次 update 都会改动它们。把命令原样转告用户，由用户决定是否执行；你不要执行
+- `GITIGNORE_EXIT ≠ 0` → WARN（贴 stderr），不 halt；§5 报告里请用户手工加上面三行
+
+本节只改 `.gitignore`，不 `git add`、不提交（提交由 §5 引导用户做）。
+
+### A.4 装 git hooks
+
+§A.0 已经保证当前目录是 git 仓库根目录，直接跑 installer：
 
 ```bash
 bash .claude/harness/scripts/install_git_hooks.sh
@@ -415,25 +475,11 @@ echo "HOOKS_EXIT=$HOOKS_EXIT"
 ```
 
 按退出码处理（installer 退出码语义：`0` 成功；`3` = 良性拒装（`core.hooksPath` 已自定义，或目标位置已有项目自己的 hook）；其他非 0 = 真实安装失败）：
-- `HOOKS_EXIT=0` → 进 §A.5
+- `HOOKS_EXIT=0` → 继续
 - `HOOKS_EXIT=3`（用户已设 `core.hooksPath`，installer 拒装避免 silent no-op；或 `.git/hooks/` 里已有项目自己的同名 hook，例如 pre-commit 框架写的，installer 不覆盖，免得原有检查失效 — 都是良性）→ 把 installer 的 stderr verbatim 贴给用户作 **WARN**（`REFUSED:` 段里有串接办法和 `HARNESS_HOOK_FORCE=1` 覆盖办法，由用户选），**不 halt**（资产已部署，hook 拒装不阻断主流程；solo-dev 看 WARN 自决）
 - 其他非 0（含 `1` — hook 源目录缺失 / cp、chmod 权限失败等真实安装失败）→ **WARN**（贴 stderr verbatim）+ 引导 solo-dev 自查：`.claude/harness/git-hooks/` 是否完整、目标 hooks 目录权限、磁盘空间；修好后手工重跑 `bash .claude/harness/scripts/install_git_hooks.sh`。**init 对 hook 安装保持 advisory，不 halt**（与 update §7.3 的 halt 规则不同 — init 首跑资产已落地，hook 可事后补装）
 
-#### A.4.b `in_git=no`（当前目录不在任何 git 仓库内）
-
-**用 `AskUserQuestion` 询问 solo-dev**（不要悄悄 `git init`，blast radius 不为零 — 用户可能在 scratch 目录）：
-
-> 当前目录 `<pwd>` 不是 git 仓库 — 无法安装 pre-commit hook。是否在此目录跑 `git init` 初始化新仓库？
-
-选项：
-- **A) Yes, 初始化** → 跑 `git init`（**仅当**前一步 `in_git=no` 且 `pwd` 是项目根 — solo-dev 已通过 AskUserQuestion 显式同意）→ 然后跑 `bash .claude/harness/scripts/install_git_hooks.sh` → 按 §A.4.a 处理 exit code
-- **B) No, 跳过** → emit **WARN**：「资产已部署，git pre-commit hook 跳过；solo-dev 后续如想装，手工跑 `git init && bash .claude/harness/scripts/install_git_hooks.sh`」→ 进 §A.5
-
-#### A.4.c 边界：嵌套 repo 自动防护（若上述 A.4.b 选 Yes 但实际 `in_git=yes` 时，本分支不会进；这是 paranoia）
-
-如果 `in_git=yes` 但用户**仍**触发了"我想 init 一个新 repo"的请求（不该走到这里），**halt** + 提示「当前已在 git 仓库 `<repo-root>` 内，再 `git init` 会建嵌套 repo（不推荐）。退出 §A.4」。
-
-### A.4.d codex 可用性探测（advisory — v0.1.28+；不阻 init）
+### A.4.a codex 可用性探测（advisory — v0.1.28+；不阻 init）
 
 v0.1.28 起 codex 是**可选**依赖（plugin.json 不再声明硬 dep）。在 init 当下跑一次 cheap probe（不调 codex，不烧 quota），让 solo-dev 第一时间知道：
 
@@ -458,7 +504,7 @@ printf 'CODEX_JSON=%s\n' "$CODEX_JSON"
 
 **绝不 halt**：codex 是 optional dependency，缺席是合法状态。本节只填 `$CODEX_RESULT` 供 §A.6 引用，不做任何修复动作、不交互、不改文件。
 
-### A.4.e BMad 运行条件探测（advisory — v0.2.0+；不阻 init）
+### A.4.b BMad 运行条件探测（advisory — v0.2.0+；不阻 init）
 
 harness-zh 0.2.0 起每条 story 由 `bmad-build-auto`（BMad ≥ 6.11）跑完，它依赖 `uv`、`_bmad/scripts/render_skill.py` 和嵌套子 agent。`/super-harness:run-inline` 和 `/super-harness:run` 启动时都会硬检查同一组条件；init 这里先跑一次，让 solo-dev 在开跑前就知道缺什么：
 
@@ -469,7 +515,7 @@ echo "$BMAD_RT_OUT"
 
 按 `STATUS=` 绑定 `$BMAD_RUNTIME_RESULT`（§A.6 引用）：`ok` → `ready (BMad <BMAD_VERSION>, codex in build: <CODEX_IN_BUILD>)`；`fail` → `NOT ready — <每行 REMEDIATION= 原文>`。项目还没装 BMad 时这里必然 fail，属正常，§A.7 会引导安装。**不 halt、不修复、不改文件。**
 
-### A.4.f 并行调度前置检查（advisory；不阻 init）
+### A.4.c 并行调度前置检查（advisory；不阻 init）
 
 `/super-harness:run`（多路并行）比 `/super-harness:run-inline` 多三项要求。这里只检查、报告，缺了也不影响 init，也不影响 run-inline：
 
@@ -477,11 +523,13 @@ echo "$BMAD_RT_OUT"
 |---|---|---|
 | git ≥ 2.38 | `git --version`（合流用到 `rebase --update-refs`） | 报告：升级 git 之前只能用 run-inline |
 | claude CLI | `command -v claude`（worker 是 headless `claude -p` 进程） | 报告：装好之前只能用 run-inline |
-| lane 基建 | `python3 .claude/harness/scripts/superh.py doctor`（只读） | 有 `WARN=` 行（0.1.0 的旧目录 `.claude/super-harness/` 还在）时原样转告用户，由用户确认新配置后自己删。`STATUS=attention` 时把 `PROBLEM=` 行和 `GITIGNORE=` 行原样告诉用户。这些路径复制或软链进 lane 后会让 lane 变脏，worker 无法启动。请用户把 `GITIGNORE=` 给出的行加进项目 `.gitignore` 并提交。由用户决定，你不要自己改 `.gitignore`，也不要改 `.git/info/exclude` |
+| lane 基建 | `python3 .claude/harness/scripts/superh.py doctor`（只读） | 有 `WARN=` 行（0.1.0 的旧目录 `.claude/super-harness/` 还在）时原样转告用户，由用户确认新配置后自己删。`STATUS=attention` 时按行处理：`COMMIT=` 行是两份配置还没提交，init 刚跑完时必然出现，§5 的提交步骤会解决，只需在报告里说明；`.claude/harness` 相关的 `GITIGNORE=` 行 §A.3.e 已经写好（还出现说明 §A.3.e 失败或有冲突，按 §A.3.e 的输出转告）；其余 `PROBLEM=` / `GITIGNORE=`（例如 `_bmad`、`.claude/skills`）原样告诉用户：这些路径复制或软链进 lane 后会让 lane 变脏，worker 无法启动，请用户自己决定是提交它们还是把给出的行加进 `.gitignore`。这些行你不要自己加，也不要改 `.git/info/exclude` |
 
-sprint-status.yaml 已存在时，再跑 `python3 .claude/harness/scripts/superh.py plan --json`，统计未完成的 story 里有多少条声明了 `depends_on`（`deps` 不为 null）：
+sprint-status.yaml 已存在时，先跑 `python3 .claude/harness/scripts/sprint-status.py flatten-deps --check`：退出码 3 说明 `development_status` 里有多行块写法，BMad 6.12.4 自己的 `sprint_plan.py` 和 retrospective 脚本处理不了（issue #14）。告诉用户一行，`run` / `run-inline` 启动时工作区干净就会自动改写并提交（依赖挪到顶层 `story_dependencies`），也可以现在手动跑 `sprint-status.py flatten-deps`。init 不改这个文件。
 
-- 一条都没有：在默认的 `no_deps_policy: serial` 下，`/super-harness:run` 一次只跑一路。给用户三个办法：在 sprint-status.yaml 里给 story 补 `depends_on`；在 `.claude/harness/parallel.yaml` 的 `deps_overrides` 里补；或者把 `no_deps_policy` 改成 `epic-parallel`（同一 epic 内全部视为独立，冲突交给合流阶段处理）。
+再跑 `python3 .claude/harness/scripts/superh.py plan --json`，统计未完成的 story 里有多少条声明了依赖（`deps` 不为 null）：
+
+- 一条都没有：在默认的 `no_deps_policy: serial` 下，`/super-harness:run` 一次只跑一路。给用户三个办法：在 sprint-status.yaml 顶层的 `story_dependencies` 里补（推荐，写法见 README「让 story 能并行」）；在 `.claude/harness/parallel.yaml` 的 `deps_overrides` 里补；或者把 `no_deps_policy` 改成 `epic-parallel`（同一 epic 内全部视为独立，冲突交给合流阶段处理）。
 - 有一部分：列出有多少条现在就能并行（`state = ready`）。
 
 结果汇成一行 `$PARALLEL_RESULT` 供 §A.6 引用，例如 `ready (git 2.43, claude CLI ok, doctor ok, 3/12 stories declare depends_on)` 或 `run-inline only — git 2.34 < 2.38`。
@@ -494,7 +542,8 @@ sprint-status.yaml 已存在时，再跑 `python3 .claude/harness/scripts/superh
 HELPER_OUT="$(bash .claude/harness/scripts/run_sprint_init_check_prereq.sh --root "$PWD" 2>&1)"
 HELPER_EXIT=$?
 
-# Helper stdout 第一行是 JSON：{"all_present": bool, "missing_planning": [...], "missing_sprint_status": bool, "optional_missing": [...]}
+# Helper stdout 第一行是 JSON：{"all_present": bool, "missing_planning": [...], "missing_sprint_status": bool, "optional_missing": [...],
+#   "planning_dir": "<相对路径>", "implementation_dir": "<相对路径>", "planning_source": ..., "implementation_source": ...}
 HELPER_JSON="$(printf '%s\n' "$HELPER_OUT" | grep -m1 '^{')"
 # Helper stderr 含人类可读引导（命令名 + 路径建议）
 HELPER_GUIDANCE="$(printf '%s\n' "$HELPER_OUT" | grep -vE '^{' | grep -vE '^$')"
@@ -520,8 +569,10 @@ printf '%s\n' "$HELPER_GUIDANCE"
 |---|---|---|---|
 | 1 | prd | **必需** | 单文件 `prd.md`（默认）**或** sharded 目录 `prd/`（旧版 BMad `bmad-shard-doc` 的产物） |
 | 2 | architecture | **必需** | 单文件 `architecture.md`（默认）**或** sharded 目录 `architecture/`（同上） |
-| 3 | sprint-status | **必需** | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） |
+| 3 | sprint-status | **必需** | `<implementation_dir>/sprint-status.yaml` |
 | 4 | product-brief | **可选**（缺则 §2 字段 1/15 用 prd.md 兜底；进 optional_missing 数组） | `product-brief*.md`（glob — 上游会带项目名后缀） |
+
+**产物目录**（0.3.1 起不再写死）：`planning_dir` 取 `_bmad/bmm/config.yaml` 的 `planning_artifacts`，没有则 `_bmad-output/planning-artifacts`；`implementation_dir` 取 `_bmad/bmm/config.yaml` 的 `implementation_artifacts`，没有则 yaml `artifacts_root`，再没有则 `_bmad-output/implementation-artifacts`。BMad 配置里的 `{project-root}`、`{output_folder}` 占位符由 helper 解析。把 helper JSON 里的 `planning_dir` / `implementation_dir` 绑定到上下文：下文出现 `_bmad-output/planning-artifacts/`、`_bmad-output/implementation-artifacts/` 的地方，一律指这两个目录。
 
 > **重要：单文件 vs sharded 两种布局都认**。BMad 默认产单文件 `prd.md` / `architecture.md`；旧版 BMad 的 `bmad-shard-doc` 会切成 sharded 目录（6.11+ 已移除该 skill，但已切好的项目照常识别）。super-harness 对二者无偏好。
 >
@@ -538,7 +589,10 @@ printf '%s\n' "$HELPER_GUIDANCE"
   - deferred-work.md: <bootstrapped from template | preserved existing | skipped — parent dir absent>
   - deferred_work_mode: $DW_MODE_RESULT  （仅 deferred-work.md preserved 时有意义；bootstrapped / skipped 时省此行）
   - harness-residue: $HR_RESULT  （sprint-status.yaml 不存在时省此行）
-  - git hooks: <installed / unchanged | WARN: core.hooksPath ... 或 REFUSED: 项目自有 hook（exit 3 良性拒装）| WARN: 安装失败 exit <N>（见 §A.4.a 自查引导）>
+  - artifacts_root: <未改 | 按 BMad 配置补为 '<BMAD_IMPL_DIR>' | WARN: yaml '<CUR>' 与 BMad 配置 '<BMAD_IMPL_DIR>' 不一致，请确认>（§A.3.a）
+  - .gitignore: <已有策略行，未改 | 追加 N 行：... | 删掉旧的 /.claude/harness 行 | WARN: 冲突 / 已跟踪资产，见 §A.3.e>
+  - 备份: <无 | 被覆盖或清理的旧文件在 .claude/harness/.backup/<TS>/>
+  - git hooks: <installed / unchanged | WARN: core.hooksPath ... 或 REFUSED: 项目自有 hook（exit 3 良性拒装）| WARN: 安装失败 exit <N>（见 §A.4 自查引导）>
   - codex (optional): $CODEX_RESULT
   - BMad runtime: $BMAD_RUNTIME_RESULT
   - 并行调度: $PARALLEL_RESULT
@@ -582,7 +636,11 @@ printf '%s\n' "$HELPER_GUIDANCE"
     完成后**重跑** /super-harness:init —— 检测到 3 个必需产物齐后即进入 yaml 字段提取（product-brief 不必有）。
 
   yaml 当前状态：<bootstrapped from template；尚未填字段 | preserved existing；上次填的字段保留>
+
+  【提交】（内容同 §5「提交」段，按实际状态填）
   ```
+
+  早结束时同样要给出 §5 的「提交」段：`.gitignore` 和两份配置此时已经在工作树里，不提交的话 `/super-harness:run-inline` 会因为工作树不干净而拒绝启动。
 
 ---
 
@@ -602,7 +660,7 @@ printf '%s\n' "$HELPER_GUIDANCE"
 
 ### 0.1 TaskUpdate 标注模式（复用 §A.0 任务 — 不新建）
 
-对 §A.0 已建的 `Harness Init: <项目根目录名>` 任务跑 `TaskUpdate`：description 追加 `MODE=<mode>; BMad 字段 → yaml 同步`（任务保持 `in_progress`）。**不要**再 TaskCreate 第二个任务 — 全流程单任务，§6 / §A.7 / halt 收尾都只标这一个。
+对 §A.0 已建的 `Harness Init: <项目根目录名>` 任务跑 `TaskUpdate`：description 追加 `MODE=<mode>; BMad 字段 → yaml 同步`（任务保持 `in_progress`）。**不要**再 TaskCreate 第二个任务 — 全流程单任务，§5 / §A.7 / halt 收尾都只标这一个。
 
 ---
 
@@ -616,17 +674,17 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 **按退出码处理**：
 - **0**：进 §2
-- **2**：BMad **必需** planning artifacts 缺失。**halt**：把 helper 的 stderr verbatim 贴给用户，TaskCreate 标 `cancelled`，退出。**不**继续读 BMad / 不写 yaml。引导文本（helper 内硬编码）含具体 BMad 命令（`/bmad-create-prd` / `/bmad-create-architecture`；hyphen 形式 — colon 别名也可）。
-- **3**：sprint-status.yaml 缺失。**halt**：引导跑 `/bmad-sprint-planning`（或 `/bmad:sprint-planning`），TaskCreate 标 `cancelled`，退出。
+- **2**：BMad **必需** planning artifacts 缺失。**halt**：把 helper 的 stderr verbatim 贴给用户，TaskCreate 标 `cancelled`，退出。**不**继续读 BMad / 不写 yaml。引导文本（helper 内硬编码）给出 BMad 6.11+ 的 skill 名 `/bmad-prd`、`/bmad-architecture`（6.10 及更早叫 `/bmad-create-prd`、`/bmad-create-architecture`）。
+- **3**：sprint-status.yaml 缺失。**halt**：引导先跑 `/bmad-create-epics-and-stories`，再跑 `/bmad-sprint-planning`（BMad 6.12 默认安装的就是这两个 skill；没有 `/bmad:` 冒号形式的命令），TaskCreate 标 `cancelled`，退出。
 - **其它**：halt + 报告 helper exit code（参数错误 / 内部错误 — 不应发生）。
 
-**MUST-EXIST 清单**（helper 内 — 单文件或 sharded 任一形式接受）：
-1. `_bmad-output/planning-artifacts/prd.md` **或** `prd/` 目录（sharded 形式）
-2. `_bmad-output/planning-artifacts/architecture.md` **或** `architecture/` 目录（sharded 形式）
-3. `_bmad-output/implementation-artifacts/sprint-status.yaml`
+**MUST-EXIST 清单**（helper 内 — 单文件或 sharded 任一形式接受；目录按 §A.5 的 `planning_dir` / `implementation_dir` 解析）：
+1. `<planning_dir>/prd.md` **或** `prd/` 目录（sharded 形式）
+2. `<planning_dir>/architecture.md` **或** `architecture/` 目录（sharded 形式）
+3. `<implementation_dir>/sprint-status.yaml`
 
 **NICE-TO-HAVE**（缺则 WARN 不阻流；相关字段用 fallback）：
-- `_bmad-output/planning-artifacts/product-brief*.md`（glob — 上游会带项目名后缀；缺则 §2 字段 1/15 用 prd.md 兜底）
+- `<planning_dir>/product-brief*.md`（glob — 上游会带项目名后缀；缺则 §2 字段 1/15 用 prd.md 兜底）
 - 若 architecture sharded：`architecture/i18n.md` / `architecture/nfrs.md` / `architecture/proxy*.md`
 - 若 architecture 单文件：上述内容作为章节嵌入 `architecture.md`，§2 提取时按章节标题 grep 即可
 
@@ -645,8 +703,8 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 >
 > 下表"BMad source"列写法 `architecture/tech-stack.md` 或 `architecture.md §tech-stack` 表达同一信息的两种存储形式。LLM 提取时按以下顺序探测：
 >
-> 1. 检查 sharded 路径 `_bmad-output/planning-artifacts/architecture/<name>.md` 是否存在 → 存在则读子文件
-> 2. 否则读单文件 `_bmad-output/planning-artifacts/architecture.md` 全文 → 按章节标题 grep
+> 1. 检查 sharded 路径 `<planning_dir>/architecture/<name>.md` 是否存在 → 存在则读子文件
+> 2. 否则读单文件 `<planning_dir>/architecture.md` 全文 → 按章节标题 grep
 >
 > **两种形式都是一等公民**，没有"主选"和"次选"之分。BMad 默认产单文件，sharded 是用户主动选择的次态；super-harness 对二者无偏好。
 >
@@ -688,12 +746,12 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 ### 3.1 artifacts_root
 
-- yaml 已设 → 不动（merge 语义）
-- yaml 未设 → 写默认 `'_bmad-output/implementation-artifacts'`
+- yaml 已设 → 不动（merge 语义；§A.3.a 可能已按 BMad 配置补过）
+- yaml 未设 → 写 §A.5 helper JSON 的 `implementation_dir`（已按 BMad 配置 → 默认 `_bmad-output/implementation-artifacts` 解析过）
 
 ### 3.2 path_classifiers（基于 §2 提取的 frontend_dir + backend_modules）
 
-按下面模板生成 list of {label, regex}。`<frontend_dir>` 等占位符按 §2 字段值代入；任一上游字段缺失 → 留 `harness-project-config.yaml` Aegis 默认 11 条 + WARN（spec I/O Matrix 表第 9 行 fallback 行为）。
+按下面模板生成 list of {label, regex}。`<frontend_dir>` 等占位符按 §2 字段值代入；上游字段缺失的分支直接跳过（只剩通用兜底两条也合法）。不要沿用别的项目的目录名：`path_classifiers: []` 也是合法值，运行时全部归 `other` 桶。
 
 **模板（条件分支按 §2 值挑选）**：
 
@@ -726,7 +784,7 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 | Python (含版本) | TypeScript / Next.js 等 | `cd <backend_modules[0]> && pytest && ruff check\npnpm --filter <frontend_dir> typecheck/test/lint --max-warnings=0/build` |
 | Rust (含版本) | TypeScript / Next.js 等 | `cd <backend_modules[0]> && cargo check && cargo test\npnpm --filter <frontend_dir> typecheck/test/lint --max-warnings=0/build` |
 | Java (含版本) | TypeScript / Next.js 等 | `cd <backend_modules[0]> && mvn -B test  # Gradle: ./gradlew test\npnpm --filter <frontend_dir> typecheck/test/lint --max-warnings=0/build` |
-| 其它栈 | 任意 | `# TODO: fill verification commands for your stack` + WARN |
+| 其它栈 | 任意 | 不写，保持 `verification_commands: ''` + WARN。运行时会提示 agent 按项目自己的文档找 test / lint 命令 |
 
 **Java 行特殊点**：默认输出 Maven 命令 `mvn -B test`（`-B` = batch / non-interactive），inline comment 提示 Gradle 用户改成 `./gradlew test`。模板**不**自动检测 `pom.xml` vs `build.gradle`（避免误判多模块项目；solo-dev 跑完 init 后按需手工调一次即可）。
 
@@ -758,7 +816,7 @@ bash .claude/harness/scripts/run_sprint_init_check_prereq.sh
 
 ### 4.3.5 备份 yaml（rollback 用 — F4 codex review fix 2026-05-05）
 
-进 §4.4 写入之前，先把当前 yaml 的完整内容备份到 /tmp，以便 §4.5 / §5 失败时
+进 §4.4 写入之前，先把当前 yaml 的完整内容备份到 /tmp，以便 §4.5 失败时
 **不依赖 git HEAD** 的 rollback。这避开了"用 `git checkout --` rollback 会丢
 solo-dev 未提交本地编辑"的爆炸半径（用户 CLAUDE.md feedback memory：halt 时
 先评估爆炸半径，别动不动整条撤回）。
@@ -769,7 +827,7 @@ cp .claude/harness/harness-project-config.yaml "$BACKUP_PATH"
 echo "BACKUP_PATH=$BACKUP_PATH"
 ```
 
-把块尾 echo 出的 `BACKUP_PATH=...` **字面路径**绑定到对话上下文（§4.5 / §5 rollback /
+把块尾 echo 出的 `BACKUP_PATH=...` **字面路径**绑定到对话上下文（§4.5 rollback /
 清理时引用）。Bash 调用间 shell 变量不持久 — 后续片段里的 `$BACKUP_PATH` 一律用该
 字面路径替换，**不要**在新 shell 里裸引用变量（会展开为空串，cp 直接报错）。备份是
 当前 worktree 内容（含 solo-dev 任何未提交编辑），与 git HEAD 解耦。
@@ -791,41 +849,29 @@ new_string: "project_display_name: '<new>'"
 - 不用 `Write` 工具整文件覆盖 — 会丢顶部 schema 文档注释（Q2 硬约束）
 - 不用 sed 整文件 mutate — 多字段替换易错 + 注释脆弱
 
-### 4.5 写入后语法 sanity
-
-跑 `python3 .claude/harness/scripts/harness_config.py` smoke test：
-- exit 0 + 输出含期望字段值 → §5 验证
-- exit ≠ 0 / 输出含 `WARN [harness_config]:` → **rollback yaml from backup**（用 §4.3.5 块尾 echo 出的**字面路径**替换 `$BACKUP_PATH`，**不**用 `git checkout --`）：
-  ```bash
-  # $BACKUP_PATH 用 §4.3.5 echo 出的字面路径替换（新 shell 中该变量为空）
-  cp "$BACKUP_PATH" .claude/harness/harness-project-config.yaml
-  rm -f "$BACKUP_PATH"
-  ```
-  → halt + 报告失败字段（exit code 4 per spec I/O Matrix）。**为什么不用 `git checkout --`**：会把 yaml 翻成 git HEAD 状态，丢 solo-dev 未提交的本地编辑（mid-project 启用场景常见）。备份-恢复路径与 HEAD 解耦，安全。
-
----
-
-## 5. 验证（simulate_clone_test.sh）
-
-跑：
+### 4.5 写入后结构校验
 
 ```bash
-bash .claude/harness/scripts/simulate_clone_test.sh
+python3 .claude/harness/scripts/harness_config.py check
+CHECK_EXIT=$?
+echo "CHECK_EXIT=$CHECK_EXIT"
+python3 .claude/harness/scripts/harness_config.py smoke
 ```
 
-**按退出码处理**：
-- **0**：init 写入合法（yaml 解析正常 + helper 跑通 + 占位符在位）→ 清理备份（`rm -f "$BACKUP_PATH"` — 用 §4.3.5 echo 出的字面路径替换）→ 进 §6
-- **非 0**：**rollback yaml from backup**（不用 `git checkout --`；同 §4.5 理由 — backup-restore 与 git HEAD 解耦，保 solo-dev 未提交本地编辑）：
+`check` 的契约（0.3.1 起）：结构可用 → stdout `CONFIG_OK`，exit 0；有问题 → 每个问题一行 `ERROR [harness_config]: ...`（stderr），exit 3。它报的是读取时会被悄悄丢掉的东西：yaml 读不了、list 或 `|` 块写坏、list 条目缺 `label` / `regex` / `file_path`、regex 编译不过。显式空值（`[]`、`''`）合法；字段整个缺失也不算错（读取时打 WARN 并用中性默认）。
+
+- `CHECK_EXIT=0` → 用 `smoke` 的输出核对本次写入的字段值都读得出来（例如写了 3 条 path_classifiers，smoke 里应是 `3 entries`）。核对通过 → 清理备份（`rm -f "$BACKUP_PATH"`，用 §4.3.5 echo 出的字面路径替换）→ 进 §5。`smoke` 打出的 `WARN [harness_config]:` 行**不是** rollback 的依据，原样列进 §5 报告的【WARN】段
+- `CHECK_EXIT≠0`，或核对发现写进去的值读不出来 → **rollback yaml from backup**（用 §4.3.5 块尾 echo 出的**字面路径**替换 `$BACKUP_PATH`，**不**用 `git checkout --`）：
   ```bash
   # $BACKUP_PATH 用 §4.3.5 echo 出的字面路径替换（新 shell 中该变量为空）
   cp "$BACKUP_PATH" .claude/harness/harness-project-config.yaml
   rm -f "$BACKUP_PATH"
   ```
-  → halt + 报告 simulate 失败步骤（exit code 5 per spec I/O Matrix）
+  → halt + 贴 `ERROR [harness_config]:` 行（或读不出的字段）（exit code 4 per spec I/O Matrix）。**为什么不用 `git checkout --`**：会把 yaml 翻成 git HEAD 状态，丢 solo-dev 未提交的本地编辑（mid-project 启用场景常见）。备份-恢复路径与 HEAD 解耦，安全。
 
 ---
 
-## 6. 报告 + 引导（不自动 commit — Q6）
+## 5. 报告 + 引导（不自动 commit — Q6）
 
 stdout 报告（按下表结构）：
 
@@ -843,12 +889,18 @@ stdout 报告（按下表结构）：
 【WARN】<W> 项
   - <key>: BMad source <path> 未发现 <语义>; using fallback '<default>'
 
-【下一步】
-  请 review yaml 改动后由 solo-dev 自决 commit：
-    git diff .claude/harness/harness-project-config.yaml
-    git add .claude/harness/harness-project-config.yaml
-    git commit -m "chore: init harness config from BMad planning artifacts"
+【提交】（init 不替你提交；review 后自己提交）
+  super-harness 的约定：.claude/harness/ 下的部署资产不入库（.gitignore 已写好），
+  两份配置入库。需要提交的是：
+    git add .gitignore .claude/harness/harness-project-config.yaml .claude/harness/parallel.yaml
+    git add <DW_DST>            ← 仅当 §A.3.b DW_BOOTSTRAPPED=1（新建了 deferred-work.md）
+    git commit -m "chore: set up super-harness"
+  <HAS_COMMITS=no 时加一句：这个仓库还没有任何提交。/super-harness:run-inline 和
+   /super-harness:run 都要求先有一次提交（story tag、sprint 分支、lane worktree
+   都基于 HEAD），请先完成上面的提交，再开跑。>
+  <§A.3.e 有 GITIGNORE_TRACKED_ASSETS / GITIGNORE_CONFLICT 时原样附在这里>
 
+【下一步】
   开跑：
     /super-harness:run-inline --dry-run   预览单路计划；去掉 --dry-run 在当前会话里一条一条跑
     /super-harness:run --dry-run          预览哪些 story 会并行；并行配置在 .claude/harness/parallel.yaml（先看 max_slots 和 no_deps_policy）
@@ -880,29 +932,28 @@ stdout 报告（按下表结构）：
 
 ---
 
-## 7. 死循环 / 失控防护
+## 6. 死循环 / 失控防护
 
 下列**任一**命中立即 halt + 用户介入（与 `pipeline.md` §3 同款模板）：
 
 1. helper `run_sprint_init_check_prereq.sh` 退出码非 0/2/3（参数错误 / 内部异常）
-2. BMad markdown 提取语义后 `EXTRACTED[<key>]` 仍为空对**所有字段** → 怀疑 BMad 产物为空文件 / 损坏 → halt + 提示用户检查 `_bmad-output/planning-artifacts/`
-3. yaml 写入后 `harness_config.py` smoke test exit ≠ 0（yaml 语法破坏）→ rollback + halt
-4. `simulate_clone_test.sh` exit ≠ 0 → rollback + halt
-5. runtime quota 信号（`hit your limit` / `rate limit` 等）— 与 `pipeline.md` §3 同款配额专属模板
-6. §A.2 `deploy_assets.sh` `DEPLOY_EXIT ≠ 0` 或 summary 含 `FAILED=`（资产部署失败 — manifest 未写入；packaging bug / 权限问题）→ halt + 报告已部署计数 + deploy stderr verbatim（与 `/super-harness:update` §7.2 对齐）
+2. BMad markdown 提取语义后 `EXTRACTED[<key>]` 仍为空对**所有字段** → 怀疑 BMad 产物为空文件 / 损坏 → halt + 提示用户检查 `<planning_dir>/`
+3. §4.5 `harness_config.py check` exit ≠ 0（`ERROR [harness_config]:` 行），或写入的字段值读不出来 → rollback + halt。只有 `WARN [harness_config]:` 行不算
+4. Claude 运行时额度耗尽（按 `pipeline.md` §−1 (a)「配额耗尽的判定」：子 agent 返回的第一行是运行时额度报错，不在正文里搜关键词）→ 用 `pipeline.md` §3 的配额模板
+5. §A.2 `deploy_assets.sh` `DEPLOY_EXIT ≠ 0` 或 summary 含 `FAILED=`（资产部署失败 — manifest 未写入；packaging bug / 权限问题）→ halt + 报告已部署计数 + deploy stderr verbatim（与 `/super-harness:update` §7.2 对齐）
 
 **Halt 模板**（与 `pipeline.md` §3 一致）：
 
 > stage 失败：§<N> in /super-harness:init
 > 现场：[一两句话讲发生了什么]
-> 违反规则：[贴 helper / harness_config / simulate_clone 的 stderr verbatim]
+> 违反规则：[贴 helper / harness_config / deploy_assets 的 stderr verbatim]
 > yaml 当前状态：[`git diff --stat .claude/harness/harness-project-config.yaml`]
 > 已采取动作：[rollback / 无变更 / 部分写入 N 字段]
 > 待用户决断：是否 [选项 1] 撤回 yaml 改动 / [选项 2] 修复 BMad 产物后重跑 / [选项 3] 跳过本次 init / [选项 4] 怀疑 plugin 缺陷 → /super-harness:report-issue（自动收集 halt 现场 + gh CLI 直提 + 附临时绕过方案）
 
 ---
 
-## 8. 参数（汇总）
+## 7. 参数（汇总）
 
 | 参数 | 行为 |
 |---|---|
@@ -912,7 +963,7 @@ stdout 报告（按下表结构）：
 
 **v0.2+ 留口**（本版**不**实现）：
 - `--reset-changelog`：清空 `_bmad-output/implementation-artifacts/changelog.md` 重启历史（A=a 决策当前不动）
-- `--bmad-source <path>`：override 默认 `_bmad-output/planning-artifacts/` 路径（多项目共仓场景）
+- `--bmad-source <path>`：override `planning_dir`（默认已按 `_bmad/bmm/config.yaml` 解析；多项目共仓场景）
 
 ---
 
@@ -921,8 +972,8 @@ stdout 报告（按下表结构）：
 - 关联 chore spec：`_bmad-output/implementation-artifacts/chore-harness-run-sprint-init.md`
 - prereq helper：[`/scripts/run_sprint_init_check_prereq.sh`](../harness/scripts/run_sprint_init_check_prereq.sh)
 - self-test：[`/scripts/run_sprint_init_test.sh`](../harness/scripts/run_sprint_init_test.sh)
+- .gitignore 策略：[`/scripts/ensure_gitignore.sh`](../harness/scripts/ensure_gitignore.sh)
 - 写入目标：[`harness-project-config.yaml`](../harness/harness-project-config.yaml)
-- yaml 解析 helper（写后 sanity）：[`/scripts/harness_config.py`](../harness/scripts/harness_config.py)
-- 跨项目 clone 验证：[`/scripts/simulate_clone_test.sh`](../harness/scripts/simulate_clone_test.sh)
+- yaml 解析 helper（写后 `check` 校验）：[`/scripts/harness_config.py`](../harness/scripts/harness_config.py)
 - 代答政策：[`../harness/answer-policy.md`](../harness/answer-policy.md)
 - harness 通用化设计：[`../harness/architecture.md`](../harness/architecture.md) §十一

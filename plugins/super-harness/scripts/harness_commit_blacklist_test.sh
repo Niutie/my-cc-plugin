@@ -17,6 +17,10 @@
 #       .DS_Store deletion commits (C5) and a tracked access.log modification
 #       stays in the commit (C6); a staged-NEW (`A `, absent from HEAD) junk
 #       file is still unstaged + skipped (C7).
+#   E — 0.3.1: SSH private keys / .pfx / .p12 / .jks / .keystore / *.tfstate
+#       block; .env.example/.sample/.template/.dist and source/docs files under
+#       a business `secrets/` dir pass (data files there still block);
+#       .npmrc / .pypirc / *.pub are not blacklisted by name.
 #   D — exemptions do NOT regress: i18n locale `*-credentials.json` passes;
 #       BMad artifacts-dir md/json/yaml are exempt from the blacklist (they
 #       still hit the cross-story/classification gates, just never BLACKLIST=).
@@ -308,6 +312,100 @@ if [ "$ex" != 0 ] && printf '%s\n' "$out" | grep -qx "STATUS=halt" \
 else
     bad "D2 artifacts exemption regressed: exit=$ex out=$out"
 fi
+
+# ============================================================================
+# E — 0.3.1 blacklist precision: new credential formats block; env templates
+#     and source/docs files under a business `secrets/` dir pass.
+# ============================================================================
+dir="$(seed_repo e1-new-creds)"
+(
+    cd "$dir"
+    mkdir -p home/.ssh certs infra/tf deploy/k8s/secrets secrets config
+    for k in id_rsa id_dsa id_ecdsa id_ed25519; do printf 'KEY\n' > "home/.ssh/$k"; done
+    printf 'x\n' > id_rsa
+    printf 'x\n' > certs/client.pfx
+    printf 'x\n' > certs/client.p12
+    printf 'x\n' > certs/trust.jks
+    printf 'x\n' > certs/release.keystore
+    printf '{}\n' > terraform.tfstate
+    printf '{}\n' > infra/tf/terraform.tfstate.backup
+    printf '{}\n' > infra/tf/prod.tfstate
+    printf 'kind: Secret\n' > deploy/k8s/secrets/db.yaml
+    printf '{"k":"v"}\n' > secrets/prod.json
+    printf 'v\n' > secrets/prod
+    printf 'A=1\n' > config/.env.local
+    printf 'A=1\n' > config/.env.production
+)
+ex=0; out="$(cd "$dir" && python3 "$HARNESS_PY" 4 9-9-story --dry-run 2>&1)" || ex=$?
+if [ "$ex" != 0 ] && printf '%s\n' "$out" | grep -qx "STATUS=halt"; then
+    ok "E1 new credential formats halt (exit=$ex)"
+else
+    bad "E1 expected halt, got exit=$ex out=$out"
+fi
+for want in \
+    'BLACKLIST=home/.ssh/id_rsa (**/id_rsa)' \
+    'BLACKLIST=home/.ssh/id_dsa (**/id_dsa)' \
+    'BLACKLIST=home/.ssh/id_ecdsa (**/id_ecdsa)' \
+    'BLACKLIST=home/.ssh/id_ed25519 (**/id_ed25519)' \
+    'BLACKLIST=id_rsa (**/id_rsa)' \
+    'BLACKLIST=certs/client.pfx (**/*.pfx)' \
+    'BLACKLIST=certs/client.p12 (**/*.p12)' \
+    'BLACKLIST=certs/trust.jks (**/*.jks)' \
+    'BLACKLIST=certs/release.keystore (**/*.keystore)' \
+    'BLACKLIST=terraform.tfstate (**/*.tfstate)' \
+    'BLACKLIST=infra/tf/terraform.tfstate.backup (**/*.tfstate.backup)' \
+    'BLACKLIST=infra/tf/prod.tfstate (**/*.tfstate)' \
+    'BLACKLIST=deploy/k8s/secrets/db.yaml (**/secrets/**)' \
+    'BLACKLIST=secrets/prod.json (**/secrets/**)' \
+    'BLACKLIST=secrets/prod (**/secrets/**)' \
+    'BLACKLIST=config/.env.local (**/.env*)' \
+    'BLACKLIST=config/.env.production (**/.env*)'
+do
+    if printf '%s\n' "$out" | grep -qxF -- "$want"; then
+        ok "E2 $want"
+    else
+        bad "E2 missing '$want' in: $out"
+    fi
+done
+
+dir="$(seed_repo e3-false-positives)"
+(
+    cd "$dir"
+    mkdir -p web config home/.ssh \
+        console-web/src/features/secrets console-api/internal/secrets deploy/k8s/secrets
+    printf 'A=\n' > .env.example
+    printf 'A=\n' > web/.env.sample
+    printf 'A=\n' > config/.env.template
+    printf 'A=\n' > .env.dist
+    printf 'A=\n' > config/.env.production.example
+    printf 'export const T = 1\n' > console-web/src/features/secrets/SecretsTable.tsx
+    printf 'export {}\n' > console-web/src/features/secrets/index.ts
+    printf 'package secrets\n' > console-api/internal/secrets/service.go
+    printf 'package secrets\n' > console-api/internal/secrets/service_test.go
+    printf '# secrets\n' > deploy/k8s/secrets/README.md
+    printf 'ssh-ed25519 AAAA\n' > home/.ssh/id_ed25519.pub
+    printf 'ssh-rsa AAAA\n' > id_rsa.pub
+    printf 'registry=https://registry.npmjs.org/\n' > .npmrc
+    printf '[distutils]\n' > .pypirc
+)
+ex=0; out="$(cd "$dir" && python3 "$HARNESS_PY" 4 9-9-story --dry-run 2>&1)" || ex=$?
+if [ "$ex" = 0 ] && printf '%s\n' "$out" | grep -qx "STATUS=ok" \
+   && ! printf '%s\n' "$out" | grep -q "^BLACKLIST="; then
+    ok "E3 env templates / secrets-feature code / .pub / .npmrc / .pypirc pass"
+else
+    bad "E3 expected STATUS=ok without BLACKLIST, got exit=$ex out=$out"
+fi
+for want in .env.example web/.env.sample config/.env.template .env.dist config/.env.production.example \
+    console-web/src/features/secrets/SecretsTable.tsx console-web/src/features/secrets/index.ts \
+    console-api/internal/secrets/service.go console-api/internal/secrets/service_test.go \
+    deploy/k8s/secrets/README.md home/.ssh/id_ed25519.pub id_rsa.pub .npmrc .pypirc
+do
+    if printf '%s\n' "$out" | grep -qxF -- "STAGED=$want"; then
+        ok "E4 STAGED=$want"
+    else
+        bad "E4 missing STAGED=$want in: $out"
+    fi
+done
 
 echo ""
 echo "============================================================================"

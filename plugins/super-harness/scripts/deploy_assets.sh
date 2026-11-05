@@ -12,7 +12,16 @@
 #   set, and purge only files that USED TO BE in the manifest but no longer
 #   are. Files never in any plugin manifest (user-authored personal commands,
 #   other plugins' files, etc.) are NEVER touched. All purged files are first
-#   backed up to `<file>.bak.<TS>` before rm.
+#   backed up (see "Backups" below) before rm.
+#
+# Backups (0.3.1+): every overwritten or purged file is first copied to
+#   .claude/harness/.backup/<TS>/<project-relative path>
+#   e.g. .claude/harness/.backup/20261105-120000/.claude/harness/pipeline.md
+# — one directory per run, out of the way of the deployed tree, and covered by the
+# project's `/.claude/harness/*` ignore rule (scripts/ensure_gitignore.sh), so an
+# update never leaves untracked `*.bak.<TS>` files next to tracked ones. Restore
+# with `cp .claude/harness/.backup/<TS>/<path> <path>`. (≤ 0.3.0 wrote
+# `<file>.bak.<TS>` next to the file.)
 #
 #   This replaces the v0.1.26-prototype "blanket diff against entire .claude/"
 #   approach (codex-review 2026-05-09 [high]: would delete user-owned files).
@@ -29,7 +38,7 @@
 # 0.2.0+). harness-zh used to do that, which made the plugin's run.md / init.md
 # show up as un-namespaced project-level /run, /init, /update commands that can
 # collide with Claude Code built-ins or other plugins. Those old copies are listed in the project's old manifest, so the
-# first DEPLOY_PURGE=1 run removes them (with .bak backups); user-authored files
+# first DEPLOY_PURGE=1 run removes them (backed up first); user-authored files
 # under .claude/commands/ were never in a manifest and are never touched.
 #
 # .claude/harness/parallel.yaml (dispatcher config) is installed only when
@@ -38,7 +47,7 @@
 # of the manifest: it is user config, so no later deploy may overwrite or purge it.
 #
 # Optional env:
-#   DEPLOY_PURGE=1     — see commands/update.md §3.5. Removes files that were
+#   DEPLOY_PURGE=1     — see commands/update.md §3. Removes files that were
 #                        in the previous manifest but not in this one (with
 #                        backup). Default off so init.md does NOT purge.
 #   DEPLOY_QUIET=1     — suppress per-file status lines; only print summary
@@ -93,6 +102,12 @@ mkdir -p .claude/harness/scripts \
          .claude/harness/templates
 
 TS="$(date +%Y%m%d-%H%M%S)"
+BACKUP_ROOT=".claude/harness/.backup/$TS"
+
+# backup_file <project-relative path> — copy into BACKUP_ROOT, keeping the path.
+backup_file() {
+    mkdir -p "$BACKUP_ROOT/$(dirname "$1")" 2>/dev/null && cp -p "$1" "$BACKUP_ROOT/$1" 2>/dev/null
+}
 INSTALLED=0
 UNCHANGED=0
 UPDATED=0
@@ -138,9 +153,9 @@ deploy() {
         UNCHANGED=$((UNCHANGED + 1))
         echo "$dst" >> "$DEPLOYED_TMP"
     else
-        if cp "$dst" "$dst.bak.$TS" 2>/dev/null && cp "$src" "$dst" 2>/dev/null; then
+        if backup_file "$dst" && cp "$src" "$dst" 2>/dev/null; then
             [ -x "$src" ] && chmod +x "$dst"
-            _log "updated:   $dst (backup → $(basename "$dst").bak.$TS)"
+            _log "updated:   $dst (backup → $BACKUP_ROOT/$dst)"
             UPDATED=$((UPDATED + 1))
             echo "$dst" >> "$DEPLOYED_TMP"
         else
@@ -211,7 +226,7 @@ fi
 #     to be complete; skip purge and don't overwrite the old manifest. User should
 #     re-run after fixing the underlying issue.
 #   PURGE on, both manifests good → diff old - new = purge candidates. Each one
-#     is backed up to .bak.<TS> before rm.
+#     is backed up under .claude/harness/.backup/<TS>/ before rm.
 
 MANIFEST_PATH=".claude/harness/.deploy-manifest.txt"
 PURGED=0
@@ -288,9 +303,9 @@ if [ "${DEPLOY_PURGE:-0}" = "1" ]; then
                 # Already gone (user deleted manually since last update). Just drop from manifest.
                 continue
             fi
-            if cp "$candidate" "$candidate.bak.$TS" 2>/dev/null; then
+            if backup_file "$candidate"; then
                 if rm -f "$candidate" 2>/dev/null; then
-                    _log "purged:    $candidate (backup → $(basename "$candidate").bak.$TS)"
+                    _log "purged:    $candidate (backup → $BACKUP_ROOT/$candidate)"
                     PURGED=$((PURGED + 1))
                 else
                     echo "WARN [deploy_assets]: failed to remove $candidate (backup written; rm denied) — kept in manifest for retry next run" >&2

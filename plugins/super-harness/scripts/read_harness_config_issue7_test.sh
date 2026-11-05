@@ -128,7 +128,9 @@ cat > "$FX/artifacts/epic-7-retro-2026-06-10.md" <<'MD'
 ### Z2 — fake done item
 MD
 
-out_t4="$(bash "$FX_SCRIPTS/process_retro_residue.sh" --epic 7 \
+# --stdout: print the rendered prompt instead of writing a temp PROMPT_FILE
+# (keeps the placeholder-fallback coverage on stdout, leaves nothing in /tmp)
+out_t4="$(bash "$FX_SCRIPTS/process_retro_residue.sh" --epic 7 --stdout \
     --sprint-status "$FX/artifacts/sprint-status.yaml" \
     --retro-md "$FX/artifacts/epic-7-retro-2026-06-10.md" \
     --artifact-dir "$FX/artifacts" 2>&1)"

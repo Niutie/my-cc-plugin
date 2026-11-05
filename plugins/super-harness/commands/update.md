@@ -20,6 +20,7 @@ allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 | 投放 `parallel.yaml`（仅当不存在，由 deploy_assets.sh 处理） | ✓ | ✓ |
 | 投放 yaml（仅当不存在） | ✓ | ✗（绝不创建/覆盖 yaml） |
 | 装 git hooks | ✓ | ✓ |
+| `.gitignore` 跟踪策略（`ensure_gitignore.sh`，幂等） | ✓ | ✓ |
 | BMad artifacts 检测 + 字段提取 | 检测齐 → 跑 §1-§6 | ✗（永不跑） |
 | 适用阶段 | 首次 bootstrap / mid-project 启用 | plugin 升级后刷新 |
 
@@ -29,6 +30,25 @@ allowed-tools: Bash, Read, Edit, Write, AskUserQuestion
 - 资产部署幂等：cmp 比较 + backup + overwrite
 
 ---
+
+## 0. 仓库根检查（同 init §A.0 第一步）
+
+部署脚本按当前目录认项目根，hook 安装脚本按 `git rev-parse --show-toplevel` 认。在子目录里跑 update，资产会刷进子目录而不是项目原来的 `.claude/harness/`。先检查：
+
+```bash
+TOP="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$TOP" ]; then
+    echo "REPO_CHECK=not-a-repo PWD=$(pwd -P)"
+elif [ "$(cd "$TOP" && pwd -P)" != "$(pwd -P)" ]; then
+    echo "REPO_CHECK=subdir TOP=$TOP PWD=$(pwd -P)"
+else
+    echo "REPO_CHECK=ok TOP=$TOP"
+fi
+```
+
+- `REPO_CHECK=ok` → 继续
+- `REPO_CHECK=subdir` → **halt**（§7.5），什么都不写：「当前目录 `<PWD>` 是仓库 `<TOP>` 的子目录。请在仓库根目录启动 Claude Code 后重跑 `/super-harness:update`」
+- `REPO_CHECK=not-a-repo` → **halt**（§7.5）：「当前目录不是 git 仓库。新项目请先跑 `/super-harness:init`」
 
 ## 1. Plugin 路径探测（同 init §A.0；最小 12 行 inline bootstrap）
 
@@ -124,7 +144,7 @@ slash 命令不再复制进 `.claude/commands/`（见 init §A.2）。harness-zh
    - **never-touched 守恒**：用户自定义命令（`.claude/commands/my-foo.md`）/ 其他
      plugin 文件 / personal helpers — 这些**从未进入过本 plugin 的 manifest**，
      永远不会被 purge。
-   - 所有 purge 候选先备份到 `<file>.bak.<TS>` 再 `rm -f`；备份失败则跳过，不强删。
+   - 所有 purge 候选先备份到 `.claude/harness/.backup/<TS>/<原路径>` 再 `rm -f`；备份失败则跳过，不强删。被覆盖更新的文件也备份到同一个目录（0.3.1 起；更早版本把 `<file>.bak.<TS>` 写在文件旁边）。
    - 安全网：deploy 有任何 FAILED → purge 整体跳过 + manifest 不被覆盖（避免被半成品
      manifest 污染）。新 manifest 为空时同样跳过 purge（拒绝对空真值做对账）。
    - 半路接入：`.claude/harness/.deploy-manifest.txt` 不存在 → 首次 PURGE 跳过 +
@@ -150,7 +170,7 @@ echo "$SUMMARY"
 
 > 这些文件在 v0.1.X 已从 plugin 中移除（参见 changelog）。如果项目自定义代码
 > 还在引用它们（例如 `.claude/commands/` 或 `_bmad/custom/` 里 source 过），
-> 请改引用替代品；否则可以放心。本次清理已生成 `*.bak.<TS>` 留底。
+> 请改引用替代品；否则可以放心。被删的文件在 `.claude/harness/.backup/<TS>/` 下留了底。
 
 > **设计动机**：v0.1.26 删除 `extract_harness_feedback.sh` / `detect_harness_residue.sh`
 > 时暴露了原版 update 只 forward-copy 不清理的缺陷 —— 老项目升级后这两个 stale 脚本
@@ -169,7 +189,7 @@ diff .claude/harness/harness-project-config.yaml \
 
 但**不**自动 patch yaml — 字段语义 / 默认值需 solo-dev 拍板。
 
-## 5. git hooks 重装
+## 5. git hooks 重装 + .gitignore 跟踪策略
 
 ```bash
 bash .claude/harness/scripts/install_git_hooks.sh
@@ -182,6 +202,20 @@ echo "HOOKS_EXIT=$HOOKS_EXIT"
 - 3（`core.hooksPath` 已自定义，installer 拒装避免 silent no-op；或已有项目自己的同名 hook，installer 不覆盖 — 都是良性）→ stderr WARN 给用户（`REFUSED:` 段的串接 / 覆盖办法原样转告），不 halt
 - 其他非 0（含 1 — hook 源目录缺失 / cp、chmod 权限失败等真实安装失败）→ **halt**（§7.3）+ 贴 stderr verbatim — update 的触发场景 2 正是"项目侧资产被删/改坏"，hook 重装失败必须响亮失败而非伪装成 hooksPath WARN
 
+然后补齐 `.gitignore`（与 init §A.3.e 同一个脚本、同一套处理规则）。约定是：`.claude/harness/` 下的部署资产不入库，`harness-project-config.yaml` 和 `parallel.yaml` 入库：
+
+```bash
+bash .claude/harness/scripts/ensure_gitignore.sh "$PWD"
+echo "GITIGNORE_EXIT=$?"
+```
+
+- `GITIGNORE_ADDED=` / `GITIGNORE_REPLACED=` → §6 报告里列出，并提醒用户提交 `.gitignore`（从 ≤ 0.3.0 升上来的项目通常会走到这里）。再跑一次 `git status --porcelain -- .claude/harness`：两份配置显示为 `??` 时（以前被整个目录的忽略规则盖住了），提醒用户把它们一起提交，否则 `/super-harness:run-inline` 会因为工作树不干净而拒绝启动
+- `GITIGNORE_CONFLICT=` → 原样转告，由用户改那条更宽的规则；你不要改
+- `GITIGNORE_TRACKED_ASSETS=` + `GITIGNORE_UNTRACK_HINT=` → 部署资产以前被提交过，以后每次 update 都会让它们出现在 `git status` 里。把命令原样转告，由用户决定是否执行；你不要执行
+- `GITIGNORE_EXIT ≠ 0` → WARN，不 halt
+
+本节不 `git add`、不提交。
+
 ## 6. 报告
 
 ```
@@ -191,16 +225,19 @@ echo "HOOKS_EXIT=$HOOKS_EXIT"
   - $INSTALLED installed / $UNCHANGED unchanged / $UPDATED updated / $PURGED purged
   - yaml: 未触动（按设计；如需 schema 升级见下方 diff 提示）
   - git hooks: <installed / unchanged | WARN: core.hooksPath ...（exit 3 良性拒装）>
+  - .gitignore: <已符合策略 | 追加 / 替换了哪些行（请提交 .gitignore）| WARN: 冲突 / 已跟踪资产，见 §5>
+  - 备份: <无 | 被覆盖或清理的旧文件在 .claude/harness/.backup/<TS>/>
 
 【purged 清单】（仅 $PURGED > 0 时输出本块；数据来自 §3 deploy stderr 的 `purged:` 行）
-  - <被删文件路径 1>（备份：<路径 1>.bak.<TS>）
+  - <被删文件路径 1>（备份：.claude/harness/.backup/<TS>/<路径 1>）
   - <被删文件路径 2>（备份：...）
   ⚠️ 请二次确认：项目侧脚本 / `.claude/commands/` 自定义命令 / `_bmad/custom/` 是否
      还引用上述文件；如有，改引用替代品（参见 changelog 对应版本条目）；确认无误后
-     可删 `.bak.<TS>` 备份。
+     可删 `.claude/harness/.backup/<TS>/`。
 
 【下一步建议】
-  ① 查看被覆盖前的备份：ls .claude/harness/**/*.bak.<ts>（可放心删，确认无误后）
+  ① 查看被覆盖前的备份：ls -R .claude/harness/.backup/<TS>/（确认无误后可整个删掉）。
+     ≤ 0.3.0 留在文件旁边的 *.bak.<时间戳> 也可以删：find .claude/harness -name '*.bak.*'
   ② 检查 yaml schema 是否有新字段：
        diff .claude/harness/harness-project-config.yaml \
             "$PLUGIN_ROOT/templates/harness-project-config.yaml.template"
@@ -226,7 +263,8 @@ echo "HOOKS_EXIT=$HOOKS_EXIT"
 1. §1 plugin 路径探测两路 fallback 全 miss → halt + 报错（同 §1 ERROR 块）
 2. §3 deploy_assets.sh `DEPLOY_EXIT ≠ 0` 或 summary 含 `FAILED=`（单文件 cp 失败：permission / 磁盘满 / 源文件缺失）→ halt + 报告失败 src/dst + 已部署计数（partial state；solo-dev 自决继续/回滚）
 3. install_git_hooks.sh exit ≠ 0 且 ≠ 3（真实安装失败：hook 源目录缺失 / cp、chmod 权限失败 / 参数错误 / 内部 bug；exit 3 = 良性拒装（hooksPath 或项目自有 hook）仅 WARN）→ halt + 贴 stderr verbatim
-4. runtime quota 信号 → 与 init / run 同款配额模板
+4. Claude 运行时额度耗尽（判定按 `pipeline.md` §−1 (a)，只看子 agent 返回的第一行，不搜关键词）→ 用 `pipeline.md` §3 的配额模板
+5. §0 仓库根检查不是 `REPO_CHECK=ok`（在子目录里，或不在 git 仓库里）→ halt，什么都不写
 
 **Halt 模板**：
 
@@ -234,4 +272,4 @@ echo "HOOKS_EXIT=$HOOKS_EXIT"
 > 现场：[一两句话讲发生了什么]
 > 违反规则：[stderr verbatim]
 > 已部署：[$INSTALLED installed / $UPDATED updated 计数]
-> 待用户决断：[选项 1] 修复后重跑 update（幂等）/ [选项 2] 手工 cp 缺漏文件 / [选项 3] 整轮回滚（rm 已部署文件 + 从 .bak.<ts> 恢复）/ [选项 4] 怀疑 plugin 缺陷 → /super-harness:report-issue（自动收集 halt 现场 + gh CLI 直提 + 附临时绕过方案）
+> 待用户决断：[选项 1] 修复后重跑 update（幂等）/ [选项 2] 手工 cp 缺漏文件 / [选项 3] 整轮回滚（rm 已部署文件 + 从 .claude/harness/.backup/<TS>/ 恢复）/ [选项 4] 怀疑 plugin 缺陷 → /super-harness:report-issue（自动收集 halt 现场 + gh CLI 直提 + 附临时绕过方案）

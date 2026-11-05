@@ -19,6 +19,8 @@
 #   F3 缺 product-brief.md（可选）                                          → exit 0 + optional_missing
 #   F4 缺 prd.md（必需）                                                    → exit 2 + stderr 引导
 #   F5 缺 sprint-status.yaml                                                → exit 3 + stderr 引导
+#   F6-F9（0.3.1）产物目录解析：_bmad/bmm/config.yaml（{project-root} / {output_folder}）
+#      > harness yaml artifacts_root > 默认；引导文本用 BMad 6.12 实际 skill 名
 
 set -uo pipefail
 
@@ -173,6 +175,81 @@ else
     echo "${RED}FAIL${RESET}: F5 — expected rc=3 + stderr 引导; got rc=$F5_RC"
     echo "--- output ---"; printf '%s\n' "$F5_OUT" | head -15; echo "--------------"
     FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# F6-F9 — 产物目录解析（0.3.1）：BMad 配置 > harness yaml artifacts_root > 默认
+# ---------------------------------------------------------------------------
+set +e
+check_case() {  # check_case <name> <root> <expected rc> <grep patterns...>
+    local name="$1" root="$2" want="$3" out rc p; shift 3
+    out=$(bash "$HELPER" --root "$root" 2>&1); rc=$?
+    for p in "$@"; do
+        if ! printf '%s' "$out" | grep -qF -- "$p"; then
+            echo "${RED}FAIL${RESET}: $name — missing '$p' (rc=$rc)"
+            printf '%s\n' "$out" | head -15
+            FAIL=$((FAIL + 1)); return
+        fi
+    done
+    if [ "$rc" -ne "$want" ]; then
+        echo "${RED}FAIL${RESET}: $name — rc=$rc, want $want"; printf '%s\n' "$out" | head -15
+        FAIL=$((FAIL + 1)); return
+    fi
+    echo "${GREEN}PASS${RESET}: $name"
+    PASS=$((PASS + 1))
+}
+
+echo ""
+echo "=== Fixture 6: _bmad/bmm/config.yaml 自定义目录（{project-root} 占位符） ==="
+F6=$(mktemp -d "$WORKDIR/fixture.XXXXXX")
+mkdir -p "$F6/_bmad/bmm" "$F6/docs/plan" "$F6/docs/impl"
+cat > "$F6/_bmad/bmm/config.yaml" <<'EOF'
+# BMM Module Configuration
+planning_artifacts: "{project-root}/docs/plan"
+implementation_artifacts: '{project-root}/docs/impl'   # comment
+EOF
+echo "# PRD" > "$F6/docs/plan/prd.md"
+echo "# Arch" > "$F6/docs/plan/architecture.md"
+echo "development_status: {}" > "$F6/docs/impl/sprint-status.yaml"
+check_case "F6 BMad config paths honoured" "$F6" 0 \
+    '"all_present": true' '"planning_dir": "docs/plan"' '"implementation_dir": "docs/impl"' \
+    '"planning_source": "bmad-config"' '"implementation_source": "bmad-config"'
+rm "$F6/docs/impl/sprint-status.yaml"
+check_case "F6b sprint-status looked up in the BMad implementation dir" "$F6" 3 \
+    "$F6/docs/impl/sprint-status.yaml" "/bmad-sprint-planning"
+
+echo ""
+echo "=== Fixture 7: {output_folder} 占位符 ==="
+F7=$(mktemp -d "$WORKDIR/fixture.XXXXXX")
+mkdir -p "$F7/_bmad/bmm" "$F7/out/planning-artifacts" "$F7/out/implementation-artifacts"
+printf 'output_folder: "{project-root}/out"\nplanning_artifacts: "{output_folder}/planning-artifacts"\nimplementation_artifacts: "{output_folder}/implementation-artifacts"\n' \
+    > "$F7/_bmad/bmm/config.yaml"
+echo "# PRD" > "$F7/out/planning-artifacts/prd.md"
+mkdir -p "$F7/out/planning-artifacts/architecture"
+echo "development_status: {}" > "$F7/out/implementation-artifacts/sprint-status.yaml"
+check_case "F7 {output_folder} resolved" "$F7" 0 '"planning_dir": "out/planning-artifacts"' '"implementation_dir": "out/implementation-artifacts"'
+
+echo ""
+echo "=== Fixture 8: 无 BMad 配置 → harness yaml artifacts_root ==="
+F8=$(make_full_fixture)
+mkdir -p "$F8/.claude/harness" "$F8/specs"
+printf "project_display_name: 'x'\nartifacts_root: 'specs'\n" > "$F8/.claude/harness/harness-project-config.yaml"
+check_case "F8 yaml artifacts_root used when BMad config absent" "$F8" 3 \
+    '"implementation_dir": "specs"' '"implementation_source": "harness-yaml"' '"planning_source": "default"'
+echo "development_status: {}" > "$F8/specs/sprint-status.yaml"
+check_case "F8b sprint-status found under artifacts_root" "$F8" 0 '"all_present": true'
+
+echo ""
+echo "=== Fixture 9: 都没有 → 默认目录；引导用 BMad 6.12 实际 skill 名 ==="
+F9=$(mktemp -d "$WORKDIR/fixture.XXXXXX")
+check_case "F9 defaults + 6.12 command names" "$F9" 2 \
+    '"planning_dir": "_bmad-output/planning-artifacts"' '"implementation_source": "default"' \
+    "/bmad-prd" "/bmad-architecture" "/bmad-create-epics-and-stories"
+OUT9=$(bash "$HELPER" --root "$F9" 2>&1)
+if printf '%s' "$OUT9" | grep -qE '/bmad:|/bmad-create-prd 生成|/bmad-create-architecture 生成'; then
+    echo "${RED}FAIL${RESET}: F9b — guidance still suggests colon aliases / pre-6.11 names"; FAIL=$((FAIL + 1))
+else
+    echo "${GREEN}PASS${RESET}: F9b — no colon aliases or pre-6.11 names suggested"; PASS=$((PASS + 1))
 fi
 
 # ---------------------------------------------------------------------------

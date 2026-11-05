@@ -21,7 +21,9 @@ Behavior:
        untracked directories into individual files so blacklist scanning
        sees every new file — review 2026-06-10 finding #1; -z yields raw
        NUL-delimited paths so quotes/newlines/` -> ` in filenames can't be
-       mis-parsed — finding #79).
+       mis-parsed — finding #79; --no-renames so a rename's original path is
+       checked too, --ignore-submodules=untracked so untracked files inside a
+       submodule don't count — 0.3.1).
     1b. Drop junk-tier files (.DS_Store / *.tmp / *.swp / __pycache__ /
        *.pyc) that are NOT in HEAD from the working set: never staged, never
        a halt — one `NOTE: skipped junk file: <path>` line on stderr each.
@@ -105,6 +107,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness_config import get_artifacts_root, get_sprint_status_path  # noqa: E402
+try:
+    from harness_config import get_parked_statuses  # noqa: E402
+except ImportError:  # pragma: no cover — older deployed harness_config
+    def get_parked_statuses():
+        return ()
 import harness_spec  # noqa: E402  (story spec resolution — BMad 6.11+ spec-<key>.md layout)
 
 def _compute_artifacts_dir_str() -> str:
@@ -365,6 +372,18 @@ BLACKLIST_PATTERNS = [
     "**/*.pem",
     "**/*.key",
     "**/*.p12",
+    # 0.3.1 补漏：SSH 私钥（.pub 公钥不拦）、PKCS#12 / Java keystore、terraform
+    # state（state 里是明文的资源属性，常含数据库密码 / access key）。
+    # `.npmrc` / `.pypirc` 不按文件名拦：很多项目只在里面放 registry 地址，正常入库。
+    "**/id_rsa",
+    "**/id_dsa",
+    "**/id_ecdsa",
+    "**/id_ed25519",
+    "**/*.pfx",
+    "**/*.jks",
+    "**/*.keystore",
+    "**/*.tfstate",
+    "**/*.tfstate.backup",
     # Credential file naming — precise formats only (issue #2)
     "**/credentials",
     "**/credentials.json",
@@ -405,6 +424,55 @@ JUNK_PATTERNS = [
     "**/__pycache__/**",
     "**/*.pyc",
 ]
+
+# 0.3.1 — per-pattern exemptions for two over-broad blacklist patterns. The
+# pattern still reports as e.g. `BLACKLIST=x (**/secrets/**)` when it fires;
+# the exemption only decides whether it fires.
+#
+#   `**/.env*`: env TEMPLATE files are committed on purpose (they document the
+#   variables, values are placeholders). Exempt basenames `.env.example`,
+#   `.env.sample`, `.env.template`, `.env.dist`, also with a middle segment
+#   (`.env.production.example`), in any directory. `.env`, `.env.local`,
+#   `.env.production` still block.
+#
+#   `**/secrets/**`: a `secrets/` directory is just as often a business
+#   feature name (`console-web/src/features/secrets/SecretsTable.tsx`,
+#   `internal/secrets/service.go`, `deploy/k8s/secrets/README.md`). Rule:
+#   under a `secrets/` dir, files whose suffix is source code / docs / styles
+#   (_SECRETS_DIR_CODE_SUFFIXES, case-insensitive) pass; everything else —
+#   data-ish suffixes (.json/.yaml/.yml/.env/.txt/.ini/.toml/.properties/.conf
+#   /.sql/.csv/...), no suffix at all (`secrets/prod`), or a file literally
+#   named `secrets` — still blocks. Rationale: secret material lives in data
+#   files; code files that *handle* secrets are what the feature dirs hold.
+#   A secret hardcoded inside a .go/.ts file is out of scope for a filename
+#   blacklist either way (that is review / secret-scanner territory).
+_ENV_TEMPLATE_RE = re.compile(r"^\.env(?:\.[^/]+)?\.(?:example|sample|template|dist)$")
+_SECRETS_DIR_CODE_SUFFIXES = (
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte",
+    ".go", ".py", ".java", ".kt", ".kts", ".scala", ".rs", ".rb", ".php",
+    ".cs", ".swift", ".m", ".c", ".h", ".cc", ".cpp", ".hpp", ".dart",
+    ".ex", ".exs", ".erl", ".clj", ".lua",
+    ".proto", ".graphql", ".gql",
+    ".css", ".scss", ".sass", ".less", ".html",
+    ".md", ".mdx", ".rst", ".adoc",
+)
+
+
+def _env_template_exempt(path):
+    return bool(_ENV_TEMPLATE_RE.match(path.rsplit("/", 1)[-1]))
+
+
+def _secrets_dir_code_exempt(path):
+    segs = path.split("/")
+    if "secrets" not in segs[:-1]:
+        return False  # the `secrets` hit is the basename itself → keep blocking
+    return segs[-1].lower().endswith(_SECRETS_DIR_CODE_SUFFIXES)
+
+
+_BLACKLIST_EXEMPTIONS = {
+    "**/.env*": _env_template_exempt,
+    "**/secrets/**": _secrets_dir_code_exempt,
+}
 
 # v0.1.32 (issue #2) — BMad artifacts allow-list (defense layer 2).
 # Files under the configured artifacts dir with engineering-product
@@ -763,6 +831,22 @@ STAGES = {
         "validate_review":  False,
         "suggest_tag":      None,
     },
+    "deps-migrate": {
+        # issue #14 — sprint-status.py flatten-deps: block entries → single-line,
+        # depends_on → top-level story_dependencies (BMad 6.12.4 scripts only read
+        # the single-line layout). Same shape as retro-migrate.
+        "story_md":         False,
+        "story_json":       [],
+        "story_codex":      False,
+        "global_files":     ["sprint-status.yaml"],
+        "epic_retro":       False,
+        "project_code":     False,
+        "commit_msg":       "chore(sprint-status): single-line development_status, dependencies in story_dependencies",
+        "skip_if_empty":    True,
+        "validate_dev":     False,
+        "validate_review":  False,
+        "suggest_tag":      None,
+    },
     "1": {
         "story_md":         True,
         "story_json":       [],
@@ -988,7 +1072,10 @@ def _sync_sprint_status_for_stage(stage, key, epic):
     elif stage == "6":
         if epic:
             transitions.append((f"epic-{epic}-retrospective", "done"))
-            transitions.append((f"epic-{epic}", "done"))
+            # An epic that still holds parked stories (issue #15) is not finished:
+            # leave epic-N as it is so the parked work stays visible.
+            if not _epic_story_rows(epic, get_parked_statuses()):
+                transitions.append((f"epic-{epic}", "done"))
     # stage 6-5 / 6-done / 1 / 3 / 4 / 5-fallback → no-op
 
     # Review 2026-06-10 finding #77 — two-pass read-then-set:
@@ -1874,6 +1961,9 @@ def matches_blacklist(path):
         return None
     for pat in BLACKLIST_PATTERNS:
         if glob_match(path, pat):
+            exempt = _BLACKLIST_EXEMPTIONS.get(pat)
+            if exempt is not None and exempt(path):
+                continue
             return pat
     return None
 
@@ -2332,16 +2422,36 @@ def _parse_porcelain_z(out):
         xy = f[:2]
         path = f[3:]
         entries.append((xy, path))
-        # Rename/copy: skip the following orig-path field.
         if "R" in xy or "C" in xy:
+            # 0.3.1：rename 的原路径也要过 blacklist / cross-story 等 gate——只看
+            # 新路径时，`git mv _bmad/core/config.yaml x.yaml` 或挪走别的 story 的
+            # spec 都能 STATUS=ok。调用方都传 --no-renames，正常走不到这里；这是
+            # status.renames 之类配置漏网时的兜底：原路径按「index 里已删除」
+            # (`D `) 记一条，worktree 列是空格，step 5 不会对它 git add。
+            # copy 的源文件没变，不记。
+            if "R" in xy and i + 1 < len(fields) and fields[i + 1]:
+                entries.append(("D ", fields[i + 1]))
             i += 2
         else:
             i += 1
     return entries
 
 
+# 0.3.1：工作区状态的唯一读法（porcelain_paths 与 step 6 共用）。
+#   --no-renames：rename 拆成 `D  old` + `A  new` 两条，原路径同样过 blacklist /
+#     out-of-scope / cross-story / classify。`D ` 的 worktree 列为空格，step 5
+#     本来就跳过它（已在 index 里），不会对不存在的路径 git add；未 git mv、直接
+#     mv 的情形本来就是 ` D old` + `?? new`，git add -- old 能正常暂存删除。
+#   --ignore-submodules=untracked：子模块里的未跟踪文件在 -uall 下表现为
+#     ` M vendor/sub`，`git add -- vendor/sub` 清不掉，step 6 会在其它路径已
+#     暂存后 halt UNSTAGED=vendor/sub（build-verify 报 DIRTY_WORKTREE）。只忽略
+#     未跟踪内容：子模块指向的 commit 变了、或子模块里有已跟踪文件被改，照常报。
+_STATUS_CMD = ["git", "status", "--porcelain", "-uall", "-z",
+               "--no-renames", "--ignore-submodules=untracked"]
+
+
 def porcelain_paths():
-    """Return list of (xy, path) from `git status --porcelain -uall -z`. For renames, take the new path.
+    """Return list of (xy, path) from `git status --porcelain -uall -z` (see _STATUS_CMD).
 
     `-uall` (review 2026-06-10 finding #1): without it, a fully-untracked new
     directory collapses into a single `?? dir/` line, so files inside (e.g.
@@ -2355,7 +2465,7 @@ def porcelain_paths():
     paths arrive as raw UTF-8 (with -z that holds even without the
     core.quotepath=false the `run()` helper injects).
     """
-    r = run(["git", "status", "--porcelain", "-uall", "-z"])
+    r = run(_STATUS_CMD)
     if r.returncode != 0:
         return None, r.stderr.strip()
     out = []
@@ -2392,6 +2502,19 @@ def read_retro_verdict(epic):
     return v if v in ("accepted", "accepted-with-open-items", "rejected") else "missing"
 
 
+def _epic_story_rows(epic, statuses=None):
+    """[(key, status)] of the epic's stories (sprint-status.py epic-stories),
+    optionally only those whose status is in `statuses`."""
+    sync_script = str(Path(__file__).resolve().parent / "sprint-status.py")
+    r = subprocess.run([sys.executable, sync_script, "epic-stories", str(epic)],
+                       capture_output=True, text=True, check=False)
+    rows = [ln.split("\t") for ln in r.stdout.splitlines()] if r.returncode == 0 else []
+    rows = [(row[0], row[1]) for row in rows if len(row) == 2]
+    if statuses is not None:
+        rows = [row for row in rows if row[1] in statuses]
+    return rows
+
+
 def _emit_retro_verdict(epic):
     """RETRO_VERDICT= plus EPIC_WONT_DO= (stories the project dropped on
     purpose: any harness_spec.DROPPED_STORY_STATUSES, i.e. `wont-do` and
@@ -2402,13 +2525,14 @@ def _emit_retro_verdict(epic):
     Emitted on 6 (ok) and 6-done (ok or skip) so a resumed run that only
     reaches 6-done still gets the gate input."""
     emit(f"RETRO_VERDICT={read_retro_verdict(epic)}")
-    sync_script = str(Path(__file__).resolve().parent / "sprint-status.py")
-    r = subprocess.run([sys.executable, sync_script, "epic-stories", str(epic)],
-                       capture_output=True, text=True, check=False)
-    rows = [ln.split("\t") for ln in r.stdout.splitlines()] if r.returncode == 0 else []
-    wont = [row[0] for row in rows
-            if len(row) == 2 and row[1] in harness_spec.DROPPED_STORY_STATUSES]
+    rows = _epic_story_rows(epic)
+    wont = [k for k, st in rows if st in harness_spec.DROPPED_STORY_STATUSES]
     emit("EPIC_WONT_DO=" + (",".join(wont) if wont else "none"))
+    # parked stories (issue #15) are counted as pending upstream too, so they also
+    # force `rejected`; reported apart from wont-do because the work is still coming
+    parked_set = set(get_parked_statuses())
+    parked = [f"{k}({st})" for k, st in rows if st in parked_set]
+    emit("EPIC_PARKED=" + (",".join(parked) if parked else "none"))
 
 
 def _range_paths(base, head="HEAD"):
@@ -2961,7 +3085,7 @@ def main():
         # -uall -z keeps this check's path universe identical to
         # porcelain_paths() (finding #1 — otherwise add'ed files inside a new
         # dir would re-fold; finding #79 — same raw-path parsing, no C-quoting).
-        r_status = run(["git", "status", "--porcelain", "-uall", "-z"])
+        r_status = run(_STATUS_CMD)
         unstaged = []
         for xy, rest in _parse_porcelain_z(r_status.stdout):
             # Junk-tier files NOT in HEAD were intentionally skipped (never

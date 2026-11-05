@@ -5,10 +5,12 @@
 #   T1 — fresh deploy: manifest written, counts correct
 #   T2 — idempotent rerun: unchanged=N, manifest byte-identical
 #   T2b— PURGE=1 with no prior manifest → purge skipped with notice
-#   T3 — source shrinks + DEPLOY_PURGE=1 → stale file backed up (.bak.<TS>)
+#   T3 — source shrinks + DEPLOY_PURGE=1 → stale file backed up under
+#        .claude/harness/.backup/<TS>/<path> (0.3.1+; no `.bak.<TS>` next to it)
 #        then removed, dropped from manifest; user-owned files untouched
-#   T4 — purge failure (chmod 555 dir): candidate kept in manifest for retry
-#        (purge_failed=1, exit 0); retry after chmod 755 purges it
+#   T4 — purge failure (chmod 555 dir → rm denied; read-only .backup/ → backup
+#        denied): candidate kept in manifest for retry (purge_failed=1, exit 0);
+#        retry after chmod 755 purges it
 #   T5 — tampered manifest entries (absolute / `..` traversal / out-of-scope /
 #        symlink) are ALL refused with WARN, never deleted, and NOT written
 #        back to the new manifest
@@ -145,13 +147,14 @@ else
     bad "T3 stale file still present"
 fi
 bak_file=""
-for f in "$DEST/.claude/harness/scripts/old_tool.sh.bak."*; do
+for f in "$DEST/.claude/harness/.backup/"*/.claude/harness/scripts/old_tool.sh; do
     [ -f "$f" ] && bak_file="$f"
 done
-if [ -n "$bak_file" ] && grep -qx "old tool" "$bak_file"; then
-    ok "T3 backup written before rm ($(basename "$bak_file"))"
+if [ -n "$bak_file" ] && grep -qx "old tool" "$bak_file" \
+   && ! ls "$DEST/.claude/harness/scripts/"*.bak.* >/dev/null 2>&1; then
+    ok "T3 backup written before rm (${bak_file#"$DEST"/})"
 else
-    bad "T3 backup missing or content wrong"
+    bad "T3 backup missing, content wrong, or a .bak.<TS> left next to the file"
 fi
 if ! grep -qx ".claude/harness/scripts/old_tool.sh" "$MANIFEST" \
    && grep -qx ".claude/harness/scripts/tool_a.sh" "$MANIFEST"; then
@@ -175,7 +178,7 @@ chmod 555 "$DEST/.claude/harness/scripts"
 run_deploy 1 "$DEST"
 chmod 755 "$DEST/.claude/harness/scripts"
 if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | grep -q "purged=0 purge_failed=1" \
-   && printf '%s\n' "$ERR" | grep -q "failed to back up .claude/harness/scripts/temp_tool.sh"; then
+   && printf '%s\n' "$ERR" | grep -q "failed to remove .claude/harness/scripts/temp_tool.sh"; then
     ok "T4 read-only dir: purge fails soft (purge_failed=1, exit 0)"
 else
     bad "T4 failing purge: rc=$RC out='$OUT' err='$ERR'"
@@ -185,6 +188,18 @@ if [ -f "$DEST/.claude/harness/scripts/temp_tool.sh" ] \
     ok "T4 candidate survives + written back to manifest for retry"
 else
     bad "T4 candidate lost from manifest (forever-skip orphan): $(cat "$MANIFEST")"
+fi
+# backup itself denied (read-only backup root) → skip rm, keep for retry
+mkdir -p "$DEST/.claude/harness/.backup"
+chmod -R a-w "$DEST/.claude/harness/.backup"   # incl. a same-second <TS>/ dir
+run_deploy 1 "$DEST"
+chmod -R u+w "$DEST/.claude/harness/.backup"
+if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | grep -q "purged=0 purge_failed=1" \
+   && printf '%s\n' "$ERR" | grep -q "failed to back up .claude/harness/scripts/temp_tool.sh" \
+   && [ -f "$DEST/.claude/harness/scripts/temp_tool.sh" ]; then
+    ok "T4 backup denied: file kept, purge fails soft"
+else
+    bad "T4 backup denied: rc=$RC out='$OUT' err='$ERR'"
 fi
 run_deploy 1 "$DEST"     # retry now that the dir is writable again
 if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | grep -q "purged=1" \
@@ -287,7 +302,8 @@ else
 fi
 if [ "$RC" = 0 ] && printf '%s\n' "$OUT" | grep -q "purged=4" \
    && [ ! -f "$DEST3/.claude/commands/run.md" ] && [ ! -f "$DEST3/.claude/commands/init.md" ] \
-   && ls "$DEST3/.claude/commands/run.md.bak."* >/dev/null 2>&1; then
+   && ls "$DEST3/.claude/harness/.backup/"*/.claude/commands/run.md >/dev/null 2>&1 \
+   && ! ls "$DEST3/.claude/commands/"*.bak.* >/dev/null 2>&1; then
     ok "T7 old harness-zh command copies purged with backup"
 else
     bad "T7 purge of old command copies: rc=$RC out='$OUT' err='$ERR'"

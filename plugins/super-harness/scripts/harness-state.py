@@ -53,6 +53,14 @@ Fields (JSON output):
     story_md_path             — resolved story spec path (see harness_spec.py)
     spec_status               — build spec frontmatter status (null for legacy / missing)
     codex_in_build            — bool, _bmad/custom/bmad-build-auto*.toml mounts a codex review layer
+    codex_findings            — int|null. Finding bullets (`- [critical|high|medium|low] ...`,
+                                codex-companion render.mjs format) in <KEY>.codex-review.md;
+                                null when the report does not exist
+    codex_no_findings         — bool, the report exists, has 0 finding bullets and the
+                                `No material findings.` line (a clean review)
+    codex_handling_rows       — int, `- [F-N ...]` rows under `### Codex Review Handling` in the spec
+    codex_handling_none       — bool, that section holds the `- [none] ...` row written for a
+                                clean review (pipeline.md §1 B2.3 zero-finding branch)
     built_tag_exists / followup_tag_exists — build pipeline progress tags
 
 Exit code:
@@ -233,6 +241,9 @@ def compute_state(key, porcelain_result=None):
     marker = f"{ARTIFACTS_DIR}{key}.codex-skipped.json"
     resolved_marker = f"{ARTIFACTS_DIR}{key}.codex-skipped.resolved.json"
     state["codex_skipped_marker"] = os.path.exists(marker) or os.path.exists(resolved_marker)
+    state["codex_findings"], state["codex_no_findings"] = codex_review_findings(key)
+    state["codex_handling_rows"] = count_codex_handling_rows(key)
+    state["codex_handling_none"] = codex_handling_has_none_row(key)
 
     if state["done_tag_exists"]:
         next_action_code = "done"
@@ -268,16 +279,25 @@ def _build_next_action(state, key, md_path):
     codex_needed = not state["codex_in_build"] and not state["codex_skipped_marker"]
     if codex_needed and not state["stage3_committed"]:
         if not state["worktree_clean"]:
-            return "blocked-dirty", "B2 codex review report in progress (worktree not clean); commit via harness-commit.py 3 once codex-review.md is written"
+            return "blocked-dirty", ("B2 codex review report in progress (worktree not clean): an untracked codex-review.md with a "
+                                     "`findings:` frontmatter line is a finished run_codex_review.sh report → harness-commit.py 3; "
+                                     "without that line it is a partial leftover → remove it (pipeline.md §B2.1 c)")
         return "codex", "dispatch B2: external codex adversarial review (codex is not mounted inside bmad-build-auto)"
     if state["stage3_committed"] and not state["stage4_committed"]:
         if not state["worktree_clean"]:
             return "blocked-dirty", "B2 codex fix round in progress (worktree not clean); commit via harness-commit.py 4 once handling rows are written"
+        if state["codex_no_findings"]:
+            return "codex-fix", ("codex review has no findings (`No material findings.`) — B2.3 zero-finding branch: "
+                                 "append the `- [none]` row to `### Codex Review Handling (Stage 3)` in the spec, "
+                                 f"then `harness-commit.py 4 {key}`; no fix agent, no B3 from this")
         return "codex-fix", "dispatch B2 fix: fresh dev agent handles codex findings"
     followup_recommended = False
     if os.path.exists(md_path):
         followup_recommended = harness_spec.parse_frontmatter(md_path).get("followup_review_recommended") is True
-    if (state["stage4_committed"] or followup_recommended) and not state["followup_tag_exists"]:
+    # a stage-4 commit for a clean codex review (zero findings, `- [none]`
+    # row only) fixed nothing, so it is not a B3 trigger (pipeline.md §1 B3)
+    codex_fixed = state["stage4_committed"] and not state["codex_no_findings"]
+    if (codex_fixed or followup_recommended) and not state["followup_tag_exists"]:
         fs = state["followup_start_sha"]
         if fs and state["spec_status"] == "done" and state["head_sha"] and state["head_sha"] != fs:
             return "followup-verify", (f"B3 follow-up pass already ran (HEAD moved past harness/{key}/followup-start) — "
@@ -334,6 +354,8 @@ def format_plain(state):
         f"story_md_path:           {state.get('story_md_path')}",
         f"spec_status:             {state.get('spec_status')}",
         f"codex_in_build:          {state.get('codex_in_build')}",
+        f"codex_findings:          {state.get('codex_findings')} (no_findings={state.get('codex_no_findings')})",
+        f"codex handling rows:     {state.get('codex_handling_rows')} (none_row={state.get('codex_handling_none')})",
         f"tag harness/.../built:        {state.get('built_tag_exists')}",
         f"tag harness/.../followup:     {state.get('followup_tag_exists')}",
         f"build-sync committed:    {state.get('sync_committed')}",
@@ -499,6 +521,53 @@ def count_codex_findings(key):
         sev[label] = len(re.findall(rf"\[{label}\]", content, re.IGNORECASE))
     total = sum(sev.values())
     return (sev, total)
+
+
+_CODEX_FINDING_BULLET = re.compile(r"^- \[(critical|high|medium|low)\] ")
+_CODEX_NO_FINDINGS = re.compile(r"^No material findings\.\s*$")
+
+
+def codex_review_findings(key):
+    """(count, no_findings) for <KEY>.codex-review.md in codex-companion's
+    rendered format (render.mjs renderReviewResult): one `- [<severity>] title`
+    bullet per finding, or the literal `No material findings.` line.
+    count is None when the report does not exist."""
+    path = f"{ARTIFACTS_DIR}{key}.codex-review.md"
+    if not os.path.exists(path):
+        return (None, False)
+    n = 0
+    clean = False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                if _CODEX_FINDING_BULLET.match(line):
+                    n += 1
+                elif _CODEX_NO_FINDINGS.match(line):
+                    clean = True
+    except OSError:
+        return (None, False)
+    return (n, n == 0 and clean)
+
+
+def codex_handling_has_none_row(key):
+    """True when `### Codex Review Handling` in the spec holds a `- [none]` row
+    (the record written for a clean codex review, pipeline.md §1 B2.3)."""
+    path = _story_md(key)
+    if not os.path.exists(path):
+        return False
+    in_section = False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"^(#+)\s+(.+?)\s*$", line)
+                if m:
+                    in_section = "codex review handling" in m.group(2).lower()
+                    continue
+                if in_section and re.match(r"^\s*-\s*\[none\]", line):
+                    return True
+    except OSError:
+        pass
+    return False
 
 
 def count_codex_handling_rows(key):
@@ -763,10 +832,18 @@ def emit_resume_prompt(key, stage):
 
     elif stage == 4:
         sev, total_findings = count_codex_findings(key)
+        bullets, no_findings = codex_review_findings(key)
+        if bullets:
+            # rendered `- [<sev>] ...` bullets are exact; the tag scan above is
+            # only an estimate for hand-pasted (pre-0.3.1) reports
+            total_findings = bullets
         handling_rows = count_codex_handling_rows(key)
         out.append(f"**Stage 4 micro-progress**：")
         sev_str = ", ".join(f"{k}={v}" for k, v in sev.items() if v > 0)
         out.append(f"- codex-review.md 中 finding 计数（按严重度标签估算）: {sev_str or 'n/a'}（合计约 {total_findings}）")
+        if no_findings:
+            out.append("- codex 报告是 `No material findings.`：没有要处理的 finding。只需在 spec 末尾 "
+                       "`### Codex Review Handling (Stage 3)` 段写一行 `- [none] codex 报告 No material findings.，无需处理`（已有就不重复写），然后停止")
         out.append(f"- story md `### Codex Review Handling (Stage 3)` 段已记录: `{handling_rows}` 条")
         out.append(f"- 缺口: 约 `{max(0, total_findings - handling_rows)}` 条 finding 待处理")
         out.append("")

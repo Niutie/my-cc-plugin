@@ -91,7 +91,7 @@ t = re.sub(r"last_updated: .*", "last_updated: build-of-%s" % key, t)
 open(p, "w", encoding="utf-8").write(t)
 PY
 printf -- '- FU-%s.A1 from build of %s\n' "$KEY" "$KEY" >> "$ART/deferred-work.md"
-printf 'epic context compiled while building %s\n' "$KEY" > "$ART/epic-1-context.md"
+printf 'epic context compiled while building %s\n' "$KEY" > "$ART/epic-${KEY%%-*}-context.md"
 cat > "$ART/spec-$KEY.md" <<SPEC
 ---
 status: done
@@ -193,10 +193,14 @@ echo "$PLAN" | jget '[s for s in d["stories"] if s["key"]=="2-1-epsilon"][0]["re
 [ "$(echo "$TICK" | jget 'd["epic_start"]')" = "[1]" ] && ok "P5 epic_start flags first epic" || bad "P5 epic_start"
 
 echo "== L: prepare + launch"
+mkdir -p .claude/harness/.backup/20260101-000000 .claude/harness/scripts/__pycache__
+touch .claude/harness/.backup/20260101-000000/old.md .claude/harness/scripts/__pycache__/x.pyc
 for k in 1-1-alpha 1-2-beta; do
     OUT="$($SH prepare $k)"; echo "$OUT" | grep -q '^STATUS=ok' && ok "L1 prepare $k" || { bad "L1 prepare $k"; echo "$OUT"; }
 done
 check "L2 copied untracked .claude/harness into worktree" test -f "$TMP/wt/1-1-alpha/.claude/harness/scripts/harness-commit.py"
+[ ! -e "$TMP/wt/1-1-alpha/.claude/harness/.backup" ] && [ ! -e "$TMP/wt/1-1-alpha/.claude/harness/scripts/__pycache__" ] \
+    && ok "L3b deploy backups and __pycache__ not copied into lane" || bad "L3b lane got .backup or __pycache__"
 [ -z "$(git -C "$TMP/wt/1-1-alpha" status --porcelain -uall)" ] && ok "L3 lane worktree clean" || bad "L3 lane worktree dirty"
 [ "$(echo "$($SH tick)" | jget 'd["slots"]["free"]')" = "0" ] && ok "L4 prepared lanes hold slots" || bad "L4 slots"
 $SH launch 1-1-alpha > "$TMP/l1.out" &
@@ -449,6 +453,256 @@ OUT="$($SH prepare 9-2-doc)"
 echo "$OUT" | grep -q '^STATUS=ok' && [ -L "$TMP/wt/9-2-doc/nm" ] && [ -f "$TMP/wt/9-2-doc/tools/local.cfg" ] \
     && [ -z "$(git -C "$TMP/wt/9-2-doc" status --porcelain -uall)" ] && ok "D7 lane clean with copied dir + symlink" || { bad "D7"; echo "$OUT"; }
 $SH abandon 9-2-doc --yes >/dev/null
+
+# ---------------------------------------------------------------- hardening
+SCRIPTS="$PROJ/.claude/harness/scripts"
+LANES="$(git rev-parse --git-common-dir)/super-harness/lanes"
+cfg_set() {  # cfg_set <key> <raw yaml value> — replace a top-level scalar in parallel.yaml
+python3 - .claude/harness/parallel.yaml "$1" "$2" <<'PY'
+import sys
+p, k, v = sys.argv[1:4]
+lines = [l for l in open(p, encoding="utf-8").read().splitlines() if not l.startswith(k + ":")]
+lines.append(f"{k}: {v}")
+open(p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+PY
+}
+lane_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"d": d}))' "$LANES/$1.json" "$2" 2>/dev/null; }
+pstart() { python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import superh; print(superh.proc_start_time(int(sys.argv[2])))' "$SCRIPTS" "$1"; }
+wait_for() {  # wait_for <seconds> <command...>
+    local n=$(( $1 * 10 )); shift
+    while [ "$n" -gt 0 ]; do "$@" && return 0; sleep 0.1; n=$((n - 1)); done
+    return 1
+}
+op_pgid_is() {  # op_pgid_is <KEY> [<pgid>] — the lane's in-progress marker has a child group (that one)
+    local g; g="$(lane_get "$1" 'd.get("op", {}).get("pgid") or ""')"
+    if [ $# -ge 2 ]; then [ "$g" = "$2" ]; else [ -n "$g" ]; fi
+}
+group_gone() { ! kill -0 -- "-$1" 2>/dev/null; }
+lines_ge() { [ -f "$1" ] && [ "$(wc -l < "$1")" -ge "$2" ]; }
+stage_of() { $SH board --json | jget "[x['stage'] for x in d if x['key']=='$1'][0]"; }
+ready_lane() {  # prepare + run the fake worker to `ready`
+    $SH prepare "$1" >/dev/null && $SH launch "$1" >/dev/null && [ "$(stage_of "$1")" = "ready" ]
+}
+# park the merged gamma lane so tick only reflects the lanes below
+lane_edit 1-3-gamma 'd["phase"] = "done"'
+
+echo "== M1: config scalars"
+python3 - "$SCRIPTS" > "$TMP/m1.out" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import superh
+y = r"""
+verify_command: 'pnpm test'   # full suite
+worktree_root: ''  # default
+q1: 'it''s # not a comment'   # real comment
+q2: "say \"hi\" # x"  # real
+q3: "a\\b\tc\x41"
+q4: plain value # comment
+q5: url#frag
+q6: ['a, b', "c#d", e]  # list
+q7: 'unterminated # comment
+q8: "x" trailing
+"""
+d = superh.parse_simple_yaml(y)
+want = {"verify_command": "pnpm test", "worktree_root": "", "q1": "it's # not a comment",
+        "q2": 'say "hi" # x', "q3": "a\\b\tcA", "q4": "plain value", "q5": "url#frag",
+        "q6": ["a, b", "c#d", "e"], "q7": "'unterminated", "q8": '"x" trailing'}
+for k, v in want.items():
+    print(("OK" if d.get(k) == v else "BAD"), k, repr(d.get(k)))
+PY
+while read -r st k rest; do
+    [ "$st" = OK ] && ok "M1 quoted scalar $k" || bad "M1 $k got $rest"
+done < "$TMP/m1.out"
+printf "worktree_root: ''   # default\n" >> "$DEP2/.claude/harness/parallel.yaml"
+[ "$(cd "$DEP2" && python3 .claude/harness/scripts/superh.py env | jget 'd["worktree_root"]')" = "$TMP/deploy-legacy.worktrees" ] \
+    && ok "M1b worktree_root: '' with a comment means the default location" || bad "M1b"
+
+echo "== M2: timeouts kill the whole process group"
+cfg_set prepare_timeout_sec 1
+cfg_set prepare_command "'echo \$\$ > $TMP/m2.pgid; sleep 30 & echo \$! > $TMP/m2.bg; echo m2-to-stderr >&2; sleep 30'"
+T0=$(date +%s)
+OUT="$($SH prepare 9-8-m2)"; RC=$?
+T1=$(date +%s)
+[ $RC -eq 1 ] && echo "$OUT" | grep -q '^REASON=prepare 失败：prepare_command 超时' && echo "$OUT" | grep -qx 'HOLD_KIND=prepare' \
+    && [ $((T1 - T0)) -lt 15 ] && ok "M2a prepare_command timeout → held quickly" || { bad "M2a rc=$RC $((T1 - T0))s"; echo "$OUT"; }
+echo "$OUT" | grep -q 'm2-to-stderr' && ok "M2b stderr kept on timeout" || bad "M2b"
+BG="$(cat "$TMP/m2.bg" 2>/dev/null)"; PG="$(cat "$TMP/m2.pgid" 2>/dev/null)"
+[ -n "$BG" ] && ! kill -0 "$BG" 2>/dev/null && group_gone "$PG" \
+    && ok "M2c no surviving sleep (background child and group gone)" || bad "M2c bg=$BG pg=$PG"
+$SH abandon 9-8-m2 --yes >/dev/null
+cfg_set prepare_timeout_sec 600
+
+echo "== M3: dispatcher lock, live prepare"
+sleep 300 & OTHER=$!
+OUT="$(CLAUDE_PID=$OTHER $SH start-run --take-over)"
+echo "$OUT" | grep -q '^STATUS=ok' && echo "$OUT" | grep -q '^LOCK_RECLAIMED=taken-over' \
+    && ok "M3a --take-over hands the lock to another live session" || { bad "M3a"; echo "$OUT"; }
+OUT="$($SH prepare 9-9-lock)"; RC=$?
+[ $RC -eq 4 ] && echo "$OUT" | grep -q '^STATUS=locked' && [ ! -f "$LANES/9-9-lock.json" ] \
+    && ok "M3b mutating command refused while another live session holds the lock" || { bad "M3b rc=$RC"; echo "$OUT"; }
+OUT="$($SH start-run)"; RC=$?
+[ $RC -eq 4 ] && echo "$OUT" | grep -q "^LOCK_PID=$OTHER" && ok "M3c second start-run refused, names the holder" || { bad "M3c rc=$RC"; echo "$OUT"; }
+$SH tick >/dev/null && ok "M3d read-only tick still works" || bad "M3d"
+kill "$OTHER"; wait "$OTHER" 2>/dev/null
+OUT="$($SH start-run)"
+echo "$OUT" | grep -q '^STATUS=ok' && echo "$OUT" | grep -q '^LOCK_RECLAIMED=stale' \
+    && ok "M3e stale lock (holder gone) is reclaimed" || { bad "M3e"; echo "$OUT"; }
+rm -f "$TMP/go"
+cfg_set prepare_command "'while [ ! -f $TMP/go ]; do sleep 0.2; done'"
+$SH prepare 9-10-live > "$TMP/live.out" 2>&1 &
+PP=$!
+wait_for 30 op_pgid_is 9-10-live || bad "M3 prepare never started"
+TICK="$($SH tick)"
+[ "$(echo "$TICK" | jget 'd["preparing"]')" = "['9-10-live']" ] && ! echo "$TICK" | jget 'd["launch"]' | grep -q 9-10-live \
+    && ok "M3f live prepare is not routed back to prepare" || { bad "M3f"; echo "$TICK"; }
+[ "$(stage_of 9-10-live)" = "preparing" ] && ok "M3g board shows it preparing" || bad "M3g $(stage_of 9-10-live)"
+OUT="$($SH prepare 9-10-live)"; RC=$?
+[ $RC -eq 4 ] && echo "$OUT" | grep -q '^STATUS=busy' && [ -d "$TMP/wt/9-10-live" ] \
+    && ok "M3h second prepare refuses, worktree untouched" || { bad "M3h rc=$RC"; echo "$OUT"; }
+touch "$TMP/go"; wait "$PP"
+grep -q '^STATUS=ok' "$TMP/live.out" && [ "$(lane_get 9-10-live 'd.get("op")')" = "None" ] \
+    && ok "M3i the original prepare finishes, marker cleared" || { bad "M3i"; cat "$TMP/live.out"; }
+$SH abandon 9-10-live --yes >/dev/null
+
+echo "== H1: killed prepare / integrate don't loop"
+rm -f "$TMP/go" "$TMP/pk.pgids"
+cfg_set prepare_command "'echo \$\$ >> $TMP/pk.pgids; while [ ! -f $TMP/go ]; do sleep 0.2; done'"
+OLDPG=""
+for i in 1 2 3; do
+    $SH prepare 9-11-pk > "$TMP/pk$i.out" 2>&1 &
+    BGP=$!
+    wait_for 30 lines_ge "$TMP/pk.pgids" "$i" || bad "H1 prepare $i never started"
+    [ $i -gt 1 ] && { grep -q '^ROLLED_BACK=' "$TMP/pk$i.out" && group_gone "$OLDPG" \
+        && ok "H1a prepare #$i rolled back the killed one and ended its leftover group" || { bad "H1a #$i"; cat "$TMP/pk$i.out"; }; }
+    OLDPG="$(tail -1 "$TMP/pk.pgids")"
+    wait_for 10 op_pgid_is 9-11-pk "$OLDPG"
+    kill -9 "$(lane_get 9-11-pk 'd["op"]["pid"]')"; wait "$BGP" 2>/dev/null
+done
+echo "$($SH tick)" | jget 'd["launch"]' | grep -q 9-11-pk && ok "H1b killed prepare routed back while under the limit" || bad "H1b"
+OUT="$($SH prepare 9-11-pk)"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -qx 'HOLD_KIND=prepare' && echo "$OUT" | grep -q '连续 3 次' && [ -d "$TMP/wt/9-11-pk" ] \
+    && group_gone "$OLDPG" && ok "H1c third kill → held (kind=prepare), leftover group ended" || { bad "H1c rc=$RC"; echo "$OUT"; }
+! echo "$($SH tick)" | jget 'd["launch"]' | grep -q 9-11-pk && ok "H1d held prepare leaves the launch list" || bad "H1d"
+$SH abandon 9-11-pk --yes >/dev/null
+cfg_set prepare_command "''"
+
+ready_lane 9-12-ik && ok "H1e lane 9-12-ik ready" || bad "H1e"
+echo h1 > src/h1.txt && git add src/h1.txt && git commit -qm "sprint moves: 9-12-ik must rebase"
+rm -f "$TMP/ik.pgids"
+cfg_set verify_command "'echo \$\$ >> $TMP/ik.pgids; sleep 30'"
+OLDPG=""
+for i in 1 2 3; do
+    $SH integrate 9-12-ik > "$TMP/ik$i.out" 2>&1 &
+    BGP=$!
+    wait_for 60 lines_ge "$TMP/ik.pgids" "$i" || bad "H1 integrate $i never reached verify"
+    [ $i -gt 1 ] && { grep -q '^NOTE=上次 integrate 在运行中被打断' "$TMP/ik$i.out" && group_gone "$OLDPG" \
+        && ok "H1f integrate #$i resumes after a kill, leftover verify group ended" || { bad "H1f #$i"; cat "$TMP/ik$i.out"; }; }
+    OLDPG="$(tail -1 "$TMP/ik.pgids")"
+    [ "$(echo "$($SH tick)" | jget 'd["next_action"]')" != "integrate" ] && ok "H1g no second integrate handed out while one is live (#$i)" || bad "H1g #$i"
+    if [ $i -eq 2 ]; then
+        kill -TERM "$(lane_get 9-12-ik 'd["op"]["pid"]')"; wait "$BGP"; RC=$?
+        [ $RC -eq 143 ] && group_gone "$OLDPG" && ok "H1h SIGTERM ends the verify group before exiting" || { bad "H1h rc=$RC"; cat "$TMP/ik$i.out"; }
+    else
+        kill -9 "$(lane_get 9-12-ik 'd["op"]["pid"]')"; wait "$BGP" 2>/dev/null
+    fi
+    if [ $i -lt 3 ]; then
+        echo "$($SH tick)" | jget 'd["integrate"]' | grep -q 9-12-ik && ok "H1i killed integrate routed back (#$i)" || bad "H1i #$i"
+    fi
+done
+OUT="$($SH integrate 9-12-ik)"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -qx 'HOLD_KIND=interrupted' && group_gone "$OLDPG" \
+    && ok "H1j third kill → held (kind=interrupted), leftover group ended" || { bad "H1j rc=$RC"; echo "$OUT"; }
+TICK="$($SH tick)"
+[ "$(echo "$TICK" | jget 'd["next_action"]')" != "integrate" ] && echo "$TICK" | jget 'd["attention"]' | grep -q 'superh.py integrate 9-12-ik' \
+    && ok "H1k held lane leaves the integrate loop, takeover says re-run integrate" || { bad "H1k"; echo "$TICK"; }
+cfg_set verify_timeout_sec 1
+cfg_set verify_command "'echo verify-out; echo verify-err >&2; sleep 30'"
+T0=$(date +%s)
+OUT="$($SH integrate 9-12-ik)"; RC=$?
+T1=$(date +%s)
+[ $RC -eq 1 ] && echo "$OUT" | grep -qx 'HOLD_KIND=verify' && echo "$OUT" | grep -q '超时' && [ $((T1 - T0)) -lt 15 ] \
+    && ok "M2d manual re-run accepted; verify timeout → held verify, quickly" || { bad "M2d rc=$RC $((T1 - T0))s"; echo "$OUT"; }
+echo "$OUT" | sed -n '/VERIFY_OUTPUT<</,/>>/p' | grep -q verify-err && ok "M2e verify timeout keeps stderr" || { bad "M2e"; echo "$OUT"; }
+cfg_set verify_command "''"
+cfg_set verify_timeout_sec 1800
+OUT="$($SH integrate 9-12-ik)"; RC=$?
+[ $RC -eq 0 ] && [ "$(lane_get 9-12-ik 'd["phase"]')" = "merged" ] && ok "H1l after the fix integrate merges" || { bad "H1l rc=$RC"; echo "$OUT"; }
+lane_edit 9-12-ik 'd["phase"] = "done"'
+
+echo "== H2: integrate failures hold the lane"
+ready_lane 9-13-dirty && ok "H2a lane 9-13-dirty ready" || bad "H2a"
+echo 'coverage' > "$TMP/wt/9-13-dirty/coverage.out"
+OUT="$($SH integrate 9-13-dirty)"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -qx 'HOLD_KIND=lane-dirty' && echo "$OUT" | grep -q 'DIRTY=?? coverage.out' \
+    && ok "H2b untracked coverage file → held lane-dirty" || { bad "H2b rc=$RC"; echo "$OUT"; }
+TICK="$($SH tick)"
+! echo "$TICK" | jget 'd["integrate"]' | grep -q 9-13-dirty && [ "$(echo "$TICK" | jget 'd["next_action"]')" != "integrate" ] \
+    && echo "$TICK" | jget '[a["takeover"] for a in d["attention"] if a["key"]=="9-13-dirty"][0]' | grep -q 'git status' \
+    && ok "H2c tick routes it to attention, not back to integrate" || { bad "H2c"; echo "$TICK"; }
+rm -f "$TMP/wt/9-13-dirty/coverage.out"
+OUT="$($SH integrate 9-13-dirty)"; RC=$?
+[ $RC -eq 0 ] && ok "H2d integrate accepts it again once cleaned" || { bad "H2d rc=$RC"; echo "$OUT"; }
+lane_edit 9-13-dirty 'd["phase"] = "done"'
+ready_lane 9-14-gone && ok "H2e lane 9-14-gone ready" || bad "H2e"
+git worktree remove --force "$TMP/wt/9-14-gone" && git branch -qD story/9-14-gone
+OUT="$($SH integrate 9-14-gone)"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -qx 'HOLD_KIND=branch-missing' && ! echo "$($SH tick)" | jget 'd["integrate"]' | grep -q 9-14-gone \
+    && ok "H2f missing lane branch → held, not an endless loop" || { bad "H2f rc=$RC"; echo "$OUT"; }
+$SH abandon 9-14-gone --yes >/dev/null
+git branch story/9-15-left
+OUT="$($SH prepare 9-15-left)"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -qx 'HOLD_KIND=foreign' && ! echo "$($SH tick)" | jget 'd["launch"]' | grep -q 9-15-left \
+    && ok "H2g leftover branch → held foreign (no prepare loop)" || { bad "H2g rc=$RC"; echo "$OUT"; }
+$SH abandon 9-15-left --yes >/dev/null
+git rev-parse --verify --quiet story/9-15-left >/dev/null && ok "H2h abandon leaves a foreign branch alone" || bad "H2h"
+git branch -qD story/9-15-left
+
+echo "== L1: quota hold stops queued lanes too"
+echo blocked > .fake-mode-9-16-q
+$SH prepare 9-16-q >/dev/null && $SH launch 9-16-q >/dev/null
+result_edit 9-16-q 'd["status"] = "quota"'
+$SH prepare 9-17-q2 >/dev/null
+TICK="$($SH tick)"
+[ "$(echo "$TICK" | jget 'd["quota_hold"]')" = "True" ] && [ "$(echo "$TICK" | jget 'd["queued"]')" = "[]" ] \
+    && [ "$(echo "$TICK" | jget 'd["next_action"]')" != "launch" ] \
+    && ok "L1 quota_hold: queued lane is not launched" || { bad "L1"; echo "$TICK"; }
+$SH abandon 9-16-q --yes >/dev/null; $SH abandon 9-17-q2 --yes >/dev/null
+
+echo "== L2: liveness checks launcher and claude child, with identity"
+$SH prepare 9-18-orph >/dev/null
+lane_edit 9-18-orph 'd["phase"] = "launched"; d["attempts"] = 1'
+DEAD="$(sh -c 'echo $$')"
+sleep 300 & CH=$!
+write_proc() {  # write_proc <child_pid> <child_start>
+python3 - "$LANES/9-18-orph.proc.json" "$DEAD" "$1" "$2" <<'PY'
+import json, sys
+p, dead, ch, cs = sys.argv[1:5]
+json.dump({"key": "9-18-orph", "attempt": 1, "pid": int(dead), "pid_start": "gone", "child_pid": int(ch),
+           "child_start": cs, "exit_code": None, "session_id": None}, open(p, "w"))
+PY
+}
+write_proc "$CH" "$(pstart "$CH")"
+TICK="$($SH tick)"
+[ "$(stage_of 9-18-orph)" = "working" ] && echo "$TICK" | jget 'd["orphaned"]' | grep -q 9-18-orph \
+    && ok "L2a launcher dead, claude child alive → working (orphaned), not crashed" || { bad "L2a $(stage_of 9-18-orph)"; echo "$TICK"; }
+$SH watch 9-18-orph --interval 0.2 > "$TMP/watch.out" &
+WP=$!
+wait_for 20 test -f "$LANES/9-18-orph.watch.json"
+[ "$(echo "$($SH tick)" | jget 'd["orphaned"]')" = "[]" ] && ok "L2b a live watcher takes it off the orphaned list" || bad "L2b"
+kill "$CH"; wait "$CH" 2>/dev/null
+wait_for 20 grep -q '^STAGE=' "$TMP/watch.out"; wait "$WP"
+grep -qx 'STAGE=crashed' "$TMP/watch.out" && ok "L2c watch returns when the child exits; no report → crashed" || { bad "L2c"; cat "$TMP/watch.out"; }
+sleep 300 & CH=$!
+write_proc "$CH" "linux:1"
+[ "$(stage_of 9-18-orph)" = "crashed" ] && ok "L2d live pid with a different start time is not our worker" || bad "L2d $(stage_of 9-18-orph)"
+kill "$CH"; wait "$CH" 2>/dev/null
+$SH report 9-18-orph --status ready --summary "reported, then the launcher died" >/dev/null
+[ "$(stage_of 9-18-orph)" = "ready" ] && ok "L2e worker reported before dying → its report stands" || bad "L2e $(stage_of 9-18-orph)"
+$SH abandon 9-18-orph --yes >/dev/null
+
+OUT="$($SH end-run)"
+echo "$OUT" | grep -q '^STATUS=ok' && [ ! -f "$(git rev-parse --git-common-dir)/super-harness/dispatcher.lock" ] \
+    && ok "E1 end-run releases the lock" || { bad "E1"; echo "$OUT"; }
 
 echo
 echo "superh_test: PASS=$PASS FAIL=$FAIL"

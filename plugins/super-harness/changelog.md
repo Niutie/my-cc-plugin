@@ -4,6 +4,82 @@
 
 ---
 
+## v0.3.1 — 2026-11-05 — 上线前的一轮修复；依赖写法和挂起状态（#14、#15）
+
+用到真实项目之前做了一次全面检查，分接入、单路流水线、提交与 hook、并行调度四块，下面的问题都在临时仓库里复现过，修完都补了回归测试。另外处理了初始化项目时提的 issue #14、#15。
+
+### 接入（init / update）
+
+- init 第 5 步跑 `simulate_clone_test.sh`，这个脚本装 hook 时没进入自己建的临时仓库，在任何用户项目里都以退出码 7 失败，init 随即回滚。init 不再跑它（它只适用于本仓库的部署树），后面的小节顺延为 §5 到 §7。脚本本身的目录问题也修了。
+- init §4.5 遇到任何 `WARN [harness_config]` 就回滚，而 `fullstack_review_steps: []`、`project_context: ''` 这类合法的空值也会产生 WARN。现在 `harness_config.py` 把单行 `[]`、`''`、`""` 当作「已设置、为空」，只有缺键才警告；新增 `harness_config.py check`，退出码非 0 才回滚。
+- `path_classifiers`、`verification_commands` 留空时，原来会换成另一个项目写死的 `console-api` 规则和 `go vet` 命令。现在默认分别是空列表和一句中性提示。
+- 定下 git 跟踪规则：部署进来的资产不进 git，`harness-project-config.yaml` 和 `parallel.yaml` 进 git。新增 `ensure_gitignore.sh`，init（§A.3.e）和 update 会往 `.gitignore` 补上缺的规则行，已有的不重复写。`superh.py doctor` 的提示和这套规则一致，配置还没提交时输出 `COMMIT=`。
+- update 的备份改放 `.claude/harness/.backup/<时间戳>/`，不再在文件旁边留 `*.bak.*`。开 lane 时不复制这个目录。
+- init 和 update 必须在仓库根目录执行，在子目录里直接停下。以前资产装在当前目录、hook 装在仓库根，两边对不上。
+- `run_sprint_init_check_prereq.sh` 先读 `_bmad/bmm/config.yaml` 里的产物目录（支持 `{project-root}`、`{output_folder}`），再读 yaml 的 `artifacts_root`，最后才用默认值。
+- 文档和提示里的 BMad 命令名按 6.12.4 的实际安装改正：`/bmad-prd`、`/bmad-architecture`、`/bmad-create-epics-and-stories`、`/bmad-sprint-planning`。
+
+### 单路流水线（pipeline.md / run-inline）
+
+- codex 审查返回 `No material findings.` 时，修复 agent 什么都不写，`harness-commit.py 4` 报「没有改动」，续跑又派一次修复 agent，再停一次。现在零 finding 时由主 agent 在 spec 里写一行 `- [none]` 处理记录，stage 4 照常提交，不触发 B3。`harness-state.py` 新增 `codex_findings`、`codex_no_findings` 等字段供验收使用。
+- B2.2 改由主 agent 直接跑新脚本 `run_codex_review.sh`（Bash 超时 600000 ms），不再派子 agent。只有退出码 0、有 `Verdict:` 行、并且有 finding 或 `No material findings.` 才算成功，报告由脚本拼装。超过约 570 秒记为 `timeout`，写 skip marker，留给 `/super-harness:codex-catchup`。`harness-prompt-suffix.py 3` 保留但不再使用。
+- 跳过 codex 时，未跟踪的 `<KEY>.codex-review.md` 会留在工作区，让 B4 停下。现在脚本失败时不写报告，B2.1 也明确允许删掉这一个未跟踪文件。
+- 配额判定不再在子 agent 正文里搜 `quota`、`rate limit`、`unauthorized` 这类词，做限流、鉴权、密码重置的 story 不会再被误判。Claude 运行时额度耗尽要同时满足两条：结构化校验失败，且子 agent 返回的第一行是运行时额度报错。codex 的额度和登录问题看 `run_codex_review.sh` 输出的 `CODEX_STATUS:`。worker.md、init、update、codex-catchup、report-issue 都改成这套判定。
+- `all` 模式从脏工作区续跑时，先把在跑的 story 跑完再进主循环；B0 先查 start tag 再查工作区是否干净。
+- §0.C 跑完 retro 后直接退出，不再重复跑一遍。
+- 新增 `sprint-status.py open-epics`。`all` 模式结束前检查每个 epic：有 story 卡在中间状态就按 single-epic 的措辞停下，不再打印「完成」；story 全部完成但 retro 没做的 epic 列在最终报告里。
+- `run_retro_self_audit.sh` 原来写死了另一个项目的 26 项检查。现在检查项读项目侧的 `.claude/harness/retro-self-audit.tsv`（样例在 `templates/retro-self-audit.tsv.example`），没有这个文件就输出 `RETRO_SELF_AUDIT: no-config`，retro agent 不贴它。
+- ⑥.5：`process_retro_residue.sh` 把渲染好的 prompt 写到临时文件，只输出 `PROMPT_FILE=` 等几行；子 agent 自己读 prompt、自己写 chore spec，只回一份 MANIFEST。主 agent 不再转抄 20 KB 以上的内容。
+- 其他：`blocked-dirty` 按来源分开处理，B3 残留直接停下；`--continue` 遇到多条在跑的 story 一律询问；`--story` 指定的 story 已经 done 时报告后退出；codex-catchup 的停止条件写清楚；report-issue 和 pipeline.md 里几处过时引用改正。
+
+### 提交与 hook
+
+- pre-commit hook 里的 `命令 | grep -q` 在 pipefail 下，输出超过 64 KB 时会因 SIGPIPE 返回 141，检查被跳过。实测 3000 个文件的提交能绕过 gate ① 和 gate ②。现在先存进变量再用 here-string 交给 grep。
+- gate ① 把「sprint-status 里还没有 `retro_action_items:` 块」当成有未兑现项，`retro_gate: block` 时第一次 retro 之前所有新 spec 都提交不了。现在块不存在直接放行；检查脚本的 250、251 和其他意外退出码各有单独的提示，block 模式下拒绝，warn 模式只警告。
+- hook 里的产物路径不再写死 `_bmad-output/...`，改为通过 `read_harness_config.sh` 从 `artifacts_root` 推出。
+- 凭据黑名单：`.env.example`、`.env.sample`、`.env.template`、`.env.dist` 放行；`secrets/` 目录下的源码、文档、样式文件放行，其他文件照样拦。新增拦截 `id_rsa`、`id_dsa`、`id_ecdsa`、`id_ed25519`、`*.pfx`、`*.p12`、`*.jks`、`*.keystore`、`*.tfstate`、`*.tfstate.backup`。`.npmrc`、`.pypirc` 常有只含仓库地址的正常版本，不按文件名拦。
+- `git mv` 改名时只检查新路径，把 `_bmad/` 下的文件或别的 story 的 spec 改个名就能提交。现在 `git status` 带 `--no-renames`，新旧路径都检查。
+- 子模块里有未跟踪文件时，`harness-commit.py` 会在部分文件已暂存之后停下。现在 `git status` 带 `--ignore-submodules=untracked`。
+- `import_spec_deferred` 改为写临时文件再 `os.replace`。
+
+### 并行调度（/super-harness:run）
+
+- integrate 和 prepare 原来在前台执行，`verify_command` 或 `prepare_command` 跑得久就会被 Bash 工具的超时杀掉，lane 停在 `integrating` 或 `preparing`，下一轮 tick 再送回去，无限循环。现在 run.md 让它们在后台执行，命令末尾输出 `SUPERH_EXIT=`；lane 上记录进行中标记，被杀后下次执行先结束残留的进程组，被打断超过 2 次就记为 held（`hold_kind: interrupted` 或 `prepare`）。有 integrate 在跑时 tick 不再派别的 integrate、post-merge 或 retro。
+- integrate 因 lane 自身原因失败（lane worktree 不干净、rebase 无法继续、分支或 worktree 不见了等）时以前直接退出，不记 held，tick 会一直把它送回 integrate。现在统一记为 held 并输出 `HOLD_KIND=`；sprint 分支在途中被移动这类可重试的失败输出 `RETRYABLE=yes`，连续 3 次才记为 held。build-verify 不通过的 lane 修好后也可以直接重跑 integrate。看板的接手提示按 `hold_kind` 给出。
+- `parallel.yaml` 的引号值后面跟注释时，注释会被当成值的一部分，`verify_command: 'pnpm test'  # 全量` 会变成执行不了的命令，`worktree_root: ''  # 默认` 会让 worktree 建进主仓库。现在按引号正确解析，支持 `''` 转义和反斜杠转义。
+- `prepare_command`、`verify_command` 超时以前只杀掉 `sh`，测试或安装进程还在跑。现在命令在独立进程组里运行，超时先 SIGTERM 整组，3 秒后 SIGKILL，stderr 也保留下来。
+- 新增调度锁 `dispatcher.lock`：`start-run` 取锁，另一个仍然活着的会话持锁时，会改状态的子命令退出码 4、输出 `STATUS=locked`。持锁进程不在了就自动收回；`start-run --take-over` 接手，`end-run` 释放。进程还活着的 prepare 不会被当成中断现场清掉。
+- `quota_hold` 时，之前 prepare 好的 lane 不再被 launch。
+- worker 存活判断同时看 launch 进程和 claude 子进程，并核对进程启动时间，防止 pid 被复用后误判为在跑。launch 进程退出、claude 还在跑时不再判成 crashed（以前会自动 retry，在同一个 worktree 里起第二个 worker）；tick 把它列进 `orphaned`，调度者用新命令 `superh.py watch <KEY>` 等它结束。
+- 分支或目录已存在但不是 superh 建的，lane 记为 held（`foreign`），abandon 不会删它们。
+
+### 依赖写法和挂起状态（issue #14、#15）
+
+- 依赖新增一个来源：sprint-status.yaml 顶层的 `story_dependencies`，写法和 `deps_overrides` 一样。优先级是 `deps_overrides` → `story_dependencies` → 多行块里的 `depends_on`。BMad 6.12.4 自己的 `sprint_plan.py` 读不了多行块，retrospective 的 `detect-epic` 会把块里已经 done 的 story 算成未完成，所以 6.12 的项目保持单行写法，依赖写在顶层；`sprint_plan.py generate` 刷新时会保留这个键。文档里「多行块是 BMad 默认格式」的说法已改正。
+- 新增 `sprint-status.py flatten-deps [--check]`：把多行块改写成单行，`depends_on` 挪到 `story_dependencies`，已有条目不覆盖；块里有其他字段时不动文件，退出码 4。`run` 和 `run-inline` 启动时检查，工作区干净就自动改写，用新的 `harness-commit.py deps-migrate -` 提交；init 只提示。
+- run-inline 的 `sprint-status.py next` / `next-in-epic` 按同一套依赖挑 story：按文件顺序取第一条依赖已满足的 backlog，没声明依赖的照旧。全部在等时退出码 1，stderr 打 `waiting=`，run-inline 据此 halt。
+- 依赖里 `ext-` 开头的项是外部条件，永远不会自动满足，条件满足后由人删掉。tick 输出 `external`，board 单独列出，不再显示成「depends_on 无法解析」。
+- `harness-project-config.yaml` 新增 `parked_statuses`。这些状态的 story 不派发，不算 epic 屏障里的未完成，不挡 retro；`epic-all-done` 退出码 0 并在 stderr 打 `parked=`，但一条 done 都没有的 epic 返回 1，不触发 retro。retro 时 `harness-commit.py` 输出 `EPIC_PARKED=`，verdict 门把它和 `EPIC_WONT_DO=` 分开对待，不 halt；有挂起 story 的 epic 在 stage 6 只把 retrospective 标 done，epic 保持 in-progress。`open-epics` 第三列多了 `parked`。只剩挂起 story 时 tick 给出 `finished`。issue 里建议放在 `parallel.yaml`，这里改放项目配置，因为单路模式的 retro 判定也要用。
+- `parallel.yaml` 新增 `epic_barrier`（默认 true）。设成 false 时只按依赖调度，允许跨 epic 并行，retro 仍按 epic 跑，`retro_barrier` 不起作用。
+- `parallel.yaml` 的 `worker_model` 补了注释：留空跟随 `~/.claude/settings.json` 的 model。
+- 新增 `parked_deps_test.sh`（33 项）。另外用一个实际项目的 sprint-status（200 多条 story、24 条挂起、2 个外部条件、中文 key）核对过调度结果。
+
+### harness-zh 0.2.2
+
+在已经部署了 super-harness 的项目里，harness-zh 的 init、update 和 `deploy_assets.sh` 直接拒绝执行（退出码 3）。以前误敲 `/harness-zh:update` 会把 `superh.py`、`pipeline.md` 等文件当旧资产删掉。
+
+### 升级注意
+
+- 升级后跑一次 `/super-harness:update`，它会补 `.gitignore` 规则。之后把 `.gitignore` 和两份配置提交。≤ 0.3.0 留在文件旁边的 `*.bak.*` 可以删掉。
+- 0.2.x 项目里如果还有测试阶段中断时留下的未跟踪文件（`<产物目录>/test_artifacts/` 下），stage 4 会报 `UNEXPECTED_ARTIFACT`，build-verify 会报 `DIRTY_WORKTREE`，删掉或 ignore 掉即可。
+- 并行模式的进程启动时间在 macOS 上用 `ps -o lstart=` 读取，这条路径还没在 macOS 上实测。
+
+### 测试
+
+新增 `pre_commit_gate_test.sh`、`harness_commit_rename_submodule_test.sh`、`run_codex_review_test.sh`、`gitignore_policy_test.sh`；`superh_test.sh` 从 89 项增加到 147 项，`harness_commit_blacklist_test.sh`、`harness_config_test.sh`、`build_pipeline_test.sh`、`deploy_assets_purge_test.sh` 等补了对应用例。
+
+---
+
 ## v0.3.0 — 2026-11-03 — 去掉 ⑤.5 测试阶段和 /super-harness:run-test；并行合流加验证门
 
 ### 为什么删

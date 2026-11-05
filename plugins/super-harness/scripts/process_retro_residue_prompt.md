@@ -1,18 +1,18 @@
 # Fresh Agent Prompt — Retro Residue Processor (Chore C10)
 
-> 此 prompt 由 `.claude/harness/scripts/process_retro_residue.sh` 注入到 fresh general-purpose agent 上下文中。
-> 主 agent 在 spawn fresh agent 时把本文件全文 + 当前 epic 的 retro action items snapshot 一起喂给 fresh agent。
-> Fresh agent 输出将由主 agent 解析 `=== FILE: <name>.md ===` 块并逐个 Write；任何越界改动 → halt。
+> 此 prompt 由 `.claude/harness/scripts/process_retro_residue.sh` 渲染进一个临时文件（`PROMPT_FILE`）。
+> 主 agent 只把这个文件路径交给你：你用 Read 读完它，这一个文件就是你需要的全部输入（本模板 + 当前 epic 的 retro markdown 全文 + retro action items snapshot + 待 process 列表 + 黑名单）。
+> 你自己用 Write 把每个 chore spec 写进文件末尾「当前 batch 元信息」给出的 ARTIFACT_DIR，回复里只给 MANIFEST 和一段短总结；主 agent 按 MANIFEST 核对文件，任何越界改动 → halt。
 
 ## 你的任务
 
 你正在为 ${project_display_name} 项目把 retro action items 转为可执行的 chore-retro-* 前置 spec。
 
-`_bmad-output/implementation-artifacts/sprint-status.yaml` 的 `retro_action_items` 块累计 26+ 项跨 3 个 epic（epic-1 retro 8 项 A1-A8、epic-2 retro 9 项 B1-B9、epic-3 retro 9+ 项 C1-C12）。其中相当比例 status = pending / partial / in-progress 但**没有任何机制把这些项转成可执行 spec → 上路径 B 手工实施流水线消化**。结果：retro→action gap 在三轮 retro 实证已是结构性 bug。
+`sprint-status.yaml` 的 `retro_action_items` 块记录了每轮 retro 的 action items。其中 status = pending / partial / in-progress 的项，如果没有对应的可执行 spec，就不会被任何流水线消化，retro 提出的改进会一直停在纸面上。
 
-你的工作：对**当前 EPIC**（你会被告知是 EPIC=1 / 2 / 3 之一）下的 retro action items，仅对 **status ∈ {pending, in-progress, partial} 且 chore_spec 字段缺失** 的项，逐项按 spec-retro-c1 的 frozen-after-approval 范式生成 `chore-retro-c${N}-<code>-<slug>.md` 单个 chore spec。
+你的工作：对**当前 EPIC**（编号见文件末尾「当前 batch 元信息」）下的 retro action items，仅对 **status ∈ {pending, in-progress, partial} 且 chore_spec 字段缺失** 的项，逐项按 spec-retro-c1 的 frozen-after-approval 范式生成 `chore-retro-c${N}-<code>-<slug>.md` 单个 chore spec。
 
-## 输入清单（主 agent 会喂给你）
+## 输入清单（都在 PROMPT_FILE 里，不需要再读别的文件）
 
 1. **本 prompt 模板全文**（含范式 spec-retro-c1 全文 + 输出格式硬约定 + 边界声明）
 2. **当前 epic 的 retro markdown 文件全文**（`epic-${N}-retro-*.md`）— 含每个 action item 的详细 problem / approach / success criteria / rationale 描述，是 fresh agent 提炼 chore intent 的核心证据
@@ -38,51 +38,51 @@
 
 边界判定：如果 chore 主体交付物是产品代码 / 产品架构文档 / 产品测试，但**附带**一些 harness 工具（如 review template），主体决定 category；harness 占比 ≥ 50% 归 harness。
 
-## 输出格式（硬约定）
+## 输出方式（硬约定）
 
-输出**多个 markdown 文件 block** + **一个 MANIFEST block** + **一段总结**。
+你有两类产出：**磁盘上的 chore spec 文件**（用 Write 写）和**回复文本**（只含 MANIFEST + 一段总结）。
 
-每个 markdown 文件 block 严格以下面 marker 起止：
+### 1. 用 Write 直接写 chore spec
 
-```
-=== FILE: chore-retro-c${EPIC}-<code>-<slug>.md ===
-{完整 markdown 文件内容，含 frontmatter + 5 大段}
-=== END FILE ===
-```
+每个待 process 项写一个文件，路径 = `<ARTIFACT_DIR>/chore-retro-c${EPIC}-<code>-<slug>.md`，`<ARTIFACT_DIR>` 取 PROMPT_FILE 末尾「当前 batch 元信息」给出的绝对路径。文件内容是完整 markdown（frontmatter + 5 大段），不要包 `=== FILE ===` 之类的 marker。
 
 文件名规则：
 - `${EPIC}` = 当前处理的 epic 编号（1/2/3/4...）
 - `<code>` = 原始 retro 编号（A1 / A4 / B5 / B7 / B8 / B9 / C2-C9 / D2 等，**保持大小写**；alphanumeric-dash code 如 `C-bootstrap` 也保留）
 - `<slug>` = 简短英文 kebab 描述，由你从 retro 文字提炼，长度 ≤ 40 字符；不含数字 / 标点 / 中文
 
-**所有 FILE block 之后**输出一个 MANIFEST block，列每条 chore 的 code → category 映射，主 agent 据此写 sprint-status.yaml 的 `category:` 字段：
+**不覆盖已有文件**：Write 之前先确认目标路径不存在（例如 `ls <path>` 或 Read 报文件不存在）。已存在 → 不写这个文件，不换个名字绕开，在 MANIFEST 里记一行 `<code>: COLLISION <filename>`，然后停止处理后续项并回复。
+
+### 2. 回复文本：只有 MANIFEST + 总结
+
+全部写完后，回复只包含一个 MANIFEST block 和一段总结，不要在回复里贴 spec 正文。MANIFEST 列每条 chore 的 code → category 和文件名，主 agent 据此写 sprint-status.yaml 的 `chore_spec:` / `category:` 字段：
 
 ```
 === MANIFEST ===
-A1: dev
-A4: dev
-B5: harness
-C7: harness
+A1: dev chore-retro-c1-A1-end-to-end-smoke.md
+A4: dev chore-retro-c1-A4-admin-init-tests.md
+B5: harness chore-retro-c1-B5-spec-length-check.md
 === END MANIFEST ===
 ```
 
-MANIFEST 行格式：`<code>: <dev|harness>`（一行一项；只列你**本次生成 spec** 的 code；已 done / deferred / 黑名单的不列）。
+MANIFEST 行格式：`<code>: <dev|harness> <filename>`（一行一项；filename 是 basename，不带目录；只列你**本次写出文件** 的 code，加上至多一行 `COLLISION`；已 done / deferred / 黑名单的不列）。
 
-**输出结尾**另起一段给主 agent 的简短总结（≤ 200 字）：处理项数 / 成功生成数 / dev:harness 分类比例 / 任何异常情况（如某项 retro 描述模糊到无法立 chore，或 category 边界判定有不确定性）。
+MANIFEST 之后另起一段给主 agent 的简短总结（≤ 200 字）：处理项数 / 成功生成数 / dev:harness 分类比例 / 任何异常情况（如某项 retro 描述模糊到无法立 chore，或 category 边界判定有不确定性）。
 
-## 严格禁止（违反 → 主 agent 丢弃你的输出）
+## 严格禁止（违反 → 主 agent halt）
 
 1. ❌ **不改 retro markdown 本身**（retro 是 frozen 历史文档；只读不写）
-2. ❌ **不改 sprint-status.yaml**（chore_spec 字段写入由主 agent 接管）
+2. ❌ **不改 sprint-status.yaml**（chore_spec / category 字段写入由主 agent 接管）
 3. ❌ **不改任何 _bmad-output/implementation-artifacts/[1-6]-*.md**（已 done epic 的 story spec 不动）
 4. ❌ **不为已 done 项生成 chore spec**（done 是终态）
 5. ❌ **不为 deferred 项生成 chore spec**（trigger 未到期）
 6. ❌ **不为已有 chore_spec 字段的项再次生成**（黑名单兜底）
 7. ❌ **生成的 chore spec 内不能含"自动生成 / fresh agent / auto-generated"字样** — spec 一旦生成视为 human-owned intent
 8. ❌ **不脑补 retro 之外的内容**（chore spec 的 Tasks 必须基于 retro 文字描述提炼，不能凭空增项）
-9. ❌ **不输出任何解释 / 工作记录 / markdown 分析段** — 仅输出 FILE block 序列 + 末尾 ≤ 200 字总结
-10. ❌ **不跳过自检清单**（输出前必须按末尾自检表自查）
-11. ❌ **不调用 TaskCreate / TaskUpdate / TaskList / TaskGet / TaskStop 等任务管理工具（issue #9）** — sprint 任务清单由主 orchestrator 独占维护；你的进度只通过 FILE block / MANIFEST block / 末尾总结汇报
+9. ❌ **回复里不贴 spec 正文、不写解释 / 工作记录 / markdown 分析段** — 回复仅 MANIFEST block + 末尾 ≤ 200 字总结
+10. ❌ **不跳过自检清单**（回复前必须按末尾自检表自查）
+11. ❌ **不调用 TaskCreate / TaskUpdate / TaskList / TaskGet / TaskStop 等任务管理工具（issue #9）** — sprint 任务清单由主 orchestrator 独占维护；你的进度只通过 MANIFEST block / 末尾总结汇报
+12. ❌ **除 `<ARTIFACT_DIR>/chore-retro-c${EPIC}-*.md` 新文件外不写任何文件，不覆盖已有文件，不做任何 git 操作**（add / commit / stash / checkout / rm 都不要）
 
 ## 每个 chore spec 必含 5 大段（与范式 spec-retro-c1 完全对齐）
 
@@ -293,22 +293,22 @@ retro_action_items:
 
 但 yaml 实际格式由主 agent 决定（你只生成 spec 文件本身）。
 
-## 自检清单（输出前自查）
+## 自检清单（回复前自查）
 
-输出前必须逐条自查：
+回复前必须逐条自查：
 
 - [ ] 我只为 status ∈ {pending, in-progress, partial} 且 chore_spec 字段缺失的项生成 spec？
 - [ ] 我跳过了所有 status=done / status=deferred 项？
 - [ ] 我跳过了已在黑名单（已有 chore_spec 字段）的项？
-- [ ] 每个 spec 都包裹在 `=== FILE: ... ===` / `=== END FILE ===` 之间？
+- [ ] 每个 spec 都用 Write 写到了 `<ARTIFACT_DIR>/` 下，写之前确认过目标文件不存在（没有覆盖任何已有文件）？
 - [ ] 每个 spec 文件名严格符合 `chore-retro-c${EPIC}-<code>-<slug>.md`？
 - [ ] `<slug>` ≤ 40 字符 + 全英文 kebab？
 - [ ] 每个 spec 都含 frontmatter（title / type / created / status / baseline_commit / context）+ 5 段（Intent / Boundaries & Constraints / I/O Matrix / Code Map / Tasks & Acceptance / Design Notes / Verification）？
 - [ ] **Tasks 要求回写 `_bmad-output/planning-artifacts/*.md`（如 forward-only remediation 回写 epics.md）的 spec，frontmatter 已声明 `planning_artifacts:` 完整 repo-relative 路径 list（issue #9）？不需要回写的 spec 没有写这个字段？**
 - [ ] frozen-after-approval 段位置正确（包裹 Intent / Boundaries / I/O Matrix 三段）？
 - [ ] 我没有写"自动生成 / fresh agent / auto-generated"字样？
-- [ ] 我没有改 retro markdown / sprint-status.yaml / 任何 [1-6]-*.md story spec？
+- [ ] 我没有改 retro markdown / sprint-status.yaml / 任何 [1-6]-*.md story spec，也没做任何 git 操作？
 - [ ] **每条生成的 chore 都按 rubric 判了 category ∈ {dev, harness}，模糊归 harness？**
-- [ ] **末尾输出了 MANIFEST block（=== MANIFEST === / === END MANIFEST ===），每行 `<code>: <dev|harness>`？**
-- [ ] **MANIFEST 仅列本次生成 spec 的 code，与 FILE block 数量一致？**
-- [ ] 我末尾给主 agent 的总结 ≤ 200 字 + 不在任何 FILE block / MANIFEST block 内 + 含 dev:harness 分类比例？
+- [ ] **回复里有 MANIFEST block（=== MANIFEST === / === END MANIFEST ===），每行 `<code>: <dev|harness> <filename>`？**
+- [ ] **MANIFEST 仅列本次写出文件的 code（外加至多一行 COLLISION），行数与写出的文件数一致？**
+- [ ] 回复里没有 spec 正文；给主 agent 的总结 ≤ 200 字 + 在 MANIFEST block 之外 + 含 dev:harness 分类比例？

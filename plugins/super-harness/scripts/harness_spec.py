@@ -45,6 +45,76 @@ ACTIVE_STORY_STATUSES = ("backlog", "ready-for-dev", "in-progress", "review")
 DROPPED_STORY_STATUSES = ("wont-do", "cancelled", "canceled")
 TERMINAL_STORY_STATUSES = ("done",) + DROPPED_STORY_STATUSES
 
+# Dependency tokens with this prefix name a condition outside the sprint (a sign-off,
+# another team's contract). They never resolve to a story; the story waits until the
+# token is removed from its dependency list (issue #15).
+EXTERNAL_DEP_PREFIX = "ext-"
+
+
+def is_external_dep(token) -> bool:
+    return str(token).startswith(EXTERNAL_DEP_PREFIX)
+
+
+def _dep_tokens(raw: str) -> list[str]:
+    raw = raw.strip()
+    if raw.startswith("["):
+        inner = raw[1:raw.rfind("]")] if "]" in raw else raw[1:]
+        items = inner.split(",")
+    else:
+        items = [raw]
+    out = []
+    for x in items:
+        x = _strip_comment(x).strip().strip("'\"")
+        if x:
+            out.append(x)
+    return out
+
+
+def parse_story_dependencies(text: str) -> dict:
+    """Top-level `story_dependencies:` of sprint-status.yaml → {story_key: [tokens]}.
+
+    BMad 6.12.4's sprint_plan.py / retrospective sprint_status.py only understand the
+    single-line `key: status` layout under development_status, so dependencies live in
+    their own top-level map (sprint_plan.py generate keeps unknown top-level keys —
+    issue #14). Same value syntax as parallel.yaml deps_overrides:
+
+        story_dependencies:
+          1-2-b: [1-1]            # inline list; [] = explicitly independent
+          1-3-c:
+            - 1-1
+            - ext-contract-signoff
+    """
+    out: dict = {}
+    in_map = False
+    child = None
+    cur = None
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            if in_map:
+                break
+            in_map = re.match(r"^story_dependencies:\s*(#.*)?$", line) is not None
+            continue
+        if not in_map:
+            continue
+        ind = len(line) - len(line.lstrip())
+        st = line.strip()
+        if child is None:
+            child = ind
+        if ind == child:
+            m = re.match(r"^([^\s:#]+):\s*(.*)$", st)
+            if not m:
+                cur = None
+                continue
+            cur = m.group(1).strip("'\"")
+            val = _strip_comment(m.group(2))
+            out[cur] = _dep_tokens(val) if val else []
+            continue
+        if cur is not None and st.startswith("- "):
+            out[cur].extend(_dep_tokens(st[2:]))
+    return out
+
 
 def epic_of_key(key: str) -> str | None:
     """`3-2-digest-delivery` → `3`. None when the key has no numeric epic segment."""
@@ -509,8 +579,25 @@ def import_spec_deferred(key: str, spec_path: str, deferred_work_path: str, toda
     sep = "" if ledger.endswith("\n\n") else ("\n" if ledger.endswith("\n") else "\n\n")
     addition = sep + "---\n\n" + "\n".join(block)
     if not dry_run:
-        with open(deferred_work_path, "a", encoding="utf-8") as f:
-            f.write(addition)
+        # 0.3.1：temp 文件 + os.replace 整体替换，中途被杀不会留下半截追加。
+        # 原有内容按字节原样拷贝（与之前的 append 语义一致，不动 CRLF 等）。
+        import tempfile
+        target = os.path.realpath(deferred_work_path)  # 软链接时替换其指向的文件
+        with open(target, "rb") as f:
+            raw = f.read()
+        fd, tmp = tempfile.mkstemp(prefix=".deferred-work.", suffix=".tmp",
+                                   dir=os.path.dirname(target))
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(raw + addition.encode("utf-8"))
+            os.chmod(tmp, os.stat(target).st_mode & 0o7777)
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     return [fid for fid, _ in new]
 
 

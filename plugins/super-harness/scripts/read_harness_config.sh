@@ -159,7 +159,11 @@ read_harness_config_field() {
 # Auto-resolve key paths into env vars (relative artifacts_root → absolute)
 _rhc_artifacts_rel="$(read_harness_config_field artifacts_root '')"
 if [ -z "$_rhc_artifacts_rel" ]; then
-    echo "WARN [read_harness_config]: artifacts_root not set, using default '$_DEFAULT_HARNESS_ARTIFACTS_ROOT'" >&2
+    # 显式 `artifacts_root: ''`（模板默认值）是合法的"用默认"，不 WARN；
+    # 只有 yaml 缺失或根本没有这个 key 时才 WARN（与 harness_config.py 一致）。
+    if ! grep -qE '^artifacts_root:' "${HARNESS_CONFIG_PATH:-/nonexistent}" 2>/dev/null; then
+        echo "WARN [read_harness_config]: artifacts_root not set, using default '$_DEFAULT_HARNESS_ARTIFACTS_ROOT'" >&2
+    fi
     _rhc_artifacts_rel="$_DEFAULT_HARNESS_ARTIFACTS_ROOT"
 fi
 

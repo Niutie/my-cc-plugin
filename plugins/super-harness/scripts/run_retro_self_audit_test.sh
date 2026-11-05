@@ -8,10 +8,11 @@
 # plugins/super-harness/{scripts,prompt-suffixes} 与部署布局
 # .claude/harness/{scripts,prompt-suffixes} 相对结构一致，两边通跑），种子
 # sprint-status.yaml + deferred-work.md 后在 fixture 内实测：
-#   - 表头 / 行数 / A1 status enum / C9 自报 done（既有断言保留）
-#   - Phase A #95 新行为：check_A4 输出 unknown 行（aegis 死引用已删）
-#   - prev_epic=3 全程 stderr 干净（无 'No such file or directory' 噪音）
-#   - prev_epic=1 仅 A 系列 8 行
+#   - 无配置（新项目）：输出 RETRO_SELF_AUDIT: no-config + _CHECKS_:0，无表格行，
+#     不含任何原项目（Aegis）字样，exit 0，stderr 干净
+#   - 有配置：每种 kind 的 done / pending / unknown 判定、min_prev_epic 过滤、
+#     `a|b` 路径回退、格式错误行 WARN 跳过
+#   - templates/retro-self-audit.tsv.example 每行都能被解析（无 WARN）
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,8 +22,8 @@ if [ ! -f "$SCRIPT_DIR/run_retro_self_audit.sh" ]; then
     echo "ERROR: run_retro_self_audit.sh not found next to test" >&2
     exit 1
 fi
-if [ ! -f "$SUFFIX_DIR/bmad-build-implement-suffix.md" ]; then
-    echo "ERROR: prompt-suffixes/bmad-build-implement-suffix.md not found at $SUFFIX_DIR" >&2
+if [ ! -d "$SUFFIX_DIR" ]; then
+    echo "ERROR: prompt-suffixes/ not found at $SUFFIX_DIR" >&2
     exit 1
 fi
 
@@ -55,78 +56,71 @@ cat > "$FIXTURE/_bmad-output/implementation-artifacts/deferred-work.md" <<'YAML'
 YAML
 
 cd "$FIXTURE"
+AUDIT=".claude/harness/scripts/run_retro_self_audit.sh"
+fail() { echo "FAIL: $*" >&2; exit 1; }
 
-STDERR_E3="$WORKDIR/stderr-e3.log"
-OUT="$(bash .claude/harness/scripts/run_retro_self_audit.sh 3 2>"$STDERR_E3")"
+# ---- 1. 无配置 ----
+ERR="$WORKDIR/err.log"
+OUT="$(bash "$AUDIT" 3 2>"$ERR")" || fail "无配置时退出码非 0"
+echo "$OUT" | head -1 | grep -qx 'RETRO_SELF_AUDIT: no-config' || fail "无配置首行应为 RETRO_SELF_AUDIT: no-config；实际：$(echo "$OUT" | head -1)"
+echo "$OUT" | tail -1 | grep -qx '_CHECKS_:0' || fail "无配置末行应为 _CHECKS_:0"
+echo "$OUT" | grep -q '^|' && fail "无配置不应输出表格行"
+echo "$OUT" | grep -qE 'sink_mode|NFR52|admin_init|console-web|pending' && fail "无配置输出含原项目检查项：$OUT"
+[ -s "$ERR" ] && fail "无配置 stderr 应为空：$(head -3 "$ERR")"
 
-# 检查表头
-if ! echo "$OUT" | head -1 | grep -qE '^\| id \| 描述 \| status \| evidence \|$'; then
-    echo "FAIL: 表头格式不正确" >&2
-    echo "$OUT" | head -3 >&2
-    exit 1
-fi
+# ---- 2. 有配置 ----
+mkdir -p docs bin
+printf 'all good\n' > docs/report.md
+printf 'TBD here\nTBD again\n' > docs/todo.md
+printf '#!/bin/sh\n' > bin/tool.sh; chmod +x bin/tool.sh
+printf 'x\n' > bin/plain.sh
+CFG="$WORKDIR/audit.tsv"
+{
+    printf '# comment line\n\n'
+    printf '1\tX1\tfile ok\tfile\tdocs/report.md\n'
+    printf '1\tX2\tfile missing\tfile\tdocs/nope.md\n'
+    printf '1\tX3\texec ok\texec\tbin/tool.sh\n'
+    printf '1\tX4\texec not x\texec\tbin/plain.sh\n'
+    printf '1\tX5\tdir ok\tdir\tdocs\n'
+    printf '1\tX6\tgrep hit\tgrep\tdocs/report.md\tgood\n'
+    printf '1\tX7\tgrep miss\tgrep\tdocs/report.md\tbad\n'
+    printf '1\tX8\tgrep file missing\tgrep\tdocs/nope.md\tx\n'
+    printf '1\tX9\tnogrep clean\tnogrep\tdocs/report.md\tTBD\n'
+    printf '1\tX10\tnogrep dirty\tnogrep\tdocs/todo.md\tTBD\n'
+    printf '1\tX11\tcmd ok\tcmd\ttest -d docs\n'
+    printf '1\tX12\tcmd fail\tcmd\tfalse\n'
+    printf '1\tX13\tmanual\tmanual\twaiting for customer\n'
+    printf '1\tX14\talt path\tfile\tdocs/nope.md|docs/report.md\n'
+    printf '5\tX15\tfuture epic\tfile\tdocs/report.md\n'
+    printf 'oops\tbad line\n'
+    printf '1\tX16\tbad kind\twhatever\tx\n'
+} > "$CFG"
+OUT="$(RETRO_SELF_AUDIT_CONFIG="$CFG" bash "$AUDIT" 3 2>"$ERR")" || fail "有配置退出码非 0"
+echo "$OUT" | head -1 | grep -qE '^\| id \| 描述 \| status \| evidence \|$' || fail "表头格式不对：$(echo "$OUT" | head -1)"
+expect() {  # id status
+    local r; r="$(echo "$OUT" | grep "^| $1 |" || true)"
+    [ -n "$r" ] || fail "$1 行缺失"
+    echo "$r" | grep -q "| $2 |" || fail "$1 期望 $2；实际：$r"
+}
+expect X1 done; expect X2 pending; expect X3 done; expect X4 pending; expect X5 done
+expect X6 done; expect X7 pending; expect X8 unknown; expect X9 done; expect X10 pending
+expect X11 done; expect X12 pending; expect X13 unknown; expect X14 done
+echo "$OUT" | grep -q '^| X15 |' && fail "X15 min_prev_epic=5 > 3，不应出现"
+echo "$OUT" | grep -q '^| X16 |' && fail "X16 未知 kind 应跳过"
+echo "$OUT" | tail -1 | grep -qx '_CHECKS_:14' || fail "末行应为 _CHECKS_:14；实际：$(echo "$OUT" | tail -1)"
+[ "$(grep -c '^WARN:' "$ERR" || true)" -eq 2 ] || fail "应有 2 行 WARN（格式错误 + 未知 kind）；实际：$(cat "$ERR")"
 
-# 检查行数 ≥ 26（A1-A8 + B1-B9 + C1-C9）+ 2 表头
-total_rows="$(echo "$OUT" | grep -c '^|' || true)"
-if [ "$total_rows" -lt 28 ]; then
-    echo "FAIL: 表格行数 $total_rows < 28（期望 ≥ 28：表头 1 + 表头分隔 1 + 26 数据行）" >&2
-    exit 1
-fi
+# prev_epic=4 时 X15 仍不出现，=5 时出现
+OUT5="$(RETRO_SELF_AUDIT_CONFIG="$CFG" bash "$AUDIT" 5 2>/dev/null)"
+echo "$OUT5" | grep -q '^| X15 | future epic | done |' || fail "prev_epic=5 时 X15 应出现且 done"
 
-# 检查 A1 出现且 status 字段是 done/pending/partial/unknown 之一
-a1_row="$(echo "$OUT" | grep '^| A1 ' || true)"
-if [ -z "$a1_row" ]; then
-    echo "FAIL: A1 行缺失" >&2
-    exit 1
-fi
-if ! echo "$a1_row" | grep -qE '\| (done|pending|partial|unknown) \|'; then
-    echo "FAIL: A1 status 字段不在 4 类 enum 内" >&2
-    echo "  row: $a1_row" >&2
-    exit 1
-fi
+# ---- 3. 示例文件可解析 ----
+EXAMPLE="$SCRIPT_DIR/../templates/retro-self-audit.tsv.example"
+[ -f "$EXAMPLE" ] || fail "示例文件缺失：$EXAMPLE"
+OUTX="$(RETRO_SELF_AUDIT_CONFIG="$EXAMPLE" bash "$AUDIT" 3 2>"$ERR")" || fail "示例配置退出码非 0"
+[ -s "$ERR" ] && fail "示例配置不应有 WARN：$(head -3 "$ERR")"
+nx="$(grep -cvE '^(#|$)' "$EXAMPLE")"
+echo "$OUTX" | tail -1 | grep -qx "_CHECKS_:$nx" || fail "示例配置应输出 $nx 项；实际：$(echo "$OUTX" | tail -1)"
 
-# Phase A review #95：check_A4 不再 grep aegis 专属路径 — 输出 unknown 行
-# 并指引 clone 后按 PROJECT-SPECIFIC 声明重写
-a4_row="$(echo "$OUT" | grep '^| A4 ' || true)"
-if [ -z "$a4_row" ]; then
-    echo "FAIL: A4 行缺失" >&2
-    exit 1
-fi
-if ! echo "$a4_row" | grep -q '| unknown |'; then
-    echo "FAIL: A4 应输出 unknown（aegis 死引用已删，project-specific 待重写）；实际：$a4_row" >&2
-    exit 1
-fi
-if ! echo "$a4_row" | grep -q 'PROJECT-SPECIFIC'; then
-    echo "FAIL: A4 evidence 应指引 PROJECT-SPECIFIC 重写；实际：$a4_row" >&2
-    exit 1
-fi
-
-# Phase A review #95 连带：prev_epic=3 全程 stderr 必须干净（旧 check_A4 的
-# `wc -l < <aegis path>` not-found 报错刷屏已根除）
-if [ -s "$STDERR_E3" ]; then
-    echo "FAIL: prev_epic=3 stderr 应为空；实际：" >&2
-    head -5 "$STDERR_E3" >&2
-    exit 1
-fi
-
-# 检查 C9 行（脚本自身落地后应自报 done）
-c9_row="$(echo "$OUT" | grep '^| C9 ' || true)"
-if [ -z "$c9_row" ]; then
-    echo "FAIL: C9 行缺失" >&2
-    exit 1
-fi
-if ! echo "$c9_row" | grep -q '| done |'; then
-    echo "FAIL: C9 应自报 done（脚本已落地）；实际：$c9_row" >&2
-    exit 1
-fi
-
-# 跑 prev_epic=1 仅扫 A* 系列
-OUT_E1="$(bash .claude/harness/scripts/run_retro_self_audit.sh 1)"
-e1_rows="$(echo "$OUT_E1" | grep -cE '^\| [ABC][0-9]' || true)"
-if [ "$e1_rows" -ne 8 ]; then
-    echo "FAIL: prev_epic=1 期望 8 行（A1-A8）；实际 $e1_rows" >&2
-    exit 1
-fi
-
-echo "PASS: run_retro_self_audit_test.sh ($total_rows total rows for prev_epic=3, $e1_rows for prev_epic=1; A4=unknown; stderr clean)"
+echo "PASS: run_retro_self_audit_test.sh (no-config empty result; 14 configured checks across all kinds; example parses $nx rows)"
 exit 0

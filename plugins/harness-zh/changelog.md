@@ -11,6 +11,24 @@
 
 ---
 
+## v0.2.2 — 2026-11-05 — 在 super-harness 项目里拒绝执行
+
+### 触发
+
+harness-zh 已并入 super-harness，但还装着它的用户在 super-harness 项目里跑 `/harness-zh:update` 或 `/harness-zh:init` 时，两个 plugin 共用的 `.claude/harness/.deploy-manifest.txt` 让 purge 把 super-harness 的资产当成"已移除的旧文件"删掉（`superh.py`、`pipeline.md`、`prompts/worker.md`、`templates/parallel.yaml` 等），同时又写回不带命名空间的 `.claude/commands/init.md`、`run.md`。
+
+### 改动范围
+
+- `scripts/deploy_assets.sh`：项目里有 `.claude/harness/scripts/superh.py` 时，在写任何文件之前拒绝执行，exit 3，stderr 说明改用 `/super-harness:*` 并卸载 harness-zh。
+- `commands/init.md`、`commands/update.md`：开头加同样的检查，命中就停，不建任务、不探测 plugin 路径。
+- `scripts/deploy_assets_purge_test.sh`：新增 T7，确认 super-harness 项目被拒绝、文件和 manifest 原样不动。
+
+### 后续注意
+
+除这个保护外 harness-zh 不再改动。迁移办法见 README 顶部：装 super-harness，跑 `/super-harness:init`，再 `/plugin uninstall harness-zh`。
+
+---
+
 ## v0.2.1 — 2026-10-31 — `cancelled` 算 story 终态 (closes #13)
 
 ### 触发

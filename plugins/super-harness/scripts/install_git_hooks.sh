@@ -41,7 +41,7 @@ ERROR: git config core.hooksPath = '$custom_hooks_path'
 EOF
     # exit 3 = 设计上的良性拒装（用户自定义 hooksPath），调用方按 WARN 处理；
     # exit 1 留给真实安装失败（source 目录缺失 / cp/chmod 失败），调用方 halt/引导自查。
-    # 契约消费方：init.md §A.4.a / update.md §5+§7.3（review #58）。
+    # 契约消费方：init.md §A.4 / update.md §5+§7.3（review #58）。
     exit 3
 fi
 

@@ -9,9 +9,12 @@ worker 进程启动、合流（rebase + 账本冲突自动消解 + tag 搬迁 + 
 状态存放在 `$(git rev-parse --git-common-dir)/super-harness/`，不进 git，所有
 worktree 看到的是同一份。每个文件只有一个写入者：
 
-    lanes/<KEY>.json         调度者（主 agent 经本脚本）写：phase / onto / notes
-    lanes/<KEY>.proc.json    launch 进程写：pid / session_id / exit_code
+    lanes/<KEY>.json         调度者（主 agent 经本脚本）写：phase / onto / notes /
+                             op（正在运行的 prepare / integrate：pid + 启动时间 + 子进程组）
+    lanes/<KEY>.proc.json    launch 进程写：pid / child_pid（各带启动时间）/ session_id / exit_code
     lanes/<KEY>.result.json  worker 写（经 `superh.py report`）：status / summary
+    lanes/<KEY>.watch.json   watch 进程写：pid
+    dispatcher.lock          start-run 写：持有调度权的会话（pid + 启动时间）
 
 子命令（都在项目根目录或任一 worktree 内运行）：
 
@@ -20,9 +23,12 @@ worktree 看到的是同一份。每个文件只有一个写入者：
     plan [--json]           列出每条未完成 story 的就绪情况与等待原因
     tick                    调度者每轮循环读的结构化快照（JSON），含 next_action
     board [--json]          看板：先列需要人处理的 lane
+    start-run               取调度锁，固定本次运行的 sprint 分支
+    end-run                 释放调度锁
     prepare <KEY>           开 worktree + 分支，补齐未入库的基建文件，跑 prepare_command
     launch <KEY>            前台运行 worker（headless claude -p），退出时落盘；
                             调度者用 Bash run_in_background 调它
+    watch <KEY>             launch 进程没了但 claude 还在跑时，阻塞到 claude 退出（后台运行）
     report <KEY> --status S worker 回报结果（ready / blocked / failed / quota）
     integrate <KEY>         rebase 到 sprint 分支 → 账本冲突自动消解 → 搬 tag →
                             worktree 内 build-verify → verify_command（rebase 过才跑）→
@@ -33,7 +39,14 @@ worktree 看到的是同一份。每个文件只有一个写入者：
     cleanup <KEY>           done 之后删 worktree 与分支
     abandon <KEY> --yes     放弃本路：删 worktree / 分支 / 未 done 的 harness tag
 
-退出码：0 成功；1 halt / 参数错误；3 integrate 遇到需要处理的代码冲突。
+退出码：0 成功；1 halt / 参数错误；3 integrate 遇到需要处理的代码冲突；
+4 STATUS=busy（这一路的 prepare / integrate 还在运行）或 STATUS=locked（另一个
+会话持有调度锁）；128+N 被信号 N 中断。
+
+prepare / integrate 可能要跑很久（prepare_command、verify_command），调度者用
+Bash 的后台模式运行它们。被外部杀掉也不会死循环：运行中的标记留在 lane 上，
+下一次运行发现标记的进程已不在，就先结束它留下的子进程组，再续跑；连续被打断
+超过 MAX_INTERRUPTS 次就把这一路挂起（held）。
 """
 
 from __future__ import annotations
@@ -48,19 +61,41 @@ import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import shutil  # noqa: E402
+import signal  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
+from contextlib import contextmanager  # noqa: E402
 from pathlib import Path  # noqa: E402
+
+try:  # noqa: E402
+    import fcntl
+except ImportError:  # not on POSIX: the guard degrades to the O_EXCL-free check
+    fcntl = None
 
 TERMINAL_FALLBACK = ("done", "wont-do", "cancelled", "canceled")
 CARRY_TAGS = ("built", "followup-start", "followup")
 LEDGER_TAKE_OURS_RE = re.compile(r"^(sprint-status\.yaml|epic-\d+-context\.md)$")
 LEDGER_UNION = ("deferred-work.md",)
 PERSON_STAGES = ("conflict", "held", "blocked", "failed", "quota", "crashed")
+# An integrate / prepare that was killed from outside (the session's Bash call hit
+# its time limit, the session ended) is resumed this many times; one more kill
+# holds the lane instead of looping tick → integrate → kill forever.
+MAX_INTERRUPTS = 2
+# integrate failures that are not caused by the lane (the sprint branch moved under
+# it) are retried this many times in a row before the lane is held.
+MAX_TRANSIENT = 3
+EXIT_BUSY = 4   # STATUS=busy (this lane's prepare/integrate is already running) or STATUS=locked
+# hold_kind values integrate sets; a lane held with one of these is accepted by a
+# manual `integrate` re-run once the person has fixed the cause.
+INTEGRATE_HOLD_KINDS = ("verify", "build-verify", "lane-dirty", "rebase", "branch-missing",
+                        "worktree-missing", "interrupted", "ff", "retry-limit", "git-error", "error")
+LOCK_FILE = "dispatcher.lock"
 
 DEFAULT_CONFIG = {
     "max_slots": 2,
     "no_deps_policy": "serial",          # serial | epic-parallel
+    "epic_barrier": True,                # false = 只按依赖调度，允许跨 epic 并行
     "retro_barrier": True,
     "worktree_root": "",                 # 空 = <repo 上级目录>/<repo 名>.worktrees
     "branch_prefix": "story/",
@@ -135,6 +170,171 @@ def pid_alive(pid) -> bool:
     return True
 
 
+# ------------------------------------------------------------------ process identity
+#
+# A bare pid is not an identity: after a reboot or a long run the number can belong
+# to an unrelated process. Every pid super-harness records is paired with the
+# process start time, and "alive" means "alive AND started at the recorded time".
+
+def proc_start_time(pid):
+    """Opaque start-time token for pid, or None when it can't be determined."""
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            data = f.read().decode("utf-8", "replace")
+        # field 22 (starttime); fields after the ')' of comm start at field 3
+        return "linux:" + data[data.rindex(")") + 2:].split()[19]
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    s = " ".join(r.stdout.split())
+    return f"ps:{s}" if r.returncode == 0 and s else None
+
+
+def proc_cmdline(pid):
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        if raw:
+            return raw.replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        pass
+    try:
+        r = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def proc_matches(pid, start, hints=()) -> bool:
+    """pid is alive and is the process that was recorded. Start time decides when
+    both sides have one; otherwise (records from older versions, no ps) fall back
+    to the command line containing one of `hints`."""
+    if not pid_alive(pid):
+        return False
+    cur = proc_start_time(pid)
+    if start and cur:
+        return start == cur
+    if not hints:
+        return True
+    cmd = proc_cmdline(pid)
+    if cmd is None:
+        return True
+    return any(h and h in cmd for h in hints)
+
+
+def op_record(name: str) -> dict:
+    pid = os.getpid()
+    return {"name": name, "pid": pid, "pid_start": proc_start_time(pid), "started_at": now_iso()}
+
+
+def op_live(op) -> bool:
+    return bool(op) and proc_matches(op.get("pid"), op.get("pid_start"), ("superh",))
+
+
+class Interrupted(BaseException):
+    """SIGTERM / SIGHUP / SIGINT while a child process group is running."""
+
+    def __init__(self, signum):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def _raise_interrupted(signum, _frame):
+    raise Interrupted(signum)
+
+
+def kill_group(pgid, leader_start=None, grace: float = 3.0) -> bool:
+    """SIGTERM a process group, SIGKILL whatever is left after `grace` seconds.
+    A live leader with a different start time means the number was reused: skip.
+    (A pgid can't be handed out again while any member of the old group lives.)"""
+    if not isinstance(pgid, int) or pgid <= 1:
+        return False
+    if leader_start and pid_alive(pgid):
+        cur = proc_start_time(pgid)
+        if cur and cur != leader_start:
+            return False
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return False
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except (ProcessLookupError, PermissionError):
+            return True
+        time.sleep(0.1)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    return True
+
+
+def _terminate_group(p, grace: float = 3.0):
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    out = err = None
+    try:
+        out, err = p.communicate(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    if out is None:
+        try:
+            out, err = p.communicate(timeout=grace)
+        except subprocess.TimeoutExpired:
+            # something left the group and still holds the pipes: give up on output
+            for s in (p.stdout, p.stderr):
+                try:
+                    s.close()
+                except OSError:
+                    pass
+            p.wait()
+    return out or "", err or ""
+
+
+def run_group(argv, cwd, env=None, timeout=None, on_start=None) -> dict:
+    """Run argv in its own session / process group. On timeout, or when this
+    process is told to stop (SIGTERM/SIGHUP/SIGINT), the whole group is killed —
+    subprocess.run(timeout=) would only kill `sh` and leave its children running.
+    on_start(pid, start_time) runs right after spawn (to persist the pgid)."""
+    old = {}
+    for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        try:
+            old[s] = signal.signal(s, _raise_interrupted)
+        except (ValueError, OSError):
+            pass
+    p = None
+    try:
+        p = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, errors="replace", start_new_session=True)
+        if on_start:
+            on_start(p.pid, proc_start_time(p.pid))
+        try:
+            out, err = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            out, err = _terminate_group(p)
+            return {"rc": None, "out": out, "err": err, "timed_out": True}
+        return {"rc": p.returncode, "out": out or "", "err": err or "", "timed_out": False}
+    except BaseException:
+        if p is not None:
+            _terminate_group(p)
+        raise
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
+
+
 # ----------------------------------------------------------------------- locations
 
 class Ctx:
@@ -204,6 +404,16 @@ class Ctx:
         except Exception:
             return TERMINAL_FALLBACK
 
+    def parked(self):
+        """harness-project-config.yaml parked_statuses (issue #15)."""
+        try:
+            hc, _ = self.harness()
+            return tuple(hc.get_parked_statuses())
+        except SystemExit:
+            raise
+        except Exception:
+            return ()
+
     def run_info(self) -> dict:
         return read_json(self.state / "run.json") or {}
 
@@ -236,15 +446,176 @@ class Ctx:
         return out
 
 
+# ------------------------------------------------------------------ dispatcher lock
+#
+# One dispatcher per repository. `start-run` takes the lock for the long-lived
+# process driving the run: the Claude Code session (CLAUDE_PID, exported into its
+# Bash tool), or outside Claude Code the terminal session leader. Mutating
+# subcommands refuse to run while another live owner holds it; a lock whose owner
+# is gone (or whose pid now belongs to another process) is stale and reclaimed.
+
+def lock_owner() -> dict:
+    pid = None
+    try:
+        pid = int(os.environ.get("CLAUDE_PID") or 0) or None
+    except ValueError:
+        pid = None
+    kind = "claude"
+    if not pid or not pid_alive(pid):
+        pid, kind = os.getsid(0), "session"
+    return {"pid": pid, "start": proc_start_time(pid), "kind": kind}
+
+
+@contextmanager
+def _lock_guard(ctx):
+    """Serialises read-check-write of the lock file between superh processes."""
+    ctx.state.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(ctx.state / ".lock.guard"), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _lock_live(lk) -> bool:
+    if not lk:
+        return False
+    return proc_matches(lk.get("pid"), lk.get("start"), ("claude",) if lk.get("kind") == "claude" else ())
+
+
+def _same_owner(lk, me) -> bool:
+    if not lk or lk.get("pid") != me["pid"]:
+        return False
+    return not (lk.get("start") and me["start"]) or lk["start"] == me["start"]
+
+
+def _print_locked(lk, what: str):
+    print("STATUS=locked")
+    print(f"REASON=另一个调度会话正在驱动这个仓库（{lk.get('kind')} pid {lk.get('pid')}，"
+          f"{lk.get('acquired_at', '?')} 起），{what}")
+    print(f"LOCK_PID={lk.get('pid')}")
+    print(f"LOCK_SINCE={lk.get('acquired_at', '')}")
+    print("HINT=在那个会话里继续；确认它已经不再调度（例如卡住、要换会话接手）后，"
+          "征得用户同意再执行 superh.py start-run --take-over")
+
+
+def check_lock(ctx, what: str):
+    lk = read_json(ctx.state / LOCK_FILE)
+    if not lk or _same_owner(lk, lock_owner()) or not _lock_live(lk):
+        return
+    _print_locked(lk, what)
+    sys.exit(EXIT_BUSY)
+
+
 # -------------------------------------------------------------------------- config
 
+_DQ_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "0": "\0", "\\": "\\", '"': '"', "/": "/", " ": " ",
+               "a": "\a", "b": "\b", "e": "\x1b", "f": "\f", "v": "\v"}
+
+
+def _strip_comment(v: str) -> str:
+    """Drop a trailing `# comment` (a `#` at the start or after whitespace),
+    ignoring `#` inside quoted scalars. Quotes only open at the start of a token,
+    so the apostrophe in a plain `it's` is just a character."""
+    q = None
+    i = 0
+    while i < len(v):
+        c = v[i]
+        if q == "'":
+            if c == "'":
+                if v[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                q = None
+        elif q == '"':
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                q = None
+        elif c in ("'", '"') and (i == 0 or v[i - 1] in " \t[,"):
+            q = c
+        elif c == "#" and (i == 0 or v[i - 1] in " \t"):
+            return v[:i].rstrip()
+        i += 1
+    return v.rstrip()
+
+
+def _parse_quoted(v: str):
+    """v starts with ' or ". Returns (value, rest-after-closing-quote), or None if
+    the quote is never closed. Single quotes: '' is a literal '. Double quotes:
+    the usual backslash escapes (\\n \\t \\" \\\\ \\xNN \\uNNNN ...)."""
+    q = v[0]
+    out = []
+    i = 1
+    while i < len(v):
+        c = v[i]
+        if q == "'":
+            if c == "'":
+                if v[i + 1:i + 2] == "'":
+                    out.append("'")
+                    i += 2
+                    continue
+                return "".join(out), v[i + 1:]
+        else:
+            if c == "\\" and i + 1 < len(v):
+                n = v[i + 1]
+                width = {"x": 2, "u": 4, "U": 8}.get(n)
+                if width and re.fullmatch(r"[0-9A-Fa-f]{%d}" % width, v[i + 2:i + 2 + width]):
+                    out.append(chr(int(v[i + 2:i + 2 + width], 16)))
+                    i += 2 + width
+                    continue
+                out.append(_DQ_ESCAPES.get(n, "\\" + n))
+                i += 2
+                continue
+            if c == '"':
+                return "".join(out), v[i + 1:]
+        out.append(c)
+        i += 1
+    return None
+
+
+def _split_flow(inner: str) -> list:
+    """Split a flow sequence body on commas that are not inside quotes."""
+    parts, cur, q, i = [], [], None, 0
+    while i < len(inner):
+        c = inner[i]
+        if q:
+            cur.append(c)
+            if q == "'" and c == "'" and inner[i + 1:i + 2] == "'":
+                cur.append("'")
+                i += 2
+                continue
+            if q == '"' and c == "\\" and i + 1 < len(inner):
+                cur.append(inner[i + 1])
+                i += 2
+                continue
+            if c == q:
+                q = None
+        elif c in ("'", '"') and not "".join(cur).strip():
+            q = c
+            cur.append(c)
+        elif c == ",":
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    parts.append("".join(cur))
+    return parts
+
+
 def _cfg_scalar(v: str):
-    v = v.strip()
-    m = re.search(r"\s+#", v)
-    if m and v[:1] not in ("'", '"'):
-        v = v[: m.start()].strip()
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
-        return v[1:-1]
+    v = _strip_comment(v.strip())
+    if v[:1] in ("'", '"'):
+        parsed = _parse_quoted(v)
+        if parsed is not None and not parsed[1].strip():
+            return parsed[0]
+        # malformed quoting: keep it literal rather than guess, minus a comment
+        m = re.search(r"\s+#", v)
+        return v[: m.start()].rstrip() if m else v
     low = v.lower()
     if low in ("true", "yes"):
         return True
@@ -254,7 +625,7 @@ def _cfg_scalar(v: str):
         return None
     if v.startswith("[") and v.endswith("]"):
         inner = v[1:-1].strip()
-        return [] if not inner else [_cfg_scalar(x) for x in inner.split(",")]
+        return [] if not inner else [_cfg_scalar(x) for x in _split_flow(inner)]
     if v == "{}":
         return {}
     if re.fullmatch(r"-?\d+", v):
@@ -432,7 +803,37 @@ def parse_sprint(path: Path):
             epics[e["key"]] = e["status"]
         else:
             stories.append(e)
+    # Top-level story_dependencies (issue #14) wins over a block's depends_on:
+    # BMad 6.12.4's own scripts cannot read the block layout, so projects on it keep
+    # development_status single-line and put the dependencies there instead.
+    for k, deps in _story_dependencies("\n".join(lines)).items():
+        hit = [s for s in stories if s["key"] == k] or (
+            [s for s in stories if s["key"] in resolve_dep(k, stories)] if not k.startswith("epic-") else [])
+        if len(hit) == 1:
+            hit[0]["deps"] = list(deps)
     return stories, epics
+
+
+def _harness_spec_mod():
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import harness_spec  # noqa: E402
+    return harness_spec
+
+
+def _story_dependencies(text: str) -> dict:
+    try:
+        return _harness_spec_mod().parse_story_dependencies(text)
+    except (ImportError, AttributeError):
+        return {}
+
+
+def _is_external_dep(token) -> bool:
+    try:
+        return _harness_spec_mod().is_external_dep(token)
+    except (ImportError, AttributeError):
+        return str(token).startswith("ext-")
 
 
 def epic_of(key: str):
@@ -476,6 +877,11 @@ def lane_stage(ctx, lane) -> tuple[str, str]:
     phase = lane.get("phase")
     if phase in ("done", "abandoned"):
         return phase, ""
+    op = lane.get("op")
+    if op and op_live(op):
+        if op.get("name") == "prepare":
+            return "preparing", f"prepare 进行中（pid {op.get('pid')}，{op.get('started_at', '')} 起）"
+        return "integrating", f"合流进行中（pid {op.get('pid')}，{op.get('started_at', '')} 起）"
     if phase == "conflict":
         wt = Path(lane.get("worktree", ""))
         if wt.is_dir() and not _conflicted(wt):
@@ -492,11 +898,18 @@ def lane_stage(ctx, lane) -> tuple[str, str]:
     proc = read_json(ctx.lane_path(key, "proc"))
     if phase == "prepared" or not proc or proc.get("attempt") != lane.get("attempts"):
         return "queued", "等待启动 worker"
-    if proc.get("exit_code") is None:
-        if pid_alive(proc.get("pid")):
-            return "working", f"worker 运行中（第 {proc.get('attempt')} 次）"
-        return "crashed", "worker 进程已消失但没有落盘退出码（宿主会话结束或被杀）"
     res = read_json(ctx.lane_path(key, "result"))
+    if proc.get("exit_code") is None:
+        if proc_matches(proc.get("pid"), proc.get("pid_start"), ("superh",)):
+            return "working", f"worker 运行中（第 {proc.get('attempt')} 次）"
+        if _worker_child_alive(ctx, proc):
+            # the launcher died but claude is still working in the worktree:
+            # reporting `crashed` here would get a second worker started next to it
+            return "working", (f"worker 运行中（第 {proc.get('attempt')} 次；launch 进程已退出，"
+                               f"claude 进程 {proc.get('child_pid')} 仍在运行）")
+        if not res or res.get("attempt") != proc.get("attempt"):
+            return "crashed", "worker 进程已消失但没有落盘退出码（宿主会话结束或被杀）"
+        # the worker reported before it went away: its report stands
     if not res or res.get("attempt") != proc.get("attempt"):
         tail = (proc.get("result_text") or "").strip().splitlines()[-1:] or [""]
         return "failed", f"worker 退出（exit={proc.get('exit_code')}）但没有回报：{tail[0][:160]}"
@@ -508,13 +921,41 @@ def lane_stage(ctx, lane) -> tuple[str, str]:
     return "failed", f"未知回报状态 {st!r}"
 
 
+def _worker_child_alive(ctx, proc) -> bool:
+    hints = ("claude", Path(str(ctx.config.get("claude_bin") or "claude")).name)
+    return proc_matches(proc.get("child_pid"), proc.get("child_start"), hints)
+
+
+SH_CMD = "python3 .claude/harness/scripts/superh.py"
+_REINTEGRATE = "，然后回主 worktree 跑 " + SH_CMD + " integrate {key}"
+HOLD_HINTS = {
+    "verify": "cd {wt}，修好 verify_command 报的问题并 commit" + _REINTEGRATE,
+    "build-verify": ("cd {wt} && python3 .claude/harness/scripts/harness-commit.py build-verify {key}，"
+                     "按输出修好并 commit" + _REINTEGRATE),
+    "lane-dirty": "cd {wt} && git status，把多出来的文件提交、删掉或加进 .gitignore" + _REINTEGRATE,
+    "rebase": ("cd {wt} && git status，rebase 卡住了：手工处理（解决后 git add，"
+               "再 GIT_EDITOR=true git rebase --continue）" + _REINTEGRATE),
+    "branch-missing": "lane 分支已不存在；确认这一路不要了就 " + SH_CMD + " abandon {key} --yes，story 会重新排队",
+    "worktree-missing": "lane worktree 已不存在；确认这一路不要了就 " + SH_CMD + " abandon {key} --yes，story 会重新排队",
+    "interrupted": ("integrate 运行中被打断了多次（会话结束或命令被杀）。确认 verify_command 能在 "
+                    "verify_timeout_sec 内跑完" + _REINTEGRATE + "，会从断点继续"),
+    "ff": "ff 合并失败，按 hold_reason 处理" + _REINTEGRATE,
+    "retry-limit": "合流连续重试仍不成功，按 hold_reason 核对 sprint 分支和 lane 分支" + _REINTEGRATE,
+    "git-error": "合流时 git 命令出错，按 hold_reason 处理" + _REINTEGRATE,
+    "error": "合流时脚本出错，按 hold_reason 处理" + _REINTEGRATE,
+    "prepare": ("prepare 没完成，按 hold_reason 修好原因后执行 " + SH_CMD +
+                " abandon {key} --yes（会删这一路的 worktree 和分支），再重新执行 /super-harness:run"),
+    "foreign": ("分支或目录不是这次 prepare 建的，super-harness 不会删它；确认无用后手工删掉，再执行 " + SH_CMD +
+                " abandon {key} --yes（只改记录，不动分支和目录）"),
+}
+
+
 def resume_hint(ctx, lane) -> str:
     proc = read_json(ctx.lane_path(lane["key"], "proc")) or {}
     sid = proc.get("session_id")
     wt = lane.get("worktree", "")
-    if lane.get("phase") == "held" and lane.get("hold_kind") == "verify":
-        return (f"cd {wt}，修好 verify_command 报的问题并 commit，"
-                f"再回主 worktree 跑 python3 .claude/harness/scripts/superh.py integrate {lane['key']}")
+    if lane.get("phase") == "held" and lane.get("hold_kind") in HOLD_HINTS:
+        return HOLD_HINTS[lane["hold_kind"]].format(wt=wt, key=lane["key"])
     if sid:
         return f"cd {wt} && claude --resume {sid}"
     return f"cd {wt} && claude"
@@ -523,6 +964,8 @@ def resume_hint(ctx, lane) -> str:
 def analyze(ctx):
     stories, epics = parse_sprint(ctx.sprint_file())
     terminal = set(ctx.terminal())
+    parked = set(ctx.parked())
+    settled = terminal | parked     # not holding back the epic barrier / serial order / retro
     status = {s["key"]: s["status"] for s in stories}
     tags = harness_tags(ctx)
     lanes = ctx.all_lanes()
@@ -539,22 +982,26 @@ def analyze(ctx):
     for idx, s in enumerate(stories):
         k, st = s["key"], s["status"]
         e = epic_of(k)
-        row = {"key": k, "epic": e, "status": st, "deps": overrides.get(k, s["deps"]), "reasons": []}
+        row = {"key": k, "epic": e, "status": st, "deps": overrides.get(k, s["deps"]), "reasons": [],
+               "external": []}
         if st in terminal:
             row["state"] = "done"
         elif k in inflight:
             row["state"] = "inflight"
             if k not in active_lane:
                 row["reasons"].append("有 harness/<KEY>/start tag 但没有 lane（用 run-inline 跑过、未完成；用 /super-harness:run-inline --continue 收尾）")
+        elif st in parked:
+            row["state"] = "parked"
+            row["reasons"].append(f"status={st}，挂起（parked_statuses），不派发，也不挡 epic 屏障和 retro")
         elif st != "backlog":
             row["state"] = "waiting"
             row["reasons"].append(f"status={st}，不是 backlog，super-harness 不接手")
         else:
             reasons = row["reasons"]
-            if e is not None:
+            if e is not None and cfg.get("epic_barrier", True):
                 pend = sorted({epic_of(t["key"]) for t in stories
                                if epic_of(t["key"]) is not None and epic_of(t["key"]) < e
-                               and t["status"] not in terminal})
+                               and t["status"] not in settled})
                 for pe in pend:
                     reasons.append(f"epic {pe} 还有未完成的 story")
                 if cfg.get("retro_barrier"):
@@ -566,13 +1013,17 @@ def analyze(ctx):
             deps = row["deps"]
             if deps is None:
                 if cfg.get("no_deps_policy") == "serial":
-                    earlier = [t["key"] for t in stories[:idx] if t["status"] not in terminal]
+                    earlier = [t["key"] for t in stories[:idx] if t["status"] not in settled]
                     if earlier:
                         reasons.append(f"未声明 depends_on，按串行等待 {earlier[0]}")
             else:
                 if isinstance(deps, str):
                     deps = [deps]
                 for d in deps:
+                    if _is_external_dep(d):
+                        row["external"].append(str(d))
+                        reasons.append(f"等待外部条件 {d}（满足后从依赖里删掉这一项）")
+                        continue
                     ks = resolve_dep(str(d), stories)
                     if not ks:
                         reasons.append(f"depends_on 无法解析：{d}")
@@ -585,7 +1036,9 @@ def analyze(ctx):
     retro_due = []
     for e in sorted({r["epic"] for r in rows if r["epic"] is not None}):
         es = [r for r in rows if r["epic"] == e]
-        if all(r["state"] == "done" for r in es):
+        # parked stories don't hold the retro back, but an epic with nothing
+        # delivered (all parked / dropped) has nothing to look back on
+        if all(r["state"] in ("done", "parked") for r in es) and any(r["status"] == "done" for r in es):
             rs = epics.get(f"epic-{e}-retrospective")
             if rs is not None and rs != "done":
                 retro_due.append(e)
@@ -607,9 +1060,9 @@ def cmd_plan(ctx, a):
     if a.json:
         print(json.dumps({"stories": rows, "retro_due": retro_due}, ensure_ascii=False, indent=2))
         return 0
-    label = {"done": "完成", "inflight": "在飞", "ready": "就绪", "waiting": "等待"}
+    label = {"done": "完成", "inflight": "在飞", "ready": "就绪", "waiting": "等待", "parked": "挂起"}
     print(f"策略：max_slots={ctx.config['max_slots']} no_deps_policy={ctx.config['no_deps_policy']} "
-          f"retro_barrier={ctx.config['retro_barrier']}")
+          f"epic_barrier={ctx.config.get('epic_barrier', True)} retro_barrier={ctx.config['retro_barrier']}")
     for r in rows:
         if r["state"] == "done":
             continue
@@ -633,14 +1086,26 @@ def cmd_tick(ctx, _a):
     head, dirty = main_status(ctx)
     stages = {k: lane_stage(ctx, l) for k, l in lanes.items()}
     running = [k for k, (s, _) in stages.items() if s == "working"]
-    reprepare = sorted(k for k, l in lanes.items() if l.get("phase") == "preparing")
+    # a prepare / integrate process that is still alive (started in the background
+    # by this or an earlier call) is never handed out again
+    live_prepare = sorted(k for k, (s, _) in stages.items() if s == "preparing")
+    live_integrate = sorted(k for k, l in lanes.items()
+                            if (l.get("op") or {}).get("name") == "integrate" and op_live(l["op"]))
+    reprepare = sorted(k for k, l in lanes.items() if l.get("phase") == "preparing" and k not in live_prepare)
     queued = [k for k, (s, _) in stages.items() if s == "queued" and k not in reprepare]
     # phase=integrating without a live integrate = the dispatcher stopped mid-merge;
     # route it back to integrate (the command is resumable) instead of losing it.
     integrate = sorted(
-        [k for k, (s, _) in stages.items()
-         if s == "ready" or lanes[k].get("phase") == "integrating"],
+        [k for k, (s, _) in stages.items() if k not in live_integrate and k not in live_prepare
+         and (s == "ready" or lanes[k].get("phase") == "integrating")],
         key=lambda k: (read_json(ctx.lane_path(k, "result")) or {}).get("reported_at", ""))
+    orphaned = []
+    for k in running:
+        proc = read_json(ctx.lane_path(k, "proc")) or {}
+        if proc.get("exit_code") is None and not proc_matches(proc.get("pid"), proc.get("pid_start"), ("superh",)):
+            w = read_json(ctx.lane_path(k, "watch")) or {}
+            if not (w.get("attempt") == proc.get("attempt") and proc_matches(w.get("pid"), w.get("pid_start"), ("superh",))):
+                orphaned.append(k)
     merged = [k for k, l in lanes.items() if l.get("phase") == "merged"]
     attention = []
     for k, (s, d) in stages.items():
@@ -648,27 +1113,30 @@ def cmd_tick(ctx, _a):
             attention.append({"key": k, "stage": s, "detail": d, "worktree": lanes[k].get("worktree"),
                               "takeover": resume_hint(ctx, lanes[k])})
     quota_hold = any(a["stage"] == "quota" for a in attention)
-    busy = len(running) + len(queued) + len(reprepare)
+    busy = len(running) + len(queued) + len(reprepare) + len(live_prepare)
     free = max(0, ctx.config["max_slots"] - busy)
     ready = [r["key"] for r in rows if r["state"] == "ready"]
     # an interrupted prepare already holds its slot; prepare rolls it back and redoes it
     launch = [] if quota_hold else reprepare + ready[:free]
+    # a live integrate owns the main worktree until it exits: nothing else that
+    # writes there (another integrate, close-out, retro) is handed out meanwhile
+    main_busy = bool(live_integrate)
     started_epics = {epic_of(k) for k, t in harness_tags(ctx).items() if "start" in t}
     started_epics |= {r["epic"] for r in rows if r["state"] in ("done", "inflight")}
     epic_start = sorted({epic_of(k) for k in launch if epic_of(k) not in started_epics})
-    pending = [r["key"] for r in rows if r["state"] != "done"]
+    pending = [r["key"] for r in rows if r["state"] not in ("done", "parked")]
     problems = []
     if head != sb:
         problems.append(f"主 worktree 当前分支是 {head!r}，不是 sprint 分支 {sb!r}")
-    if merged:
+    if merged and not main_busy:
         nxt = "post-merge"
-    elif integrate:
+    elif integrate and not main_busy:
         nxt = "integrate"
-    elif retro_due:
+    elif retro_due and not main_busy:
         nxt = "retro"
-    elif launch or queued:
+    elif (launch or queued) and not quota_hold:
         nxt = "launch"
-    elif running:
+    elif running or live_prepare or live_integrate or merged or integrate or retro_due:
         nxt = "wait"
     elif not pending and not retro_due:
         nxt = "finished"
@@ -682,14 +1150,19 @@ def cmd_tick(ctx, _a):
         "post_merge": merged,
         "integrate": integrate,
         "launch": launch,
-        "queued": queued,
+        "queued": queued if not quota_hold else [],
         "epic_start": epic_start,
         "retro_due": retro_due,
         "running": running,
+        "preparing": live_prepare,
+        "integrating": live_integrate,
+        "orphaned": orphaned,
         "attention": attention,
         "quota_hold": quota_hold,
         "pending_count": len(pending),
         "waiting": [{"key": r["key"], "reasons": r["reasons"]} for r in rows if r["state"] == "waiting"][:20],
+        "external": [{"key": r["key"], "conditions": r["external"]} for r in rows if r["external"]],
+        "parked": [r["key"] for r in rows if r["state"] == "parked"],
         "problems": problems,
     }, ensure_ascii=False, indent=2))
     return 0
@@ -698,7 +1171,7 @@ def cmd_tick(ctx, _a):
 def cmd_board(ctx, a):
     rows, lanes, retro_due, _ = analyze(ctx)
     stages = {k: lane_stage(ctx, l) for k, l in lanes.items()}
-    order = {s: i for i, s in enumerate(PERSON_STAGES + ("ready", "integrating", "working", "queued", "done", "abandoned"))}
+    order = {s: i for i, s in enumerate(PERSON_STAGES + ("ready", "integrating", "working", "preparing", "queued", "done", "abandoned"))}
     items = sorted(stages.items(), key=lambda kv: (order.get(kv[1][0], 99), kv[0]))
     if a.json:
         print(json.dumps([{"key": k, "stage": s, "detail": d, "takeover": resume_hint(ctx, lanes[k])}
@@ -706,7 +1179,7 @@ def cmd_board(ctx, a):
         return 0
     zh = {"conflict": "合流冲突", "held": "已挂起", "blocked": "受阻", "failed": "失败", "quota": "配额耗尽",
           "crashed": "进程丢失", "ready": "待合流", "integrating": "合流中", "working": "执行中",
-          "queued": "排队", "done": "完成", "abandoned": "已放弃"}
+          "preparing": "准备中", "queued": "排队", "done": "完成", "abandoned": "已放弃"}
     person = [(k, s, d) for k, (s, d) in items if s in PERSON_STAGES]
     if person:
         print("需要你处理：")
@@ -715,7 +1188,7 @@ def cmd_board(ctx, a):
             print(f"      接手：{resume_hint(ctx, lanes[k])}")
     else:
         print("没有需要你处理的 lane。")
-    live = [(k, s, d) for k, (s, d) in items if s in ("ready", "integrating", "working", "queued")]
+    live = [(k, s, d) for k, (s, d) in items if s in ("ready", "integrating", "working", "preparing", "queued")]
     if live:
         print("进行中：")
         for k, s, d in live:
@@ -723,7 +1196,13 @@ def cmd_board(ctx, a):
     n_ready = sum(1 for r in rows if r["state"] == "ready")
     n_wait = sum(1 for r in rows if r["state"] == "waiting")
     n_done = sum(1 for r in rows if r["state"] == "done")
-    print(f"story：完成 {n_done} / 就绪未启动 {n_ready} / 等待依赖 {n_wait}；slot {ctx.config['max_slots']}")
+    n_parked = sum(1 for r in rows if r["state"] == "parked")
+    print(f"story：完成 {n_done} / 就绪未启动 {n_ready} / 等待依赖 {n_wait} / 挂起 {n_parked}；slot {ctx.config['max_slots']}")
+    ext = [r for r in rows if r["external"] and r["state"] == "waiting"]
+    if ext:
+        print("等待外部条件（满足后从依赖里删掉对应的 ext- 项）：")
+        for r in ext:
+            print(f"  {r['key']}  {', '.join(r['external'])}")
     if retro_due:
         print(f"待跑 retro：epic {', '.join(map(str, retro_due))}")
     return 0
@@ -731,7 +1210,15 @@ def cmd_board(ctx, a):
 
 # ----------------------------------------------------------------------- prepare
 
+# Never copied into a lane: caches, and deploy/update backups under .claude/harness/.backup/.
+def _skip_placed(rel: str) -> bool:
+    name = rel.rsplit("/", 1)[-1]
+    return name in ("__pycache__", ".DS_Store") or rel == ".claude/harness/.backup"
+
+
 def _place(src: Path, dst: Path, link: bool, placed: list, rel: str):
+    if _skip_placed(rel):
+        return
     if link:
         if not os.path.lexists(dst):
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -740,13 +1227,14 @@ def _place(src: Path, dst: Path, link: bool, placed: list, rel: str):
         return
     if src.is_dir() and not src.is_symlink():
         if not dst.exists():
-            shutil.copytree(src, dst, symlinks=True,
-                            ignore=shutil.ignore_patterns("__pycache__", ".DS_Store"))
+            def _ignore(d, names, _base=src, _rel=rel):
+                sub = os.path.relpath(d, _base)
+                prefix = _rel if sub == "." else f"{_rel}/{sub}"
+                return {n for n in names if _skip_placed(f"{prefix}/{n}")}
+            shutil.copytree(src, dst, symlinks=True, ignore=_ignore)
             placed.append(rel)
             return
         for child in src.iterdir():
-            if child.name in ("__pycache__", ".DS_Store"):
-                continue
             _place(child, dst / child.name, False, placed, f"{rel}/{child.name}")
         return
     if not os.path.lexists(dst):
@@ -766,10 +1254,90 @@ def _unignored_placed(wt: Path, placed: list) -> list:
     return sorted({p for p in placed if any(u == p or u.startswith(p + "/") for u in untracked)})
 
 
+# Git tracking policy for .claude/harness/ (0.3.1+, written by
+# scripts/ensure_gitignore.sh during init / update): deployed assets are ignored,
+# the two user-edited configs are tracked.
+HARNESS_DIR = ".claude/harness"
+HARNESS_TRACKED_CONFIGS = (".claude/harness/harness-project-config.yaml", ".claude/harness/parallel.yaml")
+HARNESS_GITIGNORE = ("/.claude/harness/*",) + tuple(f"!/{c}" for c in HARNESS_TRACKED_CONFIGS)
+
+
 def _gitignore_hint(paths) -> list:
     # `/path` without a trailing slash matches files, directories and symlinks;
     # `path/` does not match a symlink (link_paths).
-    return [f"GITIGNORE=/{p}" for p in paths]
+    # Under .claude/harness/ the policy applies instead of `/path`: the two configs
+    # must be committed (COMMIT=), everything else is covered by the policy block.
+    # A bare `/.claude/harness` would ignore the directory itself, and git cannot
+    # re-include the configs inside an ignored directory.
+    out = []
+    for p in paths:
+        p = p.rstrip("/")
+        if p in HARNESS_TRACKED_CONFIGS:
+            lines = [f"COMMIT={p}"]
+        elif p == HARNESS_DIR or p.startswith(HARNESS_DIR + "/"):
+            lines = [f"GITIGNORE={g}" for g in HARNESS_GITIGNORE]
+        else:
+            lines = [f"GITIGNORE=/{p}"]
+        out += [ln for ln in lines if ln not in out]
+    return out
+
+
+def _hold(ctx, lane, kind: str, reason: str, *extra, code: int = 1):
+    """Park a lane for a person: phase=held + hold_reason + hold_kind, then exit.
+    tick shows held lanes under `attention` and never routes them anywhere, so a
+    failure that a re-run can't fix doesn't turn into an endless retry loop."""
+    lane["phase"] = "held"
+    lane["hold_kind"] = kind
+    lane["hold_reason"] = reason
+    lane.pop("op", None)
+    ctx.save_lane(lane)
+    die(reason, f"HOLD_KIND={kind}", *extra, code=code)
+
+
+def _record_child(ctx, lane):
+    """on_start hook for run_group: persist the child's process group so a later
+    run can kill it if this process is killed without cleaning up."""
+    def rec(pid, start):
+        op = lane.get("op")
+        if op is not None:
+            op["pgid"] = pid
+            op["pgid_start"] = start
+            ctx.save_lane(lane)
+    return rec
+
+
+def _run_op(ctx, lane, name: str, body):
+    """Run body() with an in-progress marker (lane["op"]: pid + start time) on disk.
+    The marker is cleared when body returns or exits through die()/sys.exit. If this
+    process is killed (SIGKILL, or a signal that interrupted a child group) the
+    marker stays, and the next run of the same command sees a dead marker: an
+    unclean exit, which it counts (see MAX_INTERRUPTS)."""
+    lane["op"] = op_record(name)
+    ctx.save_lane(lane)
+    clean = False
+    try:
+        rc = body()
+        clean = True
+        return rc
+    except SystemExit:
+        clean = True
+        raise
+    finally:
+        if clean:
+            cur = ctx.lane(lane["key"]) or lane
+            if (cur.get("op") or {}).get("pid") == os.getpid():
+                cur.pop("op", None)
+            # an attempt that ended on its own resets the kill counter
+            (cur.get("interrupted") or {}).pop(name, None)
+            ctx.save_lane(cur)
+
+
+def _reap_dead_op(lane):
+    """Kill whatever the dead run's child process group left behind."""
+    op = lane.pop("op", None) or {}
+    if op.get("pgid"):
+        kill_group(op["pgid"], op.get("pgid_start"))
+    return op
 
 
 def _rollback_interrupted_prepare(ctx, lane):
@@ -784,10 +1352,7 @@ def _rollback_interrupted_prepare(ctx, lane):
     if harness_tags(ctx).get(key):
         unsafe.append(f"已有 harness/{key}/* tag")
     if unsafe:
-        lane["phase"] = "held"
-        lane["hold_reason"] = "prepare 中断，但现场不像未启动的 lane：" + "；".join(unsafe)
-        ctx.save_lane(lane)
-        die(lane["hold_reason"], f"WORKTREE={wt}")
+        _hold(ctx, lane, "prepare", "prepare 中断，但现场不像未启动的 lane：" + "；".join(unsafe), f"WORKTREE={wt}")
     if wt.exists():
         r = git(["worktree", "remove", "--force", str(wt)], cwd=ctx.root)
         if r.returncode != 0 and wt.exists():
@@ -796,7 +1361,7 @@ def _rollback_interrupted_prepare(ctx, lane):
             if wt.parent.resolve() == ctx.wt_root.resolve() and wt.name == key:
                 shutil.rmtree(wt)
             else:
-                die(f"无法清理中断的 prepare 目录 {wt}：{r.stderr.strip()}")
+                _hold(ctx, lane, "prepare", f"无法清理中断的 prepare 目录 {wt}：{r.stderr.strip()}", f"WORKTREE={wt}")
     git(["worktree", "prune"], cwd=ctx.root)
     if head:
         git(["branch", "-D", branch], cwd=ctx.root)
@@ -806,7 +1371,21 @@ def _rollback_interrupted_prepare(ctx, lane):
 def cmd_prepare(ctx, a):
     key = a.key
     lane = ctx.lane(key)
+    interrupts = 0
     if lane and lane.get("phase") == "preparing":
+        if op_live(lane.get("op")):
+            # a prepare started earlier (e.g. in the background) is still running:
+            # rolling it back would delete the worktree under its feet
+            print("STATUS=busy")
+            print(f"REASON=lane {key} 的 prepare 正在运行（pid {lane['op'].get('pid')}），不要重复启动，等它结束")
+            return EXIT_BUSY
+        _reap_dead_op(lane)
+        interrupts = int((lane.get("interrupted") or {}).get("prepare", 0)) + 1
+        if interrupts > MAX_INTERRUPTS:
+            lane.setdefault("interrupted", {})["prepare"] = interrupts
+            _hold(ctx, lane, "prepare",
+                  f"prepare 连续 {interrupts} 次在运行中被打断（会话结束或命令被杀；prepare_command 太慢？），"
+                  "不再自动重做", f"WORKTREE={lane.get('worktree')}")
         _rollback_interrupted_prepare(ctx, lane)
         lane = None
     if lane and lane.get("phase") not in ("abandoned", "done"):
@@ -817,24 +1396,36 @@ def cmd_prepare(ctx, a):
         die(f"sprint 分支 {sb!r} 不存在")
     branch = f"{ctx.config.get('branch_prefix') or 'story/'}{key}"
     wt = ctx.wt_root / key
+    lane = {"key": key, "epic": epic_of(key), "branch": branch, "worktree": str(wt), "sprint_branch": sb,
+            "base": base, "created_at": now_iso(), "phase": "preparing", "attempts": 0, "placed": [], "notes": []}
+    if interrupts:
+        lane["interrupted"] = {"prepare": interrupts}
+    # Leftovers this prepare didn't create: hold the lane (so tick stops offering
+    # the story every round) but mark it foreign, so abandon never deletes them.
+    leftovers = []
     if git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=ctx.root).returncode == 0:
-        die(f"分支 {branch} 已存在：上一次的残留？确认无用后 `git branch -D {branch}` 再重试")
-    if wt.exists():
-        die(f"目录 {wt} 已存在：确认无用后删掉再重试")
+        leftovers.append(f"分支 {branch} 已存在")
+    if os.path.lexists(wt):
+        leftovers.append(f"目录 {wt} 已存在")
+    if leftovers:
+        lane["foreign"] = True
+        _hold(ctx, lane, "foreign", "；".join(leftovers) + "：上一次的残留？确认无用后手工删掉，再 abandon --yes 重新排队",
+              f"WORKTREE={wt}")
+    return _run_op(ctx, lane, "prepare", lambda: _prepare_body(ctx, lane))
+
+
+def _prepare_body(ctx, lane):
+    key, branch, wt, base = lane["key"], lane["branch"], Path(lane["worktree"]), lane["base"]
+
+    def fail(reason, *extra):
+        _hold(ctx, lane, "prepare", f"prepare 失败：{reason}", *extra)
+
+    # the lane (with its base) is on disk before `worktree add`, so an interruption
+    # anywhere from here on is rolled back by the next prepare
     ctx.wt_root.mkdir(parents=True, exist_ok=True)
     r = git(["worktree", "add", "-b", branch, str(wt), base], cwd=ctx.root)
     if r.returncode != 0:
-        die(f"git worktree add 失败：{r.stderr.strip()}")
-    lane = {"key": key, "epic": epic_of(key), "branch": branch, "worktree": str(wt), "sprint_branch": sb,
-            "base": base, "created_at": now_iso(), "phase": "preparing", "attempts": 0, "placed": [], "notes": []}
-    ctx.save_lane(lane)
-
-    def fail(reason, *extra):
-        lane["phase"] = "held"
-        lane["hold_reason"] = f"prepare 失败：{reason}"
-        ctx.save_lane(lane)
-        die(reason, *extra)
-
+        fail(f"git worktree add 失败：{r.stderr.strip()}")
     placed: list = []
     for rel in ctx.config.get("copy_paths") or []:
         src = ctx.root / rel
@@ -849,18 +1440,16 @@ def cmd_prepare(ctx, a):
         fail("补进 lane 的未入库路径没有被 .gitignore 忽略，lane 会是脏的（bmad-build-auto 会拒绝启动）。"
              "把下面几行加进项目 .gitignore 并提交，然后 abandon --yes 再重新 prepare",
              *_gitignore_hint(unignored), f"WORKTREE={wt}")
-    prep_out = ""
     cmd = str(ctx.config.get("prepare_command") or "").strip()
     if cmd:
         env = dict(os.environ, SUPERH_KEY=key, SUPERH_WORKTREE=str(wt), SUPERH_MAIN_ROOT=str(ctx.root))
-        try:
-            pr = subprocess.run(["sh", "-c", cmd], cwd=wt, env=env, capture_output=True, text=True,
-                                timeout=int(ctx.config.get("prepare_timeout_sec") or 600))
-            prep_out = (pr.stdout + pr.stderr)[-4000:]
-            if pr.returncode != 0:
-                fail(f"prepare_command 失败（exit={pr.returncode}）", f"WORKTREE={wt}", "OUTPUT<<", prep_out, ">>")
-        except subprocess.TimeoutExpired:
-            fail("prepare_command 超时", f"WORKTREE={wt}")
+        timeout = int(ctx.config.get("prepare_timeout_sec") or 600)
+        pr = run_group(["sh", "-c", cmd], cwd=wt, env=env, timeout=timeout, on_start=_record_child(ctx, lane))
+        prep_out = (pr["out"] + pr["err"])[-4000:]
+        if pr["timed_out"]:
+            fail(f"prepare_command 超时（{timeout}s，它的整个进程组已结束）", f"WORKTREE={wt}", "OUTPUT<<", prep_out, ">>")
+        if pr["rc"] != 0:
+            fail(f"prepare_command 失败（exit={pr['rc']}）", f"WORKTREE={wt}", "OUTPUT<<", prep_out, ">>")
     dirty = [ln for ln in git(["status", "--porcelain", "-uall"], cwd=wt).stdout.splitlines() if ln.strip()]
     if dirty:
         fail("lane worktree 准备后不干净（bmad-build-auto 会拒绝启动）。把这些路径加进 .gitignore 或 prepare_command 里清掉",
@@ -922,8 +1511,8 @@ def cmd_launch(ctx, a):
     lane["attempts"] = attempt
     lane["phase"] = "launched"
     ctx.save_lane(lane)
-    proc_rec = {"key": key, "attempt": attempt, "pid": os.getpid(), "started_at": now_iso(),
-                "session_id": None, "exit_code": None, "log": f"{stem}.stream.jsonl"}
+    proc_rec = {"key": key, "attempt": attempt, "pid": os.getpid(), "pid_start": proc_start_time(os.getpid()),
+                "started_at": now_iso(), "session_id": None, "exit_code": None, "log": f"{stem}.stream.jsonl"}
     write_json(ctx.lane_path(key, "proc"), proc_rec)
 
     env = {k: v for k, v in os.environ.items() if not k.startswith(SCRUB_ENV_PREFIXES)}
@@ -938,6 +1527,7 @@ def cmd_launch(ctx, a):
             open(f"{stem}.stderr.log", "w", encoding="utf-8") as ferr:
         p = subprocess.Popen(cmd, cwd=wt, env=env, stdin=fin, stdout=subprocess.PIPE, stderr=ferr, text=True)
         proc_rec["child_pid"] = p.pid
+        proc_rec["child_start"] = proc_start_time(p.pid)
         write_json(ctx.lane_path(key, "proc"), proc_rec)
         for line in p.stdout:
             flog.write(line)
@@ -968,6 +1558,33 @@ def cmd_launch(ctx, a):
     print(f"STAGE={stage}")
     print(f"DETAIL={detail}")
     print(f"SESSION={proc_rec.get('session_id')}")
+    return 0
+
+
+def cmd_watch(ctx, a):
+    """Block until an orphaned worker (launch process gone, claude still running)
+    exits, so the dispatcher, which runs this in the background, gets woken up.
+    Returns at once when there is nothing to watch."""
+    key = a.key
+    proc = read_json(ctx.lane_path(key, "proc")) or {}
+    if not proc or proc.get("exit_code") is not None:
+        print("STATUS=ok")
+        print("REASON=没有在跑的 worker")
+        return 0
+    write_json(ctx.lane_path(key, "watch"), {"key": key, "attempt": proc.get("attempt"), "pid": os.getpid(),
+                                             "pid_start": proc_start_time(os.getpid()), "started_at": now_iso()})
+    interval = max(0.2, float(a.interval))
+    while (proc_matches(proc.get("pid"), proc.get("pid_start"), ("superh",))
+           or _worker_child_alive(ctx, proc)):
+        time.sleep(interval)
+        cur = read_json(ctx.lane_path(key, "proc")) or {}
+        if cur.get("attempt") != proc.get("attempt") or cur.get("exit_code") is not None:
+            break
+    stage, detail = lane_stage(ctx, ctx.lane(key) or {"key": key})
+    print("STATUS=ok")
+    print(f"LANE={key}")
+    print(f"STAGE={stage}")
+    print(f"DETAIL={detail}")
     return 0
 
 
@@ -1073,8 +1690,9 @@ def _drive_rebase(ctx, wt: Path, lane) -> list:
             if git(["diff", "--cached", "--quiet"], cwd=wt).returncode == 0:
                 git(["-c", "core.hooksPath=/dev/null", "rebase", "--skip"], cwd=wt, env=_git_env())
             else:
-                die("rebase --continue 失败", f"STDERR={r.stderr.strip()[:500]}")
-    die("rebase 推进次数超限")
+                _hold(ctx, lane, "rebase", f"rebase --continue 失败：{r.stderr.strip()[:300]}",
+                      f"WORKTREE={wt}", f"STDERR={r.stderr.strip()[:500]}")
+    _hold(ctx, lane, "rebase", "rebase 推进次数超限（500 步仍未结束）", f"WORKTREE={wt}")
     return []
 
 
@@ -1093,10 +1711,10 @@ def _emit_conflict(ctx, lane, wt, remaining) -> int:
     return 3
 
 
-def _build_verify(wt: Path, key: str):
-    bv = subprocess.run(["python3", ".claude/harness/scripts/harness-commit.py", "build-verify", key],
-                        cwd=wt, capture_output=True, text=True)
-    return bv.returncode, (bv.stdout + bv.stderr).strip()
+def _build_verify(ctx, lane, wt: Path):
+    bv = run_group(["python3", ".claude/harness/scripts/harness-commit.py", "build-verify", lane["key"]],
+                   cwd=wt, on_start=_record_child(ctx, lane))
+    return bv["rc"], (bv["out"] + bv["err"]).strip()
 
 
 def _run_verify(ctx, lane, wt: Path) -> dict:
@@ -1110,15 +1728,12 @@ def _run_verify(ctx, lane, wt: Path) -> dict:
         return {"status": "skipped-not-rebased"}
     env = dict(os.environ, SUPERH_KEY=lane["key"], SUPERH_WORKTREE=str(wt), SUPERH_MAIN_ROOT=str(ctx.root))
     timeout = int(ctx.config.get("verify_timeout_sec") or 1800)
-    try:
-        pr = subprocess.run(["sh", "-c", cmd], cwd=wt, env=env, capture_output=True, text=True,
-                            timeout=timeout)
-    except subprocess.TimeoutExpired as e:
-        out = ((e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""))
-        return {"status": "failed", "detail": f"verify_command 超时（{timeout}s）", "output": out[-4000:]}
-    if pr.returncode != 0:
-        return {"status": "failed", "detail": f"verify_command exit={pr.returncode}",
-                "output": (pr.stdout + pr.stderr)[-4000:]}
+    pr = run_group(["sh", "-c", cmd], cwd=wt, env=env, timeout=timeout, on_start=_record_child(ctx, lane))
+    out = (pr["out"] + pr["err"])[-4000:]
+    if pr["timed_out"]:
+        return {"status": "failed", "detail": f"verify_command 超时（{timeout}s，它的整个进程组已结束）", "output": out}
+    if pr["rc"] != 0:
+        return {"status": "failed", "detail": f"verify_command exit={pr['rc']}", "output": out}
     return {"status": "passed"}
 
 
@@ -1156,15 +1771,41 @@ def cmd_integrate(ctx, a):
       - a lane whose head is already contained in the sprint branch was ff-merged by
         an earlier run that died before recording it: only the state is recorded.
 
-    A lane held because verify_command failed is accepted again: the person fixes
-    it in the lane worktree, commits, and re-runs integrate."""
+    A lane that integrate itself held (hold_kind in INTEGRATE_HOLD_KINDS) is
+    accepted again: the person fixes the cause and re-runs integrate by hand.
+
+    Failure handling: a problem with the main worktree (wrong branch, dirty) halts
+    the whole run and leaves the lane as it is. Every other failure either holds
+    the lane (HOLD_KIND=...) or, when the sprint branch moved underneath, is
+    retryable (RETRYABLE=yes) at most MAX_TRANSIENT times in a row. The run is
+    wrapped in an in-progress marker so a run killed from outside is detected and
+    resumed at most MAX_INTERRUPTS times."""
     key = a.key
     lane = ctx.lane(key)
     if not lane:
         die(f"lane {key} 不存在")
+    op = lane.get("op") or {}
+    if op_live(op):
+        print("STATUS=busy")
+        print(f"REASON=lane {key} 的 {op.get('name')} 正在运行（pid {op.get('pid')}），不要重复启动，等它结束")
+        return EXIT_BUSY
+    held_by_integrate = lane.get("phase") == "held" and lane.get("hold_kind") in INTEGRATE_HOLD_KINDS
+    if op:
+        _reap_dead_op(lane)
+        if held_by_integrate:
+            ctx.save_lane(lane)
+        else:
+            n = int((lane.get("interrupted") or {}).get("integrate", 0)) + 1
+            lane.setdefault("interrupted", {})["integrate"] = n
+            if n > MAX_INTERRUPTS:
+                _hold(ctx, lane, "interrupted",
+                      f"integrate 连续 {n} 次在运行中被打断（会话结束，或命令在前台跑超过了 Bash 的时限；"
+                      f"verify_command 太慢？），不再自动重跑；sprint 分支未改动",
+                      f"WORKTREE={lane.get('worktree')}")
+            ctx.save_lane(lane)
+            print(f"NOTE=上次 integrate 在运行中被打断（第 {n} 次），从断点继续")
     stage, _ = lane_stage(ctx, lane)
-    verify_held = lane.get("phase") == "held" and lane.get("hold_kind") == "verify"
-    if lane.get("phase") not in ("integrating", "conflict") and stage != "ready" and not verify_held:
+    if lane.get("phase") not in ("integrating", "conflict") and stage != "ready" and not held_by_integrate:
         die(f"lane {key} 当前阶段 {stage}，只有 worker 回报 ready 的 lane 能合流")
     sb = lane["sprint_branch"]
     head, dirty = main_status(ctx)
@@ -1172,8 +1813,47 @@ def cmd_integrate(ctx, a):
         die(f"主 worktree 不在 sprint 分支（当前 {head!r}，应为 {sb!r}）")
     if dirty:
         die("主 worktree 不干净，合流前先处理", *[f"DIRTY={d}" for d in dirty[:20]])
+    if held_by_integrate:
+        # a person re-runs it after fixing the cause: start counting afresh
+        lane.pop("interrupted", None)
+        lane.pop("retries", None)
+
+    def body():
+        try:
+            return _integrate(ctx, lane)
+        except SystemExit as e:
+            if isinstance(e.code, str):  # git(check=True) failed: its text never reached stdout
+                _hold(ctx, lane, "git-error", e.code.replace("STATUS=halt\nREASON=", "").strip()[:500],
+                      f"WORKTREE={lane.get('worktree')}")
+            raise
+        except Exception as e:  # noqa: BLE001 — anything unexpected parks the lane, never loops
+            _hold(ctx, lane, "error", f"integrate 内部错误：{e!r}"[:500], f"WORKTREE={lane.get('worktree')}")
+
+    return _run_op(ctx, lane, "integrate", body)
+
+
+def _transient(ctx, lane, reason: str):
+    """A failure caused by the sprint branch moving under the merge: a re-run
+    re-bases and normally succeeds. Repeated in a row, it is not transient."""
+    n = int(lane.get("retries") or 0) + 1
+    lane["retries"] = n
+    if n >= MAX_TRANSIENT:
+        lane.pop("retries", None)
+        _hold(ctx, lane, "retry-limit", f"{reason}（连续 {n} 次）", f"WORKTREE={lane.get('worktree')}")
+    lane["phase"] = "integrating"
+    ctx.save_lane(lane)
+    die(reason, "RETRYABLE=yes")
+
+
+def _integrate(ctx, lane):
+    key = lane["key"]
+    sb = lane["sprint_branch"]
     wt = Path(lane["worktree"])
     branch = lane["branch"]
+    if not git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=ctx.root).stdout.strip():
+        _hold(ctx, lane, "branch-missing", f"lane 分支 {branch} 不存在", f"WORKTREE={wt}")
+    if not wt.is_dir():
+        _hold(ctx, lane, "worktree-missing", f"lane worktree {wt} 不存在")
     lane_head = git(["rev-parse", branch], cwd=ctx.root, check=True).stdout.strip()
     sprint_head = git(["rev-parse", sb], cwd=ctx.root, check=True).stdout.strip()
 
@@ -1181,12 +1861,15 @@ def cmd_integrate(ctx, a):
     # own commits; an empty lane falls through and build-verify rejects it.
     own_commits = lane_head not in (lane.get("base"), lane.get("onto"))
     if own_commits and not _rebase_in_progress(wt) and _is_ancestor(ctx, lane_head, sprint_head):
-        rc, bv_out = _build_verify(wt, key)
+        rc, bv_out = _build_verify(ctx, lane, wt)
         lane["phase"] = "merged"
         lane["merged_head"] = lane_head
         lane["merged_at"] = now_iso()
         lane["conflict_files"] = []
         lane.setdefault("notes", []).append("integrate recovered an already-merged lane")
+        lane.pop("retries", None)
+        lane.pop("hold_kind", None)
+        lane.pop("hold_reason", None)
         ctx.save_lane(lane)
         if rc != 0:
             print("WARN=补记时 build-verify 未通过；代码已在 sprint 分支上，请人工核对 BUILD_VERIFY 段")
@@ -1200,7 +1883,8 @@ def cmd_integrate(ctx, a):
     else:
         wd = [ln for ln in git(["status", "--porcelain", "-uall"], cwd=wt).stdout.splitlines() if ln.strip()]
         if wd:
-            die("lane worktree 不干净", *[f"DIRTY={d}" for d in wd[:20]])
+            _hold(ctx, lane, "lane-dirty", "lane worktree 不干净（有未提交或未跟踪的文件），sprint 分支未改动",
+                  f"WORKTREE={wt}", *[f"DIRTY={d}" for d in wd[:20]])
         if not _is_ancestor(ctx, sprint_head, branch):
             lane["phase"] = "integrating"
             lane["onto"] = sprint_head
@@ -1224,10 +1908,8 @@ def cmd_integrate(ctx, a):
                 for _t, tb in temps:
                     git(["branch", "-D", tb], cwd=ctx.root)
                 lane["carry"] = []
-                lane["phase"] = "held"
-                lane["hold_reason"] = f"git rebase 没能启动：{(rb.stderr or rb.stdout).strip()[:300]}"
-                ctx.save_lane(lane)
-                die(lane["hold_reason"], f"WORKTREE={wt}")
+                _hold(ctx, lane, "rebase", f"git rebase 没能启动：{(rb.stderr or rb.stdout).strip()[:300]}",
+                      f"WORKTREE={wt}")
             remaining = _drive_rebase(ctx, wt, lane)
             if remaining:
                 return _emit_conflict(ctx, lane, wt, remaining)
@@ -1243,9 +1925,7 @@ def cmd_integrate(ctx, a):
     # finalize
     sprint_head = git(["rev-parse", sb], cwd=ctx.root, check=True).stdout.strip()
     if not _is_ancestor(ctx, sprint_head, branch):
-        lane["phase"] = "integrating"
-        ctx.save_lane(lane)
-        die("rebase 结束后分支仍未基于 sprint 分支最新提交（sprint 分支在合流期间被改动？）重跑 integrate")
+        _transient(ctx, lane, "rebase 结束后分支仍未基于 sprint 分支最新提交（sprint 分支在合流期间被改动？）重跑 integrate")
     onto = lane["onto"]
     for t, tb in lane.get("carry", []):
         sha = git(["rev-parse", "--verify", "--quiet", f"refs/heads/{tb}"], cwd=ctx.root).stdout.strip()
@@ -1260,14 +1940,16 @@ def cmd_integrate(ctx, a):
     lane["phase"] = "integrating"
     ctx.save_lane(lane)
 
-    rc, bv_out = _build_verify(wt, key)
+    rc, bv_out = _build_verify(ctx, lane, wt)
     if rc != 0:
         lane["phase"] = "held"
         lane["hold_reason"] = "合流 rebase 后 build-verify 不通过"
-        lane.pop("hold_kind", None)
+        lane["hold_kind"] = "build-verify"
         ctx.save_lane(lane)
         print("STATUS=halt")
         print("REASON=rebase 后在 lane worktree 内重跑 build-verify 不通过；sprint 分支未改动")
+        print("HOLD_KIND=build-verify")
+        print(f"WORKTREE={wt}")
         print("BUILD_VERIFY<<")
         print(bv_out)
         print(">>")
@@ -1280,6 +1962,7 @@ def cmd_integrate(ctx, a):
         ctx.save_lane(lane)
         print("STATUS=halt")
         print(f"REASON={lane['hold_reason']}；sprint 分支未改动")
+        print("HOLD_KIND=verify")
         print("VERIFY=failed")
         print(f"WORKTREE={wt}")
         print(f"HINT=在 lane worktree 里修好并 commit，然后重跑 superh.py integrate {key}")
@@ -1293,8 +1976,9 @@ def cmd_integrate(ctx, a):
     if mr.returncode != 0:
         # integrating stays routable: the next tick sends it back here and the
         # rebase step re-bases onto whatever moved the sprint branch.
-        die(f"ff 合并失败（重跑 integrate 会重新 rebase）：{mr.stderr.strip()[:300]}")
+        _transient(ctx, lane, f"ff 合并失败（重跑 integrate 会重新 rebase）：{mr.stderr.strip()[:300]}")
     lane["phase"] = "merged"
+    lane.pop("retries", None)
     lane["merged_head"] = git(["rev-parse", "HEAD"], cwd=ctx.root).stdout.strip()
     lane["merged_at"] = now_iso()
     ctx.save_lane(lane)
@@ -1389,7 +2073,7 @@ def cmd_retry(ctx, a):
         die(f"lane {a.key} 阶段 {stage}（phase={lane.get('phase')}），不能 retry worker")
     if not Path(lane["worktree"]).is_dir():
         die("worktree 已不存在，无法续作；用 abandon 后重新 prepare")
-    if str(lane.get("hold_reason", "")).startswith("prepare 失败"):
+    if lane.get("hold_kind") in ("prepare", "foreign") or str(lane.get("hold_reason", "")).startswith("prepare 失败"):
         die("这一路卡在 prepare 阶段，retry 不会重跑 prepare；修好原因后 abandon --yes 再重新 prepare")
     lane["phase"] = "prepared"
     lane.pop("hold_reason", None)
@@ -1437,6 +2121,19 @@ def cmd_abandon(ctx, a):
         die(f"lane {a.key} 不存在")
     if lane.get("phase") in ("merged", "done"):
         die(f"lane {a.key} 已合入 sprint 分支（phase={lane.get('phase')}），不能 abandon")
+    if op_live(lane.get("op")):
+        print("STATUS=busy")
+        print(f"REASON=lane {a.key} 的 {lane['op'].get('name')} 正在运行（pid {lane['op'].get('pid')}），等它结束再 abandon")
+        return EXIT_BUSY
+    _reap_dead_op(lane)
+    if lane.get("foreign"):
+        # the branch / directory existed before this lane: not ours to delete
+        lane["phase"] = "abandoned"
+        lane["abandoned_at"] = now_iso()
+        ctx.save_lane(lane)
+        print("STATUS=ok")
+        print("NOTE=这一路的分支 / 目录不是 super-harness 建的，没有删除")
+        return 0
     wt = Path(lane["worktree"])
     if wt.exists() and _rebase_in_progress(wt):
         git(["rebase", "--abort"], cwd=wt)
@@ -1467,9 +2164,15 @@ def cmd_doctor(ctx, _a):
         loose = [ln[3:] for ln in r.stdout.splitlines() if ln.startswith("?? ")]
         tracked = bool(git(["ls-files", "--", rel], cwd=ctx.root).stdout.strip())
         if loose:
+            # the tracked configs need a commit, not an ignore rule
+            for c in [p for p in loose if p in HARNESS_TRACKED_CONFIGS]:
+                problems.append(c)
+                print(f"PROBLEM={c}：配置文件还没提交，复制进 lane 后 lane 会是脏的；git add 后提交")
+            loose = [p for p in loose if p not in HARNESS_TRACKED_CONFIGS]
+        if loose:
             problems.append(rel)
             print(f"PROBLEM={rel}：有未跟踪且未被忽略的文件（{', '.join(loose[:3])}），复制进 lane 后 lane 会是脏的")
-        else:
+        elif rel not in problems and not any(p.startswith(rel + "/") for p in problems):
             print(f"OK={rel}（{'已入库' if tracked else '被 .gitignore 忽略，开 lane 时复制'}）")
     gi = ctx.root / ".gitignore"
     gi_lines = {ln.strip() for ln in gi.read_text(encoding="utf-8").splitlines()} if gi.exists() else set()
@@ -1517,8 +2220,34 @@ def _closeout_leftovers(ctx, dirty_lines):
     return sorted(keys), bool(dirty_lines)
 
 
+def cmd_end_run(ctx, _a):
+    """Release the dispatcher lock (run.md §7 / §8 / §9)."""
+    with _lock_guard(ctx):
+        lk = read_json(ctx.state / LOCK_FILE)
+        if lk and not _same_owner(lk, lock_owner()) and _lock_live(lk):
+            _print_locked(lk, "锁不属于本会话，没有释放")
+            return EXIT_BUSY
+        try:
+            (ctx.state / LOCK_FILE).unlink()
+        except FileNotFoundError:
+            pass
+    print("STATUS=ok")
+    return 0
+
+
 def cmd_start_run(ctx, a):
-    """Pin the sprint branch for this run (the branch the main worktree is on)."""
+    """Take the dispatcher lock, pin the sprint branch for this run (the branch the
+    main worktree is on)."""
+    me = lock_owner()
+    with _lock_guard(ctx):
+        lk = read_json(ctx.state / LOCK_FILE)
+        if lk and not _same_owner(lk, me) and _lock_live(lk) and not a.take_over:
+            _print_locked(lk, "本会话不能同时调度")
+            return EXIT_BUSY
+        if lk and not _same_owner(lk, me):
+            print(f"LOCK_RECLAIMED={'taken-over' if _lock_live(lk) else 'stale'} pid={lk.get('pid')}")
+        if not _same_owner(lk, me):
+            write_json(ctx.state / LOCK_FILE, dict(me, acquired_at=now_iso()))
     head, dirty = main_status(ctx)
     if not head:
         die("主 worktree 处于 detached HEAD，先切到 sprint 分支")
@@ -1558,6 +2287,11 @@ def cmd_start_run(ctx, a):
 
 # ------------------------------------------------------------------------- main
 
+# subcommands that change lanes / git state: refused while another live session
+# holds the dispatcher lock (`report` is the worker's and stays open)
+MUTATING = ("prepare", "launch", "integrate", "retry", "mark", "cleanup", "abandon")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="superh.py", description="super-harness 调度层 CLI")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1570,8 +2304,11 @@ def main(argv=None) -> int:
     p.add_argument("--force", action="store_true")
     p.add_argument("--slots", type=int, default=None, help="本次运行的并发数（覆盖 config.max_slots，写进 run.json）")
     p.add_argument("--reset-slots", action="store_true", help="清除上次 --slots 覆盖，回到 config.max_slots")
+    p.add_argument("--take-over", action="store_true", help="接管另一个仍然活着的会话持有的调度锁（先征得用户同意）")
+    sub.add_parser("end-run")
     for name in ("prepare", "launch", "integrate", "postmerge", "retry", "cleanup"):
         p = sub.add_parser(name); p.add_argument("key")
+    p = sub.add_parser("watch"); p.add_argument("key"); p.add_argument("--interval", default="5")
     p = sub.add_parser("report")
     p.add_argument("key")
     p.add_argument("--status", required=True, choices=["ready", "blocked", "failed", "quota"])
@@ -1586,13 +2323,28 @@ def main(argv=None) -> int:
     p.add_argument("--reason", default="")
     p = sub.add_parser("abandon"); p.add_argument("key"); p.add_argument("--yes", action="store_true")
     a = ap.parse_args(argv)
+    # line-buffered: prepare / integrate run in the background and may be killed;
+    # whatever they printed up to that point should be in the output file
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     ctx = Ctx()
+    if a.cmd in MUTATING:
+        check_lock(ctx, f"不能在这里执行 {a.cmd}")
     fn = {
         "env": cmd_env, "doctor": cmd_doctor, "plan": cmd_plan, "tick": cmd_tick, "board": cmd_board, "start-run": cmd_start_run,
         "prepare": cmd_prepare, "launch": cmd_launch, "report": cmd_report, "integrate": cmd_integrate, "postmerge": cmd_postmerge,
         "mark": cmd_mark, "retry": cmd_retry, "cleanup": cmd_cleanup, "abandon": cmd_abandon,
+        "end-run": cmd_end_run, "watch": cmd_watch,
     }[a.cmd]
-    return fn(ctx, a)
+    try:
+        return fn(ctx, a)
+    except Interrupted as e:
+        # a child process group was running; run_group already killed it
+        print("STATUS=halt")
+        print(f"REASON=被信号 {e.signum} 中断（子进程组已结束）")
+        return 128 + e.signum
 
 
 if __name__ == "__main__":

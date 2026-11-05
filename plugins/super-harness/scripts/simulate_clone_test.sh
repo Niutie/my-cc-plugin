@@ -29,11 +29,14 @@ trap 'rm -rf "$TMPDIR"' EXIT
 echo "==> simulate clone to: $TMPDIR"
 
 # ---- step 1: 拷贝完整 harness（含 .claude/ 全 + BMad customization 加载点） ----
-cp "$REPO_ROOT/CLAUDE.md" "$TMPDIR/CLAUDE.md"
+# CLAUDE.md / _bmad/{customize,custom} 只有作者自己的已部署仓库才有；普通项目缺
+# 这些是正常的，缺了就跳过（之前无条件 cp，缺文件时刷 stderr 噪音）。
+[ -f "$REPO_ROOT/CLAUDE.md" ] && cp "$REPO_ROOT/CLAUDE.md" "$TMPDIR/CLAUDE.md"
 cp -R "$REPO_ROOT/.claude" "$TMPDIR/.claude"
 mkdir -p "$TMPDIR/_bmad"
-cp -R "$REPO_ROOT/_bmad/customize" "$TMPDIR/_bmad/customize"
-cp -R "$REPO_ROOT/_bmad/custom"    "$TMPDIR/_bmad/custom"
+for _d in customize custom; do
+    [ -d "$REPO_ROOT/_bmad/$_d" ] && cp -R "$REPO_ROOT/_bmad/$_d" "$TMPDIR/_bmad/$_d"
+done
 mkdir -p "$TMPDIR/_bmad-output/implementation-artifacts/test_artifacts"
 
 # ---- step 2: 写最小 harness-project-config.yaml（覆盖原项目 config） ----
@@ -127,7 +130,9 @@ echo "    ✓ 0 处残留旧路径"
 echo ""
 echo "==> install_git_hooks.sh"
 git init -q "$TMPDIR" >/dev/null 2>&1 || true
-if bash "$TMPDIR/.claude/harness/scripts/install_git_hooks.sh" >/dev/null 2>&1; then
+# installer 用 `git rev-parse --show-toplevel` 定位仓库：必须在 $TMPDIR 里跑，
+# 否则会装进调用方当前所在的仓库（并在用户自有 hook 时 exit 3）。
+if (cd "$TMPDIR" && bash "$TMPDIR/.claude/harness/scripts/install_git_hooks.sh") >/dev/null 2>&1; then
     if [ -x "$TMPDIR/.git/hooks/pre-commit" ]; then
         echo "    ✓ install_git_hooks.sh 装上 pre-commit hook"
     else

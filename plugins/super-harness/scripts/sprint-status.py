@@ -4,6 +4,9 @@
 用法:
     python3 .claude/harness/scripts/sprint-status.py next
         → stdout 输出下一条 backlog story 的 key（如 "1-2-foo"），找不到时退出码 1。
+          跳过声明了依赖但依赖没满足的 story（deps_overrides → 顶层 story_dependencies
+          → 块写法 depends_on，和 superh.py 同源；`ext-*` 外部条件一直算没满足）。
+          因此而找不到时 stderr 打 `waiting=<key>(<deps>);...`。没声明依赖的按文件顺序。
 
     python3 .claude/harness/scripts/sprint-status.py count
         → stdout 输出 "<backlog_count>/<total_story_count>"。
@@ -23,6 +26,8 @@
 
     python3 .claude/harness/scripts/sprint-status.py epic-all-done <epic_num>
         → 退出码 0 表示该 epic 所有 story 均已终态，1 表示还有未完成。
+          harness-project-config.yaml 的 parked_statuses（挂起状态）不算未完成，
+          stderr 另打一行 `parked=<key>(<status>),...`；但一条 done 都没有时退出码 1。
           未完成时 stderr 打印清单，并按状态分两行：
             active=<key>(<status>),...        BMad 标准的进行中状态（backlog /
                                               ready-for-dev / in-progress / review）
@@ -40,7 +45,14 @@
 
     python3 .claude/harness/scripts/sprint-status.py next-in-epic <epic_num>
         → 输出该 epic 内的下一条 backlog story key（yaml 出现顺序最早的一条），
-          找不到时退出码 1。run-sprint --epic 模式的循环退出条件用它。
+          找不到时退出码 1。run-sprint --epic 模式的循环退出条件用它。依赖规则同 next。
+
+    python3 .claude/harness/scripts/sprint-status.py open-epics
+        → 每行 `<epic_num>\t<retro_status>\t<all-done|active|parked>`，按 yaml 顺序列出
+          epic-N-retrospective 不是 done 的 epic（没有 retrospective 行的记 `missing`）。
+          第三列：该 epic 的 story 是否已全终态（同 epic-all-done，挂起算终态）；
+          parked = 没有 done 的 story、其余全是挂起或放弃。没有 story 的
+          epic 不列。run-inline `all` 模式收尾时用它找卡住的 story / 漏跑的 retro。
 
     python3 .claude/harness/scripts/sprint-status.py epic-stories <epic_num>
         → 每行 `<key>\t<status>`，列出该 epic 的全部 story（harness-commit stage 6
@@ -51,6 +63,13 @@
           （open / in-progress / done）。找不到 id 时退出码 1。retro-fulfill 翻
           harness `retro_action_items` 的同时用它同步原生账（id 约定
           `epic-<N>-retro-<CODE>`，见 bmad-retrospective-suffix.md）。
+
+    python3 .claude/harness/scripts/sprint-status.py flatten-deps [--check]
+        → 把 development_status 里的多行块（key + 嵌套 status / depends_on）改写成单行
+          `key: status`，depends_on 挪到顶层 story_dependencies（已有的条目不覆盖）。
+          BMad 6.12.4 的 sprint_plan.py / retrospective 脚本只认单行写法（issue #14）。
+          stdout 打印改写条数。`--check` 只报告：0 = 无需改写，3 = 需要改写。
+          块里有 status / depends_on 以外的字段时什么都不写，stderr 打 PROBLEM= 行，退出码 4。
 
     python3 .claude/harness/scripts/sprint-status.py migrate-retro-items [--check]
         → 把 retro_action_items 里 ≤ 0.1.39 的标量写法（`A1: pending` + 过缩进子键，
@@ -63,7 +82,8 @@
 
 故意手写 yaml 解析（避免引入 PyYAML 依赖）。兼容 development_status 下两种布局：
   - 单行：`  <key>: <status>`（含行尾 inline 注释）
-  - 多行块（BMad v6.7.1+ bmad-sprint-planning 默认，带 depends_on）：
+  - 多行块（带 depends_on；BMad 6.12.4 自己的 sprint_plan.py / retrospective 脚本读不了
+    这种写法，issue #14，用 6.12 的项目改用单行 + 顶层 story_dependencies）：
         <key>:
           status: backlog
           depends_on: [...]
@@ -84,6 +104,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from harness_config import get_artifacts_root, get_sprint_status_path  # noqa: E402
+try:
+    from harness_config import get_parked_statuses  # noqa: E402
+except ImportError:  # pragma: no cover — older deployed harness_config
+    def get_parked_statuses():
+        return ()
 from harness_spec import (  # noqa: E402
     ACTIVE_STORY_STATUSES,
     DROPPED_STORY_STATUSES,
@@ -230,12 +255,66 @@ def cmd_action_status(item_id: str, new_status: str | None) -> int:
     return 0
 
 
-def cmd_next() -> int:
+def _unmet_deps() -> dict[str, list[str]]:
+    """{backlog story key: [unmet dependency tokens]} from the same sources
+    /super-harness:run uses — parallel.yaml deps_overrides, then sprint-status
+    top-level story_dependencies, then a block entry's depends_on. `ext-*` tokens
+    (outside conditions) are always unmet; so is a token that names no story.
+    A story with no declared dependencies is never listed here: run-inline goes
+    in file order anyway."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "superh_for_sprint_status", str(Path(__file__).resolve().parent / "superh.py"))
+        sh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(sh)
+        stories, _ = sh.parse_sprint(SPRINT_FILE)
+        cfg_path = PROJECT_ROOT / ".claude" / "harness" / "parallel.yaml"
+        overrides = sh.load_config(cfg_path).get("deps_overrides") or {} if cfg_path.exists() else {}
+    except (Exception, SystemExit):
+        return {}
+    status = {st["key"]: st["status"] for st in stories}
+    out: dict[str, list[str]] = {}
+    for st in stories:
+        if st["status"] != "backlog":
+            continue
+        deps = overrides.get(st["key"], st["deps"])
+        if deps is None:
+            continue
+        if isinstance(deps, str):
+            deps = [deps]
+        unmet = []
+        for d in deps:
+            d = str(d)
+            if d.startswith("ext-"):
+                unmet.append(d)
+                continue
+            ks = sh.resolve_dep(d, stories)
+            if not ks:
+                unmet.append(f"{d}(无法解析)")
+            unmet += [k for k in ks if k != st["key"] and status.get(k) not in TERMINAL_STORY_STATUSES]
+        if unmet:
+            out[st["key"]] = unmet
+    return out
+
+
+def _next_backlog(prefix: str = "") -> int:
+    unmet = _unmet_deps()
+    waiting = []
     for _, key, status in _iter_dev_status():
-        if status == "backlog":
+        if status == "backlog" and key.startswith(prefix):
+            if key in unmet:
+                waiting.append(f"{key}({','.join(unmet[key])})")
+                continue
             print(key)
             return 0
+    if waiting:
+        print("waiting=" + ";".join(waiting), file=sys.stderr)
     return 1
+
+
+def cmd_next() -> int:
+    return _next_backlog()
 
 
 def cmd_count() -> int:
@@ -322,8 +401,16 @@ def cmd_epic_all_done(epic_num: str) -> int:
     matched = [(k, s) for _, k, s in items if k.startswith(prefix)]
     if not matched:
         sys.exit(f"epic {epic_num} 在 sprint-status 中没有 story")
-    pending = [(k, s) for k, s in matched if s not in TERMINAL_STORY_STATUSES]
+    parked_set = set(get_parked_statuses())
+    parked = [(k, s) for k, s in matched if s in parked_set]
+    pending = [(k, s) for k, s in matched if s not in TERMINAL_STORY_STATUSES and s not in parked_set]
     if not pending:
+        if parked and not any(s == "done" for _, s in matched):
+            print(f"epic {epic_num}: 没有 done 的 story，其余都挂起或放弃，没有可回顾的内容；"
+                  f"parked={','.join(f'{k}({s})' for k, s in parked)}", file=sys.stderr)
+            return 1
+        if parked:
+            print(f"parked={','.join(f'{k}({s})' for k, s in parked)}", file=sys.stderr)
         return 0
 
     def fmt(pairs):
@@ -369,6 +456,130 @@ def cmd_migrate_retro_items(check_only: bool) -> int:
     return 0
 
 
+_FLAT_KEY_RE = re.compile(r"^(\s+)([^\s:#][^\s:]*):\s*(#.*)?$")
+_FLAT_NESTED_RE = re.compile(r"^\s+([A-Za-z_]+):\s*(.*?)\s*$")
+
+
+def flatten_dev_status_text(text: str) -> tuple[str, int, list[str]]:
+    """Rewrite block entries under development_status (`key:` + nested `status:` /
+    `depends_on:`) as single-line `key: status`, moving depends_on into the
+    top-level `story_dependencies` map (issue #14: BMad 6.12.4's sprint_plan.py and
+    retrospective sprint_status.py only read the single-line layout).
+
+    Returns (new_text, converted_count, problems). Entries already present in
+    story_dependencies keep their existing value. A block with any nested field
+    other than status / depends_on is reported in problems and nothing is written
+    (the caller refuses), so no information is dropped silently."""
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    deps: dict[str, list[str]] = {}
+    problems: list[str] = []
+    converted = 0
+    i, n = 0, len(lines)
+    in_dev = False
+    base = None
+    while i < n:
+        line = lines[i]
+        raw = line.rstrip("\r\n")
+        if raw.startswith("development_status:"):
+            in_dev = True
+            out.append(line)
+            i += 1
+            continue
+        if in_dev and raw and not raw[0].isspace() and not raw.startswith("#"):
+            in_dev = False
+        if not in_dev or not raw.strip() or raw.lstrip().startswith("#"):
+            out.append(line)
+            i += 1
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        if base is None:
+            base = indent
+        m = _FLAT_KEY_RE.match(raw) if indent == base else None
+        if not m:
+            out.append(line)
+            i += 1
+            continue
+        key, comment = m.group(2), m.group(3)
+        j = i + 1
+        status, dlist, extra = None, None, []
+        while j < n:
+            r = lines[j].rstrip("\r\n")
+            if r.strip() and (len(r) - len(r.lstrip())) <= base:
+                break
+            st = r.strip()
+            if not st or st.startswith("#"):
+                j += 1
+                continue
+            if st.startswith("- ") and dlist is not None:
+                dlist.append(st[2:].split(" #")[0].strip().strip("'\""))
+                j += 1
+                continue
+            mm = _FLAT_NESTED_RE.match(r)
+            if mm and mm.group(1) == "status":
+                status = mm.group(2).split(" #")[0].strip().strip("'\"")
+            elif mm and mm.group(1) == "depends_on":
+                v = mm.group(2).split(" #")[0].strip()
+                if v.startswith("["):
+                    inner = v[1:v.rfind("]")] if "]" in v else v[1:]
+                    dlist = [x.strip().strip("'\"") for x in inner.split(",") if x.strip()]
+                elif v:
+                    dlist = [v.strip("'\"")]
+                else:
+                    dlist = []
+            else:
+                extra.append(st)
+            j += 1
+        if status is None:
+            out.extend(lines[i:j])
+            i = j
+            continue
+        if extra:
+            problems.append(f"{key}: 除 status / depends_on 外还有字段 {extra[:3]}")
+        eol = "\r\n" if line.endswith("\r\n") else "\n"
+        out.append(f"{' ' * base}{key}: {status}" + (f"  {comment}" if comment else "") + eol)
+        if dlist is not None:
+            deps[key] = dlist
+        converted += 1
+        i = j
+    new_text = "".join(out)
+    if deps:
+        harness_spec = __import__("harness_spec")
+        existing = harness_spec.parse_story_dependencies(new_text)
+        add = {k: v for k, v in deps.items() if k not in existing}
+        if add:
+            def fmt(v):
+                return "[" + ", ".join(v) + "]"
+            body = "".join(f"  {k}: {fmt(v)}\n" for k, v in add.items())
+            if re.search(r"(?m)^story_dependencies:\s*(#.*)?$", new_text):
+                # insert right after the existing header line
+                new_text = re.sub(r"(?m)^(story_dependencies:[^\n]*\n)", lambda mo: mo.group(1) + body,
+                                  new_text, count=1)
+            else:
+                if not new_text.endswith("\n"):
+                    new_text += "\n"
+                new_text += ("\n# 依赖（issue #14：BMad 6.12.4 只认单行 development_status；"
+                             "super-harness 从这里读依赖）\nstory_dependencies:\n" + body)
+    return new_text, converted, problems
+
+
+def cmd_flatten_deps(check_only: bool) -> int:
+    if not SPRINT_FILE.exists():
+        sys.exit(f"missing {SPRINT_FILE}")
+    text = SPRINT_FILE.read_text(encoding="utf-8")
+    new_text, n, problems = flatten_dev_status_text(text)
+    print(n)
+    if problems:
+        for pr in problems:
+            print(f"PROBLEM={pr}", file=sys.stderr)
+        return 4
+    if check_only:
+        return 3 if n else 0
+    if n:
+        _atomic_write(SPRINT_FILE, new_text)
+    return 0
+
+
 def cmd_epic_stories(epic_num: str) -> int:
     """每行 `<key>\t<status>`，该 epic 的全部 story（yaml 顺序）。"""
     prefix = f"{epic_num}-"
@@ -378,13 +589,44 @@ def cmd_epic_stories(epic_num: str) -> int:
     return 0
 
 
+def cmd_open_epics() -> int:
+    """每行 `<epic>\t<retro_status>\t<all-done|active>`：retro 不是 done 的 epic。"""
+    items = _iter_dev_status(include_epic_keys=True)
+    retro: dict[str, str] = {}
+    stories: dict[str, list[str]] = {}
+    order: list[str] = []
+    for _, k, st in items:
+        m = re.match(r"^epic-(\d+)-retrospective$", k)
+        if m:
+            retro[m.group(1)] = st
+            continue
+        if k.startswith("epic-"):
+            continue
+        head = k.split("-", 1)[0]
+        if not head.isdigit():
+            continue
+        if head not in stories:
+            stories[head] = []
+            order.append(head)
+        stories[head].append(st)
+    for epic in order:
+        rs = retro.get(epic, "missing")
+        if rs == "done":
+            continue
+        parked_set = set(get_parked_statuses())
+        settled = all(st in TERMINAL_STORY_STATUSES or st in parked_set for st in stories[epic])
+        if not settled:
+            col = "active"
+        elif any(st in parked_set for st in stories[epic]) and "done" not in stories[epic]:
+            col = "parked"      # nothing delivered yet: no retro to run
+        else:
+            col = "all-done"
+        print(f"{epic}\t{rs}\t{col}")
+    return 0
+
+
 def cmd_next_in_epic(epic_num: str) -> int:
-    prefix = f"{epic_num}-"
-    for _, key, status in _iter_dev_status():
-        if key.startswith(prefix) and status == "backlog":
-            print(key)
-            return 0
-    return 1
+    return _next_backlog(f"{epic_num}-")
 
 
 def cmd_find_by_status(state: str) -> int:
@@ -426,6 +668,12 @@ def main(argv: list[str]) -> int:
         if len(argv) == 3 and argv[2] != "--check":
             sys.exit(__doc__)
         return cmd_migrate_retro_items(len(argv) == 3)
+    if cmd == "flatten-deps" and len(argv) in (2, 3):
+        if len(argv) == 3 and argv[2] != "--check":
+            sys.exit(__doc__)
+        return cmd_flatten_deps(len(argv) == 3)
+    if cmd == "open-epics" and len(argv) == 2:
+        return cmd_open_epics()
     if cmd == "epic-stories" and len(argv) == 3:
         return cmd_epic_stories(argv[2])
     if cmd == "action-status" and len(argv) in (3, 4):

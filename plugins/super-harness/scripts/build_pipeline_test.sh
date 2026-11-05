@@ -16,8 +16,11 @@
 #   H1 — harness-state next_action_code walks not-started → build →
 #        build-verify → sync / codex / followup → tag-only, plus --story-md
 #        and --in-flight
+#   H2 — zero-finding codex review: stage 4 commits the `- [none]` row and does
+#        not route to followup; a real finding still does
 #   A1 — sprint-status.py action-status get/set on native action_items;
-#        epic-all-done treats wont-do as terminal
+#        epic-all-done treats wont-do as terminal; open-epics lists epics
+#        whose retro is not done (active / all-done)
 #   P1 — harness-prompt-suffix.py build / implement / chore emit their blocks
 #   R1 — check_bmad_runtime.sh: missing skill + no uv → STATUS=fail with
 #        REMEDIATION lines; installed layout + fake uv → STATUS=ok
@@ -342,6 +345,44 @@ rm -rf "$dir"
 if [ "$h_ok" = 1 ]; then pass "H1 harness-state build pipeline codes"; else fail "H1" "$h_log"; fi
 
 # ============================================================================
+# H2 — B2 codex with zero findings: stage 4 commits the `- [none]` row only and
+#      is not a B3 trigger; a real finding still routes to followup
+# ============================================================================
+hc_commit() {  # $1 dir  $2 stage — run harness-commit, commit with its message
+    (cd "$1" && out="$(python3 "$HC" "$2" 9-1-foo 2>&1)"; rc=$?
+     [ "$rc" = 0 ] || { echo "rc=$rc $out"; exit 1; }
+     msg="$(printf '%s\n' "$out" | sed -n 's/^SUGGEST_COMMIT_MSG=//p')"
+     git commit -q -m "$msg" || exit 1)
+}
+h2_case() {  # $1 = clean|finding ; echoes "<code after 3> <code after 4> <findings> <none_row>"
+    local d; d="$(seed_repo)"
+    (cd "$d" && write_spec "$d" done '' '' && echo y >> src/a.py && git add -A && git commit -q -m feat && git tag harness/9-1-foo/built)
+    if [ "$1" = clean ]; then
+        printf -- '---\nstory: 9-1-foo\nbase: x\n---\n\n# Codex Adversarial Review\n\nTarget: t\nVerdict: approve\n\nok\n\nNo material findings.\n' > "$d/$ART/9-1-foo.codex-review.md"
+        row='- [none] codex 报告 No material findings.，无需处理'
+    else
+        printf -- '---\nstory: 9-1-foo\nbase: x\n---\n\n# Codex Adversarial Review\n\nTarget: t\nVerdict: needs-attention\n\nx\n\nFindings:\n- [high] rate limit bypass (src/a.py:1)\n  body\n' > "$d/$ART/9-1-foo.codex-review.md"
+        row='- [F-1 high] rate limit bypass — fixed: 改了 src/a.py'
+    fi
+    local e3 c3 c4 j
+    e3="$(hc_commit "$d" 3)" || { echo "commit3-failed:$e3"; rm -rf "$d"; return; }
+    c3="$(code_of "$d" 9-1-foo)"
+    [ "$1" = clean ] || echo z >> "$d/src/a.py"
+    printf '\n### Codex Review Handling (Stage 3)\n\n%s\n' "$row" >> "$d/$ART/spec-9-1-foo.md"
+    e3="$(hc_commit "$d" 4)" || { echo "commit4-failed:$e3"; rm -rf "$d"; return; }
+    c4="$(code_of "$d" 9-1-foo)"
+    j="$(cd "$d" && python3 "$HS" 9-1-foo 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["codex_findings"], d["codex_handling_none"], d["codex_handling_rows"])')"
+    echo "$c3 $c4 $j"
+    rm -rf "$d"
+}
+r_clean="$(h2_case clean)"; r_find="$(h2_case finding)"
+if [ "$r_clean" = "codex-fix sync 0 True 0" ] && [ "$r_find" = "codex-fix followup 1 False 1" ]; then
+    pass "H2 zero-finding codex review"
+else
+    fail "H2" "clean=[$r_clean] finding=[$r_find]"
+fi
+
+# ============================================================================
 # A1 — action-status + wont-do terminal
 # ============================================================================
 dir="$(seed_repo)"
@@ -350,8 +391,13 @@ v="$(cd "$dir" && python3 "$SS" action-status epic-8-retro-H1 2>/dev/null)"; [ "
 (cd "$dir" && python3 "$SS" action-status epic-8-retro-H1 done >/dev/null 2>&1)
 v="$(cd "$dir" && python3 "$SS" action-status epic-8-retro-H1 2>/dev/null)"; [ "$v" = done ] || { a_ok=0; a_log+=" set:$v"; }
 (cd "$dir" && python3 "$SS" action-status nope >/dev/null 2>&1) && { a_ok=0; a_log+=" missing-id-rc0"; }
-(cd "$dir" && python3 "$SS" set 9-1-foo done >/dev/null 2>&1 && python3 "$SS" set 9-2-bar wont-do >/dev/null 2>&1)
+(cd "$dir" && python3 "$SS" set 9-1-foo done >/dev/null 2>&1 && python3 "$SS" set 9-2-bar review >/dev/null 2>&1)
+v="$(cd "$dir" && python3 "$SS" open-epics 2>/dev/null)"; [ "$v" = "$(printf '9\toptional\tactive')" ] || { a_ok=0; a_log+=" open-epics-active:$v"; }
+(cd "$dir" && python3 "$SS" set 9-2-bar wont-do >/dev/null 2>&1)
 (cd "$dir" && python3 "$SS" epic-all-done 9 >/dev/null 2>&1) || { a_ok=0; a_log+=" wont-do-not-terminal"; }
+v="$(cd "$dir" && python3 "$SS" open-epics 2>/dev/null)"; [ "$v" = "$(printf '9\toptional\tall-done')" ] || { a_ok=0; a_log+=" open-epics-all-done:$v"; }
+(cd "$dir" && python3 "$SS" set epic-9-retrospective done >/dev/null 2>&1)
+v="$(cd "$dir" && python3 "$SS" open-epics 2>/dev/null)"; [ -z "$v" ] || { a_ok=0; a_log+=" open-epics-retro-done:$v"; }
 rm -rf "$dir"
 if [ "$a_ok" = 1 ]; then pass "A1 action-status + wont-do terminal"; else fail "A1" "$a_log"; fi
 
@@ -392,7 +438,10 @@ fi
 # ============================================================================
 # G1 — pre-commit gate ① trigger regex
 # ============================================================================
-TRIG="$(sed -n "s/^RETRO_TRIGGER='\(.*\)'$/\1/p" "$SCRIPT_DIR/../git-hooks/pre-commit")"
+# 0.3.1：hook 的 RETRO_TRIGGER 由 artifacts_root 动态拼出，这里抽文件名部分，
+# 按缺省 artifacts 目录拼回完整正则（自定义 artifacts_root 见 pre_commit_gate_test.sh）。
+TRIG_NAME="$(sed -n "s/^RETRO_SPEC_NAME_RE='\(.*\)'$/\1/p" "$SCRIPT_DIR/../git-hooks/pre-commit")"
+TRIG="^$ART/$TRIG_NAME"
 g_ok=1
 for p in "$ART/spec-130-7-mcp.md" "$ART/5-1-foo.md" "$ART/12-3-中文.md"; do
     echo "$p" | grep -qE "$TRIG" || { g_ok=0; echo "  should hit: $p" >&2; }
@@ -400,6 +449,7 @@ done
 for p in "$ART/5-1-foo.codex-review.md" "$ART/spec-gl-1267-x.md" "$ART/spec-1012-guard.md" "$ART/epic-5-retro-2026.md"; do
     echo "$p" | grep -qE "$TRIG" && { g_ok=0; echo "  should miss: $p" >&2; }
 done
+[ -n "$TRIG_NAME" ] || g_ok=0
 if [ "$g_ok" = 1 ]; then pass "G1 gate ① trigger regex"; else fail "G1" "regex=$TRIG"; fi
 
 # ============================================================================

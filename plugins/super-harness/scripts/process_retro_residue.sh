@@ -4,26 +4,35 @@
 # 编排 fresh agent 把 retro_action_items 块中"未 done 且未生成 chore spec"的项
 # 转为可执行的 chore-retro-c${EPIC}-<code>-<slug>.md 前置 spec。
 #
-# 架构与 C12 backfill_resolved_markers.sh 一致：shell 只做 IO 编排（不调 LLM），
-# 输出 stdout = fresh agent prompt 全文 + 当前 epic retro markdown 全文 + retro_action_items
-# 当前块 yaml + 待 process 列表 + 已有 chore_spec 黑名单。主 agent 拷给 fresh agent，
-# 收 `=== FILE: ... ===` 块逐个 Write，再 diff merge sprint-status.yaml 给被 process 的项加
-# chore_spec 字段。
+# 架构与 C12 backfill_resolved_markers.sh 一致：shell 只做 IO 编排（不调 LLM）。
+# 渲染好的 fresh agent prompt（prompt 模板 + 当前 epic retro markdown 全文 +
+# retro_action_items 当前块 yaml + 待 process 列表 + 已有 chore_spec 黑名单）写进
+# 仓库外的临时文件，stdout 只打印几行机读摘要。主 agent 只把 PROMPT_FILE 路径交给
+# fresh agent，由它自己 Read、自己 Write chore spec，回报一个短 MANIFEST；主 agent
+# 不转抄 prompt，也不转抄 spec 正文（v0.3.x：此前 stdout 直出 ~20 KB prompt，主 agent
+# 要整段复述进 Agent prompt，再把返回的 spec 逐个复述进 Write）。
 #
 # 用法：
 #   bash .claude/harness/scripts/process_retro_residue.sh --epic 1
-#   bash .claude/harness/scripts/process_retro_residue.sh --epic 2
-#   bash .claude/harness/scripts/process_retro_residue.sh --epic 3
+#   bash .claude/harness/scripts/process_retro_residue.sh --epic 2 --stdout   # 调试：整段 prompt 直出 stdout
+#
+# stdout（退出码 0，默认模式）：
+#   RETRO RESIDUE PROCESSOR: EPIC=<N> project=<display name>
+#   PROMPT_FILE=<绝对路径>        mktemp 生成，位于 ${TMPDIR:-/tmp}，用完由调用方删除
+#   PENDING_COUNT=<n>
+#   PENDING_CODES=<code1 code2 ...>
+#   ARTIFACT_DIR=<chore spec 写入目录的绝对路径>
 #
 # 退出码：
-#   0   = 输出 prompt + 待 process 列表（≥ 1 项）；主 agent 接管
+#   0   = 有待处理项（≥ 1 项），prompt 已写入 PROMPT_FILE（--stdout 时直出 stdout）
 #   2   = 无残余（全 done / 全 deferred / 全已有 chore_spec）；幂等成功；不 commit
-#   1+  = 错误（参数 / 文件缺失 / yaml 异常）
+#   1+  = 错误（参数 / 文件缺失 / yaml 异常 / 临时文件写失败）
 #
 # 测试入口（fixture 模式 — 测试脚本调用）：
 #   --sprint-status <path>   覆盖 sprint-status.yaml 路径（默认仓库内）
 #   --retro-md <path>        覆盖 retro markdown 路径（默认按 EPIC 自动定位最近一份）
-#   --artifact-dir <path>    覆盖 chore-retro-* 现存文件搜索目录（默认仓库内）
+#   --artifact-dir <path>    覆盖 chore-retro-* 现存文件搜索目录 / 写入目录（默认仓库内）
+#   --stdout                 不写临时文件，整段 prompt 打到 stdout（旧行为，调试用）
 
 set -euo pipefail
 
@@ -75,6 +84,7 @@ EPIC=""
 SPRINT_STATUS=""
 RETRO_MD=""
 ARTIFACT_DIR=""
+TO_STDOUT=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -94,9 +104,13 @@ while [[ $# -gt 0 ]]; do
             ARTIFACT_DIR="${2:-}"
             shift 2
             ;;
+        --stdout)
+            TO_STDOUT=1
+            shift
+            ;;
         *)
             echo "ERROR: unknown arg: $1" >&2
-            echo "Usage: $0 --epic <1|2|3> [--sprint-status <path>] [--retro-md <path>] [--artifact-dir <path>]" >&2
+            echo "Usage: $0 --epic <1|2|3> [--sprint-status <path>] [--retro-md <path>] [--artifact-dir <path>] [--stdout]" >&2
             exit 1
             ;;
     esac
@@ -286,77 +300,108 @@ if [[ ${#PENDING_CODES[@]} -eq 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. 输出 prompt 到 stdout（主 agent 接管，喂给 fresh general-purpose agent）
+# 5. 渲染 prompt（默认写临时文件，--stdout 时直出）
 # ---------------------------------------------------------------------------
-echo "================================================================="
-echo "# CHORE C10 — RETRO RESIDUE PROCESSOR — EPIC=${EPIC}"
-echo "================================================================="
-echo ""
-echo "## ROLE & TASK INSTRUCTIONS（按下面 prompt 模板执行）"
-echo ""
+# ARTIFACT_DIR 规范成绝对路径：fresh agent 按它拼 chore spec 的写入路径。
+ARTIFACT_DIR_ABS="$(cd "$ARTIFACT_DIR" 2>/dev/null && pwd)" || {
+    echo "ERROR: artifact dir not found: $ARTIFACT_DIR" >&2
+    exit 1
+}
 # 占位符替换 — \${project_display_name} 由 harness-project-config.yaml 提供值。
 # 设计原则：harness 通用化 — clone 到新项目时仅改 yaml，prompt 模板不动。
 # review 2026-06-10 #50：替换逻辑收敛进 prompt_template_lib.sh（字面替换，
 # display name 含 & / \ / 引号不再损坏输出或崩溃）。
 PROJECT_DISPLAY_NAME="$(read_harness_config_field project_display_name 'this project')"
-render_prompt_template "$PROMPT_TEMPLATE" "$PROJECT_DISPLAY_NAME"
-echo ""
-echo "================================================================="
-echo "## 当前 batch 元信息"
-echo "================================================================="
-echo ""
-echo "- **EPIC**：${EPIC}"
-echo "- **retro markdown**：\`${RETRO_MD#$ROOT/}\`"
-echo "- **action items 总数（epic-${EPIC}-retro 段）**：${#CODES[@]}"
-echo "- **已有 chore_spec 字段**：${#EXISTING_SPECS[@]}"
-echo "- **待 process（pending / in-progress / partial 且 chore_spec 缺失）**：${#PENDING_CODES[@]}"
-echo ""
-echo "### 待 process 列表"
-echo ""
-for i in "${!PENDING_CODES[@]}"; do
-    echo "- \`${PENDING_CODES[$i]}\` (status=\`${PENDING_STATUSES[$i]}\`)"
-done
-echo ""
-if [[ ${#EXISTING_SPECS[@]} -gt 0 ]]; then
-    echo "### 已有 chore_spec 字段（黑名单 — 不再生成）"
+
+emit_prompt() {
+    echo "================================================================="
+    echo "# CHORE C10 — RETRO RESIDUE PROCESSOR — EPIC=${EPIC}"
+    echo "================================================================="
     echo ""
-    for entry in "${EXISTING_SPECS[@]}"; do
-        echo "- \`${entry}\`"
+    echo "## ROLE & TASK INSTRUCTIONS（按下面 prompt 模板执行）"
+    echo ""
+    render_prompt_template "$PROMPT_TEMPLATE" "$PROJECT_DISPLAY_NAME"
+    echo ""
+    echo "================================================================="
+    echo "## 当前 batch 元信息"
+    echo "================================================================="
+    echo ""
+    echo "- **EPIC**：${EPIC}"
+    echo "- **retro markdown**：\`${RETRO_MD#"$ROOT"/}\`"
+    echo "- **chore spec 写入目录（ARTIFACT_DIR）**：\`${ARTIFACT_DIR_ABS}\`"
+    echo "- **action items 总数（epic-${EPIC}-retro 段）**：${#CODES[@]}"
+    echo "- **已有 chore_spec 字段**：${#EXISTING_SPECS[@]}"
+    echo "- **待 process（pending / in-progress / partial 且 chore_spec 缺失）**：${#PENDING_CODES[@]}"
+    echo ""
+    echo "### 待 process 列表"
+    echo ""
+    for i in "${!PENDING_CODES[@]}"; do
+        echo "- \`${PENDING_CODES[$i]}\` (status=\`${PENDING_STATUSES[$i]}\`)"
     done
     echo ""
+    if [[ ${#EXISTING_SPECS[@]} -gt 0 ]]; then
+        echo "### 已有 chore_spec 字段（黑名单 — 不再生成）"
+        echo ""
+        for entry in "${EXISTING_SPECS[@]}"; do
+            echo "- \`${entry}\`"
+        done
+        echo ""
+    fi
+    echo "================================================================="
+    echo "## 输入文件 1/2 — retro markdown 全文（${RETRO_MD#"$ROOT"/}）"
+    echo "================================================================="
+    echo ""
+    echo '```markdown'
+    cat "$RETRO_MD"
+    echo '```'
+    echo ""
+    echo "================================================================="
+    echo "## 输入文件 2/2 — sprint-status.yaml retro_action_items.epic-${EPIC}-retro 块"
+    echo "================================================================="
+    echo ""
+    echo '```yaml'
+    echo "retro_action_items:"
+    echo "  epic-${EPIC}-retro:"
+    echo "$RETRO_BLOCK"
+    echo '```'
+    echo ""
+    echo "================================================================="
+    echo "## 输出要求（重申）"
+    echo "================================================================="
+    echo ""
+    echo "对 ${#PENDING_CODES[@]} 项待 process action items 逐项生成 chore spec，用 Write 直接写到"
+    echo "\`${ARTIFACT_DIR_ABS}/chore-retro-c${EPIC}-<code>-<slug>.md\`。写之前先确认目标文件不存在；"
+    echo "已存在就不写，在 MANIFEST 里把该项记成 \`<code>: COLLISION <filename>\`，然后停止。"
+    echo "spec 内容严格按 prompt 模板的范式（Intent / Boundaries / I/O Matrix / Code Map /"
+    echo "Tasks & Acceptance / Design Notes / Verification）。除这些新 spec 外不写、不改任何文件"
+    echo "（含 sprint-status.yaml、retro markdown），不做任何 git 操作。"
+    echo ""
+    echo "回复只包含一个 \`=== MANIFEST ===\` block（每行 \`<code>: <dev|harness> <filename>\`，"
+    echo "以 \`=== END MANIFEST ===\` 结束）和一段 ≤ 200 字总结。不要在回复里贴 spec 正文。"
+    echo "主 agent 据 MANIFEST 写 sprint-status.yaml 的 \`chore_spec:\` / \`category:\` 字段；"
+    echo "rubric / 边界判定 / 模糊归 harness 等约束详见 prompt 模板的 \"Category 分类 rubric\" 段。"
+    echo ""
+}
+
+if [[ "$TO_STDOUT" -eq 1 ]]; then
+    emit_prompt
+    exit 0
 fi
-echo "================================================================="
-echo "## 输入文件 1/2 — retro markdown 全文（${RETRO_MD#$ROOT/}）"
-echo "================================================================="
-echo ""
-echo '```markdown'
-cat "$RETRO_MD"
-echo '```'
-echo ""
-echo "================================================================="
-echo "## 输入文件 2/2 — sprint-status.yaml retro_action_items.epic-${EPIC}-retro 块"
-echo "================================================================="
-echo ""
-echo '```yaml'
-echo "retro_action_items:"
-echo "  epic-${EPIC}-retro:"
-echo "$RETRO_BLOCK"
-echo '```'
-echo ""
-echo "================================================================="
-echo "## 输出要求（重申）"
-echo "================================================================="
-echo ""
-echo "对**${#PENDING_CODES[@]} 项**待 process action items 逐项生成 chore spec，"
-echo "每个 spec 严格包裹在 \`=== FILE: chore-retro-c${EPIC}-<code>-<slug>.md ===\` 与"
-echo "\`=== END FILE ===\` 之间。spec 内容严格按 prompt 模板的 5 段范式（Intent / Boundaries"
-echo "/ I/O Matrix / Code Map / Tasks & Acceptance / Design Notes / Verification）。"
-echo ""
-echo "**所有 FILE block 之后**输出一个 \`=== MANIFEST ===\` block，列每条 chore 的 code → category"
-echo "映射（dev | harness）。主 agent 据此写 sprint-status.yaml 的 \`category:\` 字段。"
-echo "rubric / 边界判定 / 模糊归 harness 等约束详见 prompt 模板的 \"Category 分类 rubric\" 段。"
-echo ""
-echo "末尾另起一段给主 agent 的简短总结（≤ 200 字）：本批生成 spec 数 / 跳过数 / dev:harness 比例 / 任何异常。"
-echo ""
+
+PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/retro-residue-epic${EPIC}.XXXXXX")" || {
+    echo "ERROR: mktemp failed for prompt file" >&2
+    exit 1
+}
+if ! emit_prompt > "$PROMPT_FILE"; then
+    echo "ERROR: failed to write prompt file $PROMPT_FILE" >&2
+    rm -f "$PROMPT_FILE"
+    exit 1
+fi
+
+echo "RETRO RESIDUE PROCESSOR: EPIC=${EPIC} project=${PROJECT_DISPLAY_NAME}"
+echo "PROMPT_FILE=${PROMPT_FILE}"
+echo "PENDING_COUNT=${#PENDING_CODES[@]}"
+echo "PENDING_CODES=${PENDING_CODES[*]}"
+echo "ARTIFACT_DIR=${ARTIFACT_DIR_ABS}"
 
 exit 0

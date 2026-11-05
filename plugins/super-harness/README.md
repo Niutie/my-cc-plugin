@@ -130,6 +130,16 @@ trouble、conflict、held 是需要你处理的状态，`/super-harness:board` �
 
 它把资产投递到 `.claude/harness/`，装 git pre-commit hook，检查并行调度的前置条件；BMad 规划文档已经齐的话，接着从中提取字段填 `harness-project-config.yaml`。并行配置 `.claude/harness/parallel.yaml` 只在不存在时投放，之后不会被覆盖。
 
+init 和 update 都要在仓库根目录执行，在子目录里会直接停下。init 会往项目的 `.gitignore` 里补三行：
+
+```
+/.claude/harness/*
+!/.claude/harness/harness-project-config.yaml
+!/.claude/harness/parallel.yaml
+```
+
+部署进来的脚本和文档不进 git，两份配置进 git。init 结束后把 `.gitignore`、这两份配置和新建的 `deferred-work.md` 提交一次再开始跑 story，工作区不干净时 `run` 和 `run-inline` 都会停下。仓库还没有任何 commit 的话，这次就是初始提交。
+
 plugin 升级后执行 `/super-harness:update`，它只刷新资产，不动两份配置。从 super-harness 0.1.0 升上来时，`.claude/super-harness/config.yaml` 会被原样搬到 `.claude/harness/parallel.yaml`，旧目录确认后可以删掉。
 
 ### 从 harness-zh 迁移
@@ -155,25 +165,44 @@ plugin 升级后执行 `/super-harness:update`，它只刷新资产，不动两�
 
 ## 让 story 能并行
 
-`/super-harness:run` 只并行它确认互不依赖的 story。依赖信息有两个来源：
+`/super-harness:run` 只并行它确认互不依赖的 story。依赖信息按优先级从高到低有三个来源：
 
-1. `sprint-status.yaml` 里的 `depends_on`（BMad 多行块格式）：
+1. `.claude/harness/parallel.yaml` 的 `deps_overrides`。
+2. `sprint-status.yaml` 顶层的 `story_dependencies`，推荐写在这里，依赖跟着 sprint-status 进 git：
 
    ```yaml
    development_status:
-     3-2-digest-delivery:
-       status: backlog
-       depends_on: [3-1-digest-model]
-     3-3-email-template:
-       status: backlog
-       depends_on: []        # 明确声明独立
+     3-1-digest-model: done
+     3-2-digest-delivery: backlog
+     3-3-email-template: backlog
+     3-4-export-csv: backlog
+
+   story_dependencies:
+     3-2-digest-delivery: [3-1]          # 值可以是完整 key、短号（3.1 / 3-1）或 epic-N
+     3-3-email-template: []              # 明确声明独立
+     3-4-export-csv:
+       - 3-2
+       - ext-finance-signoff             # 外部条件，见下
    ```
 
-2. `.claude/harness/parallel.yaml` 的 `deps_overrides`，优先级更高。
+   BMad 6.12.4 的 `sprint_plan.py` 刷新文件时会保留这个顶层键。
+3. `development_status` 里多行块写法的 `depends_on`（`status:` 和 `depends_on:` 写在 story 下面）。super-harness 读得懂，但 BMad 6.12.4 自己的 `sprint_plan.py validate/generate` 和 retrospective 的 `detect-epic` 都处理不了这种写法（issue #14），用 6.12 的项目请保持单行写法，依赖写到 `story_dependencies`。
 
-两处都没写的 story，默认按串行处理（`no_deps_policy: serial`），这时一次只跑一路。确认同一 epic 内的 story 基本独立时，可以改成 `epic-parallel`。
+三处都没写的 story，默认按串行处理（`no_deps_policy: serial`），这时一次只跑一路。确认同一 epic 内的 story 基本独立时，可以改成 `epic-parallel`。
 
-依赖要等上游 story 合入并 build-sync 为 done 才算满足，所以下游 story 开工时一定能看到上游代码。
+依赖要等上游 story 合入并 build-sync 为 done 才算满足，所以下游 story 开工时一定能看到上游代码。`/super-harness:run-inline` 也按同样的依赖挑 story：按文件顺序取第一条依赖已满足的 backlog。
+
+**外部条件**：依赖里以 `ext-` 开头的项（例如 `ext-finance-signoff`）表示 sprint 之外的条件，比如等另一条主线的契约定稿。它永远不会自动满足，story 一直等待，`board` 单独列出。条件满足后把这一项从依赖里删掉。
+
+**挂起的 story**：占位 story、等规格补齐的 story 不该被派发，也不该挡住后面的 epic。在 `harness-project-config.yaml` 里声明挂起状态：
+
+```yaml
+parked_statuses: [mainline-pending, spec-pending]
+```
+
+状态在这个列表里的 story 不派发，不算 epic 屏障里的未完成，也不挡这个 epic 的 retro（retro 报告里以 `EPIC_PARKED=` 单列，和 `wont-do` 分开）。有挂起 story 的 epic 做完 retro 后保持 `in-progress`。一条 done 都没有、全是挂起的 epic 不触发 retro。
+
+**epic 屏障**：默认 epic N 的 story 要等编号更小的 epic 全部完成（挂起的不算）才启动。依赖写全的项目可以在 `parallel.yaml` 里设 `epic_barrier: false`，只按依赖调度，允许跨 epic 并行；retro 仍按 epic 在该 epic 全部完成后跑，`retro_barrier` 这时不起作用。
 
 ## 并行调度的使用
 
@@ -203,7 +232,8 @@ python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 |---|---|---|
 | `max_slots` | 2 | 同时运行的 worker 数，token 消耗大致按它线性增长 |
 | `no_deps_policy` | serial | 没写依赖的 story 怎么处理：`serial` / `epic-parallel` |
-| `retro_barrier` | true | 下一个 epic 要等上一个 epic 的 retro done |
+| `epic_barrier` | true | epic N 的 story 要等编号更小的 epic 全部完成；false = 只按依赖调度 |
+| `retro_barrier` | true | 下一个 epic 要等上一个 epic 的 retro done（`epic_barrier: true` 时才生效） |
 | `worktree_root` | `<仓库名>.worktrees`（仓库旁边） | lane worktree 放在哪 |
 | `copy_paths` / `link_paths` | `.claude/harness`、`.claude/skills`、`_bmad` | 没进 git 的基建文件怎么带进 worktree。这些路径必须被 `.gitignore` 忽略，软链要写成不带结尾斜杠的 `/node_modules`；`superh.py doctor` 可以检查 |
 | `prepare_command` | 空 | 开 lane 后执行的命令，例如 `pnpm install --frozen-lockfile` |
@@ -250,6 +280,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.1 | 2026-11-05 | 上线前的一轮修复，共三十多处。init 在已有 BMad 文档的项目里必然回滚的两个问题已修好。codex 审查没有发现问题时，流水线不再卡在修复阶段。pre-commit hook 在大提交时会跳过检查，也修好了。并行模式的 integrate 被超时杀掉后会无限重试，现在改为后台执行，并加了中断计数、进程组清理和调度锁。另外定下了 `.gitignore` 规则（部署资产不进 git，两份配置进 git），调整了凭据黑名单的误拦和漏拦。依赖可以写在 sprint-status 顶层的 `story_dependencies`，兼容 BMad 6.12.4（#14）；新增 `parked_statuses` 挂起状态、`ext-` 外部条件和 `epic_barrier` 开关（#15）。详见 changelog。 |
 | 0.3.0 | 2026-11-03 | 去掉 ⑤.5 测试阶段和 `/super-harness:run-test`。基本测试由 `bmad-build-auto` 在实现阶段完成，e2e 和验收测试交给测试团队。并行模式新增合流验证门：`parallel.yaml` 配 `verify_command` 后，lane 合入 sprint 分支前先在合流后的代码上跑一遍。`harness-project-config.yaml` 的 `e2e_framework`、`extra.e2e_test_subdir` 退役；`/super-harness:update` 会清掉项目里旧的测试阶段资产。 |
 | 0.2.2 | 2026-11-03 | 修 macOS 自带 bash 3.2 下 pre-commit 的 gate ①：`retro_gate=warn` 时也会拦下新 story spec 的 commit，现在恢复为只警告。`release_check.sh` 加了一项静态检查，防止同类写法再进来。 |
 | 0.2.1 | 2026-11-03 | 修两个从 harness-zh 带过来的问题。装 git hook 时不再覆盖项目自己的 pre-commit（例如 pre-commit 框架写的），改为保留原 hook、给出串接办法并以退出码 3 提示；确认要覆盖时用 `HARNESS_HOOK_FORCE=1`。run-test 的 T4 改用环境探测出的包管理器跑 e2e，npm / yarn / bun 项目不再撞上写死的 `pnpm e2e`。 |

@@ -40,6 +40,7 @@
 #   0 — deployed successfully (purge non-fatal even if some delete fails)
 #   1 — invalid args
 #   2 — at least one required asset failed to deploy
+#   3 — refused: the project is managed by super-harness (0.2.2+ guard)
 
 set -euo pipefail
 
@@ -59,6 +60,24 @@ if [ ! -d "$DEST_ROOT" ]; then
 fi
 
 cd "$DEST_ROOT"
+
+# 0.2.2 guard: harness-zh is deprecated and merged into super-harness. In a
+# project that super-harness manages, a harness-zh deploy would purge
+# super-harness assets via the shared manifest (superh.py, pipeline.md,
+# prompts/, templates/parallel.yaml, ...) and write un-namespaced
+# .claude/commands/{init,run,update}.md. Refuse before touching anything.
+if [ -f .claude/harness/scripts/superh.py ]; then
+    cat >&2 <<'GUARD'
+ERROR [deploy_assets]: refused — this project is managed by super-harness
+       (.claude/harness/scripts/superh.py exists).
+       harness-zh is deprecated (merged into super-harness 0.2.0). Running it
+       here would delete super-harness assets and write un-namespaced
+       .claude/commands/ copies. Nothing was changed.
+       Use /super-harness:init or /super-harness:update instead, then remove
+       the old plugin:  /plugin uninstall harness-zh
+GUARD
+    exit 3
+fi
 
 # Required top-level files — missing source = packaging bug = hard fail.
 # Listed once, used for both deploy + manifest building.

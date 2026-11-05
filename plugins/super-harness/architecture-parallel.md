@@ -76,7 +76,8 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 | 文件 | 写入者 | 内容 |
 |---|---|---|
 | `run.json` | 调度者（`start-run`） | 本次运行固定的 sprint 分支、`--slots` 覆盖值 |
-| `lanes/<KEY>.json` | 调度者（prepare / integrate / mark / retry / cleanup / abandon） | phase、分支、worktree、rebase 的 onto、要搬的 tag、自动消解记录 |
+| `dispatcher.lock` | 调度者（`start-run` 取得，`end-run` 释放） | 持有调度权的会话：pid 和进程启动时间。见 §4.3 |
+| `lanes/<KEY>.json` | 调度者（prepare / integrate / mark / retry / cleanup / abandon） | phase、分支、worktree、rebase 的 onto、要搬的 tag、自动消解记录；prepare / integrate 进行中的标记（pid、启动时间、子进程组）和被打断的次数；held 时的 `hold_kind` / `hold_reason` |
 | `lanes/<KEY>.proc.json` | `launch` 包装进程 | pid、session id、attempt、退出码、最后的 result 文本、花费 |
 | `lanes/<KEY>.result.json` | worker（`superh report`） | status、summary、codex 跳过原因、follow-up 提示、halt 原文 |
 | `logs/<KEY>.attempt-N.*` | `launch` | 渲染后的 prompt、stream-json 全量日志、stderr |
@@ -91,29 +92,40 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 |---|---|---|
 | done / abandoned | phase 为 done / abandoned | |
 | conflict | phase = conflict（rebase 停在代码冲突上） | 是 |
-| held | phase = held（prepare 失败、rebase 后 build-verify 或 verify_command 不通过、调度者挂起） | 是 |
+| preparing / integrating（进行中） | lane 上有 prepare 或 integrate 的进行中标记，且记录的进程还活着（pid 和启动时间都对得上） | |
+| held | phase = held。`hold_kind` 说明原因：`prepare`、`build-verify`、`verify`、`lane-dirty`、`rebase`、`branch-missing`、`worktree-missing`、`foreign`（分支或目录不是 superh 建的）、`interrupted`（prepare / integrate 被杀超过 2 次）、`retry-limit`、`git-error`、`error` | 是 |
 | integrating | phase 为 integrating / merged | |
-| queued | phase 为 preparing / prepared，或这一次 attempt 还没有 proc 记录 | |
-| working | proc 没有退出码，pid 存活 | |
-| crashed | proc 没有退出码，pid 已不存在 | 是（第一次自动 retry） |
+| queued | phase 为 prepared，或 preparing 但进程已不在（prepare 被打断，待重做），或这一次 attempt 还没有 proc 记录 | |
+| working | proc 没有退出码，launch 进程或 claude 子进程有一个还活着（pid 和启动时间都对得上，防止 pid 被复用后误判） | |
+| crashed | proc 没有退出码，两个进程都已不在，worker 也没有回报 | 是（第一次自动 retry） |
 | failed | 退出了，但没有本次 attempt 的 result | 是 |
 | ready / blocked / failed / quota | 按 result.status | blocked / failed / quota 需要人 |
 
-`tick` 的 `next_action` 优先级：post-merge（已合入未收口）> integrate > retro > launch > wait > finished / stalled。合流排在启动前面，是为了让依赖它的 story 尽早变成就绪。
+`tick` 的 `next_action` 优先级：post-merge（已合入未收口）> integrate > retro > launch > wait > finished / stalled。合流排在启动前面，是为了让依赖它的 story 尽早变成就绪。有 integrate 正在进行时，tick 不再给出别的 integrate、post-merge 或 retro。`quota_hold` 时 launch 和 queued 都不再派发。tick 的 JSON 另有 `preparing`、`integrating`（进行中的 key）和 `orphaned`（launch 进程已退出、claude 子进程还在跑的 key；调度者对它们执行 `superh.py watch <KEY>`，子进程退出时会被唤醒）。
+
+### 4.3 调度锁
+
+同一个仓库同一时间只能有一个会话调度。两个会话同时调度会互相把对方正在 prepare 的 lane 当成中断现场清掉，也会同时对同一路执行 integrate。`start-run` 在状态目录里取 `dispatcher.lock`，记下持锁会话的 pid 和启动时间；prepare、integrate、launch、retry 等会改状态的子命令在锁属于另一个仍然活着的会话时退出码 4，输出 `STATUS=locked`。持锁进程已经不在时，下一次 `start-run` 直接收回（`LOCK_RECLAIMED=stale`）。用户确认原会话不再调度后，可以用 `start-run --take-over` 接手。正常结束、halt、stalled 时调度者执行 `end-run` 释放。
 
 ## 5. 就绪判定
 
 一条 story 能启动，需要同时满足：
 
 1. sprint-status 里是 `backlog`，没有活着的 lane，也没有「有 start tag、没有 done tag」的残留（那是 run-inline 跑到一半的 story，并行调度不接手，用 `/super-harness:run-inline --continue` 收尾）。
-2. epic 屏障：编号更小的 epic 里所有 story 都已终态（done / wont-do / cancelled）；`retro_barrier: true` 时，这些 epic 的 retrospective 也要是 done。
-3. 依赖：
-   - `deps_overrides` 里有这条 story，以它为准；
-   - 否则看 sprint-status 的 `depends_on`。BMad sprint-planning 的多行块格式本来就带这个字段，可以写 story key、短号（`3.2` / `3-2`）或 `epic-N`；
-   - 两处都没有：`no_deps_policy: serial` 时依赖它前面所有未终态的 story，效果和 run-inline 一样一次一条；`epic-parallel` 时同 epic 内视为独立。
+2. epic 屏障（`epic_barrier: true`，默认）：编号更小的 epic 里所有 story 都已终态（done / wont-do / cancelled）或挂起（`parked_statuses`）；`retro_barrier: true` 时，这些 epic 的 retrospective 也要是 done。`epic_barrier: false` 时这一条整个跳过，只按依赖调度。
+3. 依赖，按优先级取第一处有声明的：
+   - `parallel.yaml` 的 `deps_overrides`；
+   - sprint-status 顶层的 `story_dependencies`（值的写法和 `deps_overrides` 一样）；
+   - `development_status` 多行块里的 `depends_on`。super-harness 读得懂这种写法，但 BMad 6.12.4 自己的 `sprint_plan.py` 和 retrospective 的 `detect-epic` 都处理不了（issue #14），所以 6.12 的项目把依赖写在 `story_dependencies`；
+   - 依赖项可以写 story key、短号（`3.2` / `3-2`）或 `epic-N`。`ext-` 开头的是外部条件，永远不满足，story 一直等待，tick 的 `external` 和 board 单独列出，条件满足后由人从依赖里删掉。依赖一个挂起的 story 时照样等待，挂起不算完成；
+   - 三处都没有：`no_deps_policy: serial` 时依赖它前面所有未终态、未挂起的 story，效果和 run-inline 一样一次一条；`epic-parallel` 时同 epic 内视为独立。
    - 依赖只有在**已经合入并 build-sync 为 done** 之后才算满足，所以下游 story 开 worktree 时一定能看到上游的代码。
 
-`depends_on: []` 表示明确声明为独立，在 serial 策略下也能并行。
+`[]` 表示明确声明为独立，在 serial 策略下也能并行。
+
+状态在 `parked_statuses` 里的 story 在 plan 里显示为「挂起」，不派发；tick 的 `parked` 列出它们，`pending_count` 不算它们，只剩挂起 story 时 tick 给出 `finished`。retro 在一个 epic 的 story 全部终态或挂起、并且至少有一条 done 时触发；全是挂起的 epic 不触发。
+
+run-inline 的 `sprint-status.py next` 用同一套依赖来源（复用 `superh.py` 的解析），按文件顺序取第一条依赖已满足的 backlog，没有声明依赖的 story 不受影响。
 
 ## 6. lane worktree 的准备
 
@@ -121,7 +133,11 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 2. 主 worktree 里存在、但没进 git 的基建路径（`copy_paths`）复制进去，已经在 worktree 里的不动。`.claude/harness` 必须复制不能软链：其中的脚本用 `Path(__file__).resolve().parents[3]` 推算仓库根目录，软链会被解析回主 worktree，导致 worker 读写主 worktree 的文件。
 3. 体积大的只读目录可以放进 `link_paths` 软链。
 4. 复制或软链进来的路径必须被项目 `.gitignore` 忽略，否则 worktree 一开始就是脏的，bmad-build-auto 会拒绝启动。没被忽略时 prepare 直接失败，输出应该加进 `.gitignore` 的行（`GITIGNORE=/<路径>`），lane 记为 held。super-harness 不自己改 `.git/info/exclude`：这个文件所有 worktree 共用，为 lane 加的规则会让主 worktree 里同一路径下用户自己的文件也从 `git status` 里消失。软链要用不带结尾斜杠的规则（`/node_modules`），`node_modules/` 匹配不到软链。`superh.py doctor` 可以在开 lane 之前做这项检查，init 会调用它。
-5. 执行 `prepare_command`（例如安装依赖），最后确认 worktree 干净。
+5. 执行 `prepare_command`（例如安装依赖），最后确认 worktree 干净。命令在独立的进程组里运行，超过 `prepare_timeout_sec` 时整个进程组先收到 SIGTERM，3 秒后 SIGKILL，不会留下还在跑的安装进程。
+
+`.claude/harness/.backup/`（update 的备份）和 `__pycache__` 不会复制进 lane。
+
+调度者用 Bash 的后台模式执行 prepare 和 integrate，这两步跑多久都不会被 Bash 工具的超时杀掉。万一还是被杀（例如会话被关），lane 上留着进行中标记：下次执行时先结束上次留下的进程组，再重做，被打断的次数加一；超过 2 次就把这一路记为 held（`hold_kind: interrupted`，prepare 阶段为 `prepare`），不再无限重试。进程还活着的 prepare 不会被当成中断现场清掉。
 
 ## 7. 合流
 
@@ -165,6 +181,7 @@ build-verify 只审计提交区间，不跑测试。两条 lane 各自在 B1 里
 
 - 只在这一路确实被 rebase 到更新的 sprint 提交上时才跑。没 rebase 的 lane 树没变，B1 已经测过。
 - 输出 `VERIFY=passed|failed|skipped-unset|skipped-not-rebased`。
+- 超过 `verify_timeout_sec` 时结束整个进程组（SIGTERM，3 秒后 SIGKILL），算作验证失败，测试进程不会在 lane worktree 里继续跑。
 - 失败时 lane 记为 held，sprint 分支不动。在 lane worktree 里修好并 commit，再跑 `superh.py integrate <KEY>`。integrate 接受因验证失败而 held 的 lane，重新走 build-verify 和验证。
 
 inline 模式没有这道门：B1 就在 sprint 分支那棵树上跑，测试已经覆盖。
@@ -195,13 +212,15 @@ marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文�
 | 调度者会话结束 | 在跑的 worker 随之结束，显示为 crashed | 下次 `/super-harness:run` 自动 retry 一次 |
 | 配额耗尽 | 不再派发新 lane，等在跑的结束后 halt | 额度恢复后 retry |
 | 合流代码冲突 | conflict，rebase 现场保留在 lane worktree | 子 agent 处理；不行就人工解决冲突并 `git add`，再跑 `/super-harness:run`。tick 发现冲突文件都已解决，会把这一路送回 integrate，由它完成 `rebase --continue` |
-| 合流过程中调度者被打断 | lane 停在 integrating，或 ff 已完成但状态没记下 | 下次 tick 把它送回 integrate，按 §7.4 续上 |
-| prepare 中途被打断（例如 `prepare_command` 运行时会话被关） | lane 停在 preparing | tick 把它放回 launch 列表；prepare 先确认分支没有新提交、没有 harness tag，再清理现场重做；确认不了就记为 held |
+| 合流过程中调度者被打断 | lane 停在 integrating，或 ff 已完成但状态没记下 | 下次 tick 把它送回 integrate：先结束上次留下的进程组，按 §7.4 续上。被打断超过 2 次记为 held（`interrupted`） |
+| prepare 中途被打断（例如 `prepare_command` 运行时会话被关） | lane 停在 preparing | 进程还活着就显示为进行中，不动它。进程已不在时 tick 把它放回 launch 列表；prepare 先结束残留进程组，确认分支没有新提交、没有 harness tag，再清理现场重做；确认不了，或被打断超过 2 次，就记为 held |
+| integrate 因 lane 自身的问题失败（lane worktree 不干净、rebase 无法继续、lane 分支或 worktree 不见了等） | held，`hold_kind` 说明原因，sprint 分支不动 | 按看板上的接手提示处理后重跑 `superh integrate <KEY>`。sprint 分支在合流途中被移动这类可重试的失败输出 `RETRYABLE=yes`，连续 3 次才记为 held |
+| 另一个会话正在调度 | `STATUS=locked`，退出码 4 | 等那个会话结束；确认它不再调度后 `start-run --take-over`（§4.3） |
 | launch 在两次落盘之间被打断 | phase=launched 但没有本次 attempt 的 proc 记录，显示为 queued | proc 记录写在启动 claude 之前，没有它就说明 worker 从没启动过；launch 直接重新启动 |
 | 收口中途被打断 | lane 停在 merged | 下次 tick 进入 post-merge，`postmerge` 从第一个没完成的步骤继续（§8） |
 | 收口在 sync 步骤里被打断（marker 已写或 build-sync 已暂存，未 commit） | 主 worktree 是脏的 | `start-run` 核对脏文件是否全部属于某个 merged、无 done tag 的 lane 的收口产物（sprint-status、deferred-work、该 lane 的 marker）。是则报 `MAIN_CLEAN=resumable` 放行，重跑 build-sync 时一并提交；混进任何其他文件仍然 halt |
 | 补进 lane 的文件没被 .gitignore 忽略 | prepare 失败，lane 记为 held | 按输出的 `GITIGNORE=` 行补 `.gitignore` 并提交，`abandon --yes` 后重新排队 |
-| rebase 后 build-verify 不通过 | held，sprint 分支不动 | 在 lane 里修好后 retry |
+| rebase 后 build-verify 不通过 | held，sprint 分支不动 | 在 lane 里修好并 commit，重跑 `superh integrate <KEY>`（0.3.1 起 integrate 接受这种 held 的 lane） |
 | rebase 后 `verify_command` 不通过 | held，sprint 分支不动 | 在 lane worktree 里修好并 commit，重跑 `superh integrate <KEY>`（retry 会重启 worker，而 worker 看到状态已是 sync 会直接回报 ready，修不了测试） |
 | build-sync halt | 全局 halt | 按 pipeline.md §3 halt 模板 |
 | 放弃某一路 | `superh abandon <KEY> --yes`：删 worktree、分支，以及这条 story 没有 done 的 `harness/<KEY>/*` tag | story 回到 backlog，可以重新排队 |
@@ -220,10 +239,11 @@ marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文�
 
 ## 11. 已知限制
 
-- 依赖信息要靠 sprint-status 的 `depends_on` 或 `deps_overrides`。都没有时默认串行，不会自动推断。
+- 依赖信息要靠 `deps_overrides`、`story_dependencies` 或 `depends_on`。都没有时默认串行，不会自动推断。
 - 不预测文件级的冲突。两条声明为独立的 story 改到同一段代码时，要到合流时才发现。
 - epic retro 串行执行；跨 epic 的并行受 retro 屏障限制，可以关掉 `retro_barrier`，但 pre-commit gate ① 仍会按 `retro_gate` 设置拦截。
 - worker 默认用 `bypassPermissions` 无人值守运行。
 - 调度者会话结束会带走在跑的 worker。
+- 进程启动时间在 macOS 上用 `ps -o lstart=` 读取，这条路径只在 Linux 上实测过。
 - `verify_command` 在合流队列里串行执行，跑多久合流就卡多久。全量测试很慢的项目，建议只放合流最容易打破的那部分（编译、类型检查、核心包的单测）。
 - 合流验证门只看 `verify_command` 的退出码，不区分不稳定的测试和真失败。偶发失败时直接重跑 `superh.py integrate <KEY>` 即可。
