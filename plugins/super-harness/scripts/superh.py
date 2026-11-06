@@ -1518,6 +1518,43 @@ def _bg_launch_kind(evt):
     return None
 
 
+def _orphan_containers(wt: Path) -> list:
+    """Running docker containers with a mount at or under the lane worktree. Once
+    the worker has exited nothing in that lane should still be running: a build
+    container a sub-agent started is left behind when `claude -p` exits under it
+    (issue #16). Reported, never stopped. No docker, or docker failing, → []."""
+    docker = shutil.which("docker")
+    if not docker:
+        return []
+    try:
+        ids = subprocess.run([docker, "ps", "-q", "--no-trunc"], capture_output=True, text=True,
+                             timeout=15).stdout.split()
+        if not ids:
+            return []
+        info = json.loads(subprocess.run([docker, "inspect", *ids], capture_output=True, text=True,
+                                         timeout=15).stdout or "[]")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    root = os.path.realpath(wt)
+    out = []
+    for c in info if isinstance(info, list) else []:
+        for m in (c.get("Mounts") or []) if isinstance(c, dict) else []:
+            src = os.path.realpath(str(m.get("Source") or "")) if m.get("Source") else ""
+            if src and (src == root or src.startswith(root + os.sep)):
+                out.append(f"{str(c.get('Id', ''))[:12]} {str(c.get('Name', '')).lstrip('/')}".strip())
+                break
+    return out
+
+
+def _print_orphans(wt: Path):
+    orphans = _orphan_containers(wt)
+    for c in orphans:
+        print(f"ORPHAN_CONTAINER={c}")
+    if orphans:
+        print(f"WARN=还有 {len(orphans)} 个容器挂载着这一路的 worktree，worker 已经退出，它们多半是子 agent 起的、"
+              "没人管了。确认后用 docker stop <id> 停掉")
+
+
 def cmd_launch(ctx, a):
     key = a.key
     lane = ctx.lane(key)
@@ -1598,6 +1635,7 @@ def cmd_launch(ctx, a):
     print(f"STAGE={stage}")
     print(f"DETAIL={detail}")
     print(f"SESSION={proc_rec.get('session_id')}")
+    _print_orphans(wt)
     return 0
 
 
@@ -2119,6 +2157,7 @@ def cmd_retry(ctx, a):
         _retry_check_worktree(ctx, lane, a.reset)
     elif a.reset:
         die("held 的 lane 已经有 commit 等着合流，--reset 不适用；按看板「接手」一行处理")
+    _print_orphans(Path(lane["worktree"]))
     lane["phase"] = "prepared"
     lane.pop("hold_reason", None)
     lane.pop("hold_kind", None)

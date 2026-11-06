@@ -304,6 +304,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.5 | 2026-11-06 | #16 的第二个现场：worker 盯着后台子 agent 的输出文件，看它一个多小时没增长就判断卡住、报 blocked 退出，打断了正在跑交叉编译的实现子 agent，还留下没人管的容器。worker prompt 改为只认完成通知；launch 和 retry 会列出 worker 退出后仍挂载着这一路 worktree 的容器。详见 changelog。 |
 | 0.3.4 | 2026-11-06 | 并行模式下 worker 派 build 子 agent 时没写 `run_in_background: false`，有的环境默认放到后台，worker 随即结束本轮，子 agent 被一起结束，这一路记为失败（#16）。现在 worker prompt 和流水线手册每次派子 agent 都显式传这个参数；launch 遇到这种退出会在 DETAIL 里说明；retry 发现 worktree 留着没提交的半成品时会提示用 `--reset` 清掉。详见 changelog。 |
 | 0.3.3 | 2026-11-06 | bmad-build-auto review 延后的问题导入账本时目标都写成 `Epic N`，以前没有任何 story 会被提示去处理它们。现在同 epic 后面的 story 开工时会看到这些条目，epic retro 再把剩下的逐条改到具体 story、版本桶，或者关掉。另外修了 lint 把合法的 `skipped` 状态报成违规的问题。详见 changelog。 |
 | 0.3.2 | 2026-11-06 | halt 说明改成按原因给建议，不再每次贴同一份 7 条菜单。bmad-build-auto 因 intent gap 停下时，会列出它提的问题，并说明怎么写回 spec 续跑；也可以直接在对话里回答。详见 changelog。 |

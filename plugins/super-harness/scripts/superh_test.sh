@@ -728,7 +728,27 @@ WT="$TMP/wt/9-19-bg"
     && ok "B16c retry --reset restores the start point and requeues" || { bad "B16c rc=$RC"; echo "$OUT"; }
 $SH abandon 9-19-bg --yes >/dev/null
 echo nestedbg > .fake-mode-9-20-nb
-$SH prepare 9-20-nb >/dev/null && $SH launch 9-20-nb > "$TMP/nb.out"
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/docker" <<'DK'
+#!/usr/bin/env bash
+case "$1" in
+  ps) printf 'aaaaaaaaaaaaaaaa\nbbbbbbbbbbbbbbbb\n' ;;
+  inspect) cat "$FAKE_DOCKER_JSON" ;;
+esac
+DK
+chmod +x "$TMP/bin/docker"
+cat > "$TMP/docker.json" <<DJ
+[{"Id": "aaaaaaaaaaaaaaaa", "Name": "/xbuild", "Mounts": [{"Source": "$TMP/wt/9-20-nb"}]},
+ {"Id": "bbbbbbbbbbbbbbbb", "Name": "/other", "Mounts": [{"Source": "$TMP/wt/9-20-nb-other"}]}]
+DJ
+$SH prepare 9-20-nb >/dev/null && PATH="$TMP/bin:$PATH" FAKE_DOCKER_JSON="$TMP/docker.json" $SH launch 9-20-nb > "$TMP/nb.out"
+grep -qx 'ORPHAN_CONTAINER=aaaaaaaaaaaa xbuild' "$TMP/nb.out" && [ "$(grep -c '^ORPHAN_CONTAINER=' "$TMP/nb.out")" = 1 ] \
+    && grep -q '^WARN=还有 1 个容器' "$TMP/nb.out" \
+    && ok "B16f launch reports containers still mounting the lane worktree" || { bad "B16f"; cat "$TMP/nb.out"; }
+OUT="$(PATH="$TMP/bin:$PATH" FAKE_DOCKER_JSON="$TMP/docker.json" $SH retry 9-20-nb)"
+echo "$OUT" | grep -qx 'ORPHAN_CONTAINER=aaaaaaaaaaaa xbuild' && echo "$OUT" | grep -q '^STATUS=ok' \
+    && ok "B16g retry reports them too, without blocking" || { bad "B16g"; echo "$OUT"; }
+lane_edit 9-20-nb 'd["phase"] = "launched"'   # back to failed for B16e
 grep -q '^DETAIL=worker 退出' "$TMP/nb.out" && ! grep -q '启动了后台' "$TMP/nb.out" \
     && ok "B16d background calls inside nested sub-agents are not blamed" || { bad "B16d"; cat "$TMP/nb.out"; }
 OUT="$($SH retry 9-20-nb --reset)"

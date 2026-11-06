@@ -4,6 +4,18 @@
 
 ---
 
+## v0.3.5 — 2026-11-06 — 不按输出文件判断子 agent 卡住；提示孤儿容器（#16 补充）
+
+#16 同一批次的另一路（2-6）也拿到了后台启动的结果。它没有退出，而是用 Monitor 盯着 build 子 agent 的输出文件。build 子 agent 当时在同步等它派出的实现子 agent，自己没有输出；实现子 agent 在调 aarch64 / musl 交叉编译，每次构建要十分钟左右。worker 盯了一个多小时，看到输出文件和 spec 都没变，就判断卡住、报了 `blocked` 并结束本轮。`claude -p` 退出，实现子 agent 被打断，它起的交叉编译容器没人管了，只能手工停。0.3.4 的 worker prompt 恰好写着「用 Monitor 或 Bash 盯着它的输出文件」，会引向同样的判断。
+
+- `prompts/worker.md`：工具结果仍说启动到了后台时，用 Monitor 或 Bash 保持运行，只等完成通知。新增一条：不要根据输出文件没增长、spec 没变、看不到构建进程来判断子 agent 卡住，没收到完成通知之前不报 `blocked`、不结束本轮。
+- `superh.py launch` 收尾和 `retry` 时，用 `docker ps` / `docker inspect` 找挂载点在这一路 worktree 里的运行中容器，每个输出一行 `ORPHAN_CONTAINER=<短 id> <名字>`，再加一行 `WARN=`。只提示，不停容器，也不挡 retry。没装 docker 或 docker 出错时不输出。
+- `run` §2 和 §1：launch 或 retry 输出里有 `ORPHAN_CONTAINER=` 时，调度者转告用户，不自己停。
+- 评论里提的「retry 按有没有 spec 分开提示」0.3.4 已经是这样：有 spec 只给 `WARN=` 照常续作，没有 spec 才拒绝并给出 `--reset`。
+- 测试：B16 组加 2 项（launch 只列出挂载本 worktree 的容器、retry 也列出且不阻塞）。
+
+---
+
 ## v0.3.4 — 2026-11-06 — worker 不再把子 agent 放到后台后退出（#16）
 
 `/super-harness:run` 3 路并行时，一路 worker 在 B1 派 build 子 agent，调用里没有传 `run_in_background`。那个环境的 Agent 工具默认后台运行，worker 拿到 `Async agent launched` 后写了句「我在等它完成」就结束了本轮。worker 是 headless 的 `claude -p`，本轮结束进程就退出，build 子 agent 被一起结束。launch 记为 `failed`，worktree 里留着 build 做了一半的改动，没有 commit 也没有 spec，直接 retry 也会因为工作区不干净停下。同一批的另一路自己想到用 Monitor 等着，没出事，所以会不会出事全看模型这一次怎么做。手册原来写的是「同步等待，不要 `run_in_background`」，模型读成了「不传这个参数」，而不传恰好就是后台。

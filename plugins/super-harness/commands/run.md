@@ -81,7 +81,7 @@ python3 .claude/harness/scripts/superh.py tick
 
 每一轮都检查 `attention`。出现了新的条目（和你上次告诉用户的不同），就用一行告诉用户：key、阶段、detail、接手命令（`takeover` 字段）。然后继续循环，不要等用户回复。处理规则：
 
-- `crashed`：worker 进程丢失，通常是上一个会话结束了。同一路第一次出现时自动执行 `SH retry <KEY>`，下一轮会重新 launch；worker 会按 harness-state 续作。第二次再出现就留给用户。retry 输出 `STATUS=halt`、说 worktree 里有没提交的半成品时，不要自己加 `--reset`，这一路留给用户，把 `REASON=` 和 `DIRTY=` 行转告用户。
+- `crashed`：worker 进程丢失，通常是上一个会话结束了。同一路第一次出现时自动执行 `SH retry <KEY>`，下一轮会重新 launch；worker 会按 harness-state 续作。第二次再出现就留给用户。retry 输出 `STATUS=halt`、说 worktree 里有没提交的半成品时，不要自己加 `--reset`，这一路留给用户，把 `REASON=` 和 `DIRTY=` 行转告用户。retry 输出里有 `ORPHAN_CONTAINER=` 行时同样转告。
 - `blocked` / `failed` / `held` / `conflict`：留给用户，不自动重试。
 - `quota`：tick 已经停止派发新 lane，`launch` 和 `queued` 都是空的（`quota_hold: true`）。等在跑的 lane 全部结束后，按 §8 halt。
 
@@ -102,7 +102,7 @@ python3 .claude/harness/scripts/superh.py tick
      run_in_background: true
    })
    ```
-   worker 跑完时你会收到通知。
+   worker 跑完时你会收到通知。读这条命令的输出，有 `ORPHAN_CONTAINER=` 行时，把容器 id 和名字转告用户：worker 退出后还挂载着这一路 worktree 的容器，多半是子 agent 起的、没人管了。不要自己停，由用户确认。
 4. 回到 §1。
 
 ## 3. 合流
