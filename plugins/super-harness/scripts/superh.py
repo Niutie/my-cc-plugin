@@ -912,6 +912,12 @@ def lane_stage(ctx, lane) -> tuple[str, str]:
         # the worker reported before it went away: its report stands
     if not res or res.get("attempt") != proc.get("attempt"):
         tail = (proc.get("result_text") or "").strip().splitlines()[-1:] or [""]
+        bg = proc.get("bg_launches") or {}
+        if bg:
+            what = "、".join(w for k, w in (("agent", "子 agent"), ("bash", "命令")) if bg.get(k))
+            return "failed", (f"worker 启动了后台{what}，没有回报就结束了本轮，claude -p 退出时后台任务被一起结束"
+                              f"（exit={proc.get('exit_code')}）。worktree 里可能留有没提交的半成品，"
+                              f"retry 会检查：{tail[0][:120]}")
         return "failed", f"worker 退出（exit={proc.get('exit_code')}）但没有回报：{tail[0][:160]}"
     st = res.get("status")
     if st == "ready":
@@ -1483,6 +1489,35 @@ def render_worker_prompt(ctx, lane, attempt) -> str:
     return text
 
 
+# Tool-result texts Claude Code returns when a call was started in the background
+# instead of being waited on (issue #16). A headless `claude -p` exits as soon as
+# the worker ends its turn, and takes those background tasks with it.
+BG_LAUNCH_MARKERS = (("agent", "Async agent launched"), ("bash", "running in background with ID"))
+
+
+def _bg_launch_kind(evt):
+    """`agent` / `bash` when a stream event is the worker's own tool result for a
+    call that went to the background, else None. Events from nested sub-agents
+    carry a parent_tool_use_id and are ignored: only the worker's own turn ending
+    kills the process."""
+    if evt.get("type") != "user" or evt.get("parent_tool_use_id"):
+        return None
+    content = (evt.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return None
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        body = block.get("content")
+        if isinstance(body, list):
+            body = " ".join(str(b.get("text", "")) for b in body if isinstance(b, dict))
+        body = str(body or "")
+        for kind, marker in BG_LAUNCH_MARKERS:
+            if marker in body:
+                return kind
+    return None
+
+
 def cmd_launch(ctx, a):
     key = a.key
     lane = ctx.lane(key)
@@ -1543,6 +1578,11 @@ def cmd_launch(ctx, a):
                 write_json(ctx.lane_path(key, "proc"), proc_rec)
             if evt.get("type") == "result":
                 result_evt = evt
+            kind = _bg_launch_kind(evt)
+            if kind:
+                bg = proc_rec.setdefault("bg_launches", {})
+                bg[kind] = bg.get(kind, 0) + 1
+                write_json(ctx.lane_path(key, "proc"), proc_rec)
         rc = p.wait()
     proc_rec["exit_code"] = rc
     proc_rec["ended_at"] = now_iso()
@@ -2075,6 +2115,10 @@ def cmd_retry(ctx, a):
         die("worktree 已不存在，无法续作；用 abandon 后重新 prepare")
     if lane.get("hold_kind") in ("prepare", "foreign") or str(lane.get("hold_reason", "")).startswith("prepare 失败"):
         die("这一路卡在 prepare 阶段，retry 不会重跑 prepare；修好原因后 abandon --yes 再重新 prepare")
+    if lane.get("phase") != "held":
+        _retry_check_worktree(ctx, lane, a.reset)
+    elif a.reset:
+        die("held 的 lane 已经有 commit 等着合流，--reset 不适用；按看板「接手」一行处理")
     lane["phase"] = "prepared"
     lane.pop("hold_reason", None)
     lane.pop("hold_kind", None)
@@ -2082,6 +2126,48 @@ def cmd_retry(ctx, a):
     ctx.save_lane(lane)
     print("STATUS=ok")
     return 0
+
+
+def _retry_check_worktree(ctx, lane, reset: bool):
+    """A worker that died mid-build leaves uncommitted changes behind. When the lane
+    has no commit since its start point and no spec for the story, nothing can pick
+    those changes up again: B0 halts on the dirty tree, bmad-build-auto refuses to
+    start. retry says so instead of queueing a worker that is bound to fail, and
+    `--reset` throws the leftovers away (issue #16). With commits or a spec the
+    worker continues from harness-state, so the tree is left as it is."""
+    key, wt = lane["key"], Path(lane["worktree"])
+    dirty = [ln for ln in git(["status", "--porcelain"], cwd=wt).stdout.splitlines() if ln.strip()]
+    if not dirty:
+        if reset:
+            print("NOTE=worktree 是干净的，不需要 --reset")
+        return
+    start = git(["rev-parse", "--verify", "--quiet", f"refs/tags/harness/{key}/start^{{commit}}"],
+                cwd=ctx.root).stdout.strip() or lane.get("base", "")
+    ahead = git(["rev-list", "--count", f"{start}..HEAD"], cwd=wt).stdout.strip() if start else ""
+    try:
+        spec = _harness_spec_mod().resolve_story_md(key, str(wt / ctx.artifacts_rel()))
+    except (ImportError, AttributeError):
+        spec = "?"
+    if ahead != "0" or spec:
+        why = f"已有 {ahead} 个 commit" if ahead != "0" else f"已有 spec {spec}"
+        print(f"WARN=worktree 有未提交的改动，这一路{why}，worker 会按 harness-state 续作；"
+              f"续作失败时 cd {wt} 手工处理")
+        if reset:
+            die(f"这一路{why}，--reset 只用于没有 commit、也没有 spec 的半成品，不会替你丢掉已有进度",
+                f"WORKTREE={wt}")
+        return
+    if not reset:
+        die("lane worktree 里有没提交的半成品（没有 commit，也没有 spec），worker 重跑时 B0 和 bmad-build-auto "
+            f"都会因为工作区不干净而停下。确认不要这些改动后执行 {SH_CMD} retry {key} --reset，"
+            f"会恢复到 {start[:12]} 并删掉未跟踪文件（被 .gitignore 忽略的不动）",
+            *[f"DIRTY={d}" for d in dirty[:30]], f"WORKTREE={wt}")
+    r1 = git(["reset", "--hard", start], cwd=wt)
+    r2 = git(["clean", "-fd"], cwd=wt)
+    if r1.returncode != 0 or r2.returncode != 0:
+        die(f"恢复 worktree 失败：{(r1.stderr + r2.stderr).strip()}", f"WORKTREE={wt}")
+    for d in dirty[:30]:
+        print(f"DISCARDED={d}")
+    print(f"RESET={start}")
 
 
 def _remove_worktree(ctx, lane, force_branch: bool):
@@ -2308,6 +2394,9 @@ def main(argv=None) -> int:
     sub.add_parser("end-run")
     for name in ("prepare", "launch", "integrate", "postmerge", "retry", "cleanup"):
         p = sub.add_parser(name); p.add_argument("key")
+        if name == "retry":
+            p.add_argument("--reset", action="store_true",
+                           help="lane 没有 commit 也没有 spec 时，丢掉 worktree 里没提交的半成品再重排")
     p = sub.add_parser("watch"); p.add_argument("key"); p.add_argument("--interval", default="5")
     p = sub.add_parser("report")
     p.add_argument("key")

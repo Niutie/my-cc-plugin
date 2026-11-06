@@ -81,7 +81,7 @@ python3 .claude/harness/scripts/superh.py tick
 
 每一轮都检查 `attention`。出现了新的条目（和你上次告诉用户的不同），就用一行告诉用户：key、阶段、detail、接手命令（`takeover` 字段）。然后继续循环，不要等用户回复。处理规则：
 
-- `crashed`：worker 进程丢失，通常是上一个会话结束了。同一路第一次出现时自动执行 `SH retry <KEY>`，下一轮会重新 launch；worker 会按 harness-state 续作。第二次再出现就留给用户。
+- `crashed`：worker 进程丢失，通常是上一个会话结束了。同一路第一次出现时自动执行 `SH retry <KEY>`，下一轮会重新 launch；worker 会按 harness-state 续作。第二次再出现就留给用户。retry 输出 `STATUS=halt`、说 worktree 里有没提交的半成品时，不要自己加 `--reset`，这一路留给用户，把 `REASON=` 和 `DIRTY=` 行转告用户。
 - `blocked` / `failed` / `held` / `conflict`：留给用户，不自动重试。
 - `quota`：tick 已经停止派发新 lane，`launch` 和 `queued` 都是空的（`quota_hold: true`）。等在跑的 lane 全部结束后，按 §8 halt。
 
@@ -120,7 +120,7 @@ python3 .claude/harness/scripts/superh.py integrate <KEY> 2>&1; echo "SUPERH_EXI
 - 退出码 0：记下输出里的 `CODEX_SKIP_REASON=`、`FOLLOWUP_NOTE=`，以及 `BUILD_VERIFY<<` 段里的 `BASELINE_REVISION=`，进入 §4。输出里有 `RECOVERED=already-merged` 时，说明上一次合流已经 ff 成功、只是没记下来，照样进入 §4；有 `WARN=` 行时把它转告用户。
 - 退出码 3（`STATUS=conflict`）：派一个合流冲突子 agent。
   1. Read `.claude/harness/prompts/merge-fix.md`，替换占位符：`{{KEY}}`；`{{WORKTREE}}` 取输出的 `WORKTREE=`；`{{CONFLICT_FILES}}` 取所有 `CONFLICT_FILE=` 行，用顿号连接；`{{SPEC}}` 取 `cd <WORKTREE> && python3 .claude/harness/scripts/harness-state.py <KEY> --story-md` 的输出，失败就留空。
-  2. 用前台 Agent 运行（`subagent_type: "general-purpose"`，`description: "Resolve merge conflict <KEY>"`）。
+  2. 用前台 Agent 运行（`subagent_type: "general-purpose"`，`description: "Resolve merge conflict <KEY>"`，显式传 `run_in_background: false`，不传可能会放到后台）。
   3. 返回的第一行是 `NEEDS_PERSON:` 时，把原因告诉用户，这一路留在 conflict 状态，回到 §1。
   4. 否则按同样的后台方式重跑 `SH integrate <KEY>`。退出码 0 进入 §4；再次返回 3 时不再派第二个子 agent，告诉用户，回到 §1。
 - 退出码 4：`STATUS=busy` 表示这一路已经有一个 integrate 在运行，不要动它，回到 §1；`STATUS=locked` 按 §8 全局 halt。
@@ -190,6 +190,7 @@ retro 期间其他 lane 照常在各自的 worktree 里运行，不受影响。
 处理完之后重新执行 /super-harness:run。
   接手某一路：        cd <worktree> && claude --resume <session>
   修完让 worker 续作：python3 .claude/harness/scripts/superh.py retry <KEY>
+  worker 留下半成品：  python3 .claude/harness/scripts/superh.py retry <KEY> --reset（retry 提示时才用，会丢掉没提交的改动）
   合流冲突手工解决后：git add 解决好的文件，重新执行 /super-harness:run（会从 rebase 现场继续）
   合流挂起（held）的：按看板「接手」一行处理后，python3 .claude/harness/scripts/superh.py integrate <KEY>
   放弃某一路：        python3 .claude/harness/scripts/superh.py abandon <KEY> --yes

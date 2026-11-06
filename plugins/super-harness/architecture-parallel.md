@@ -209,6 +209,7 @@ marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文�
 |---|---|---|
 | worker 报 blocked / failed | 只停这一路 | 接手 session 修好后 `superh retry <KEY>`，worker 按 harness-state 续作 |
 | worker 退出但没有回报 | failed | 看 `logs/<KEY>.attempt-N.stream.jsonl`，然后同上 |
+| worker 把子 agent 或命令放到后台后结束了本轮 | failed，DETAIL 写明是后台任务被一起结束；worktree 可能留有没提交的半成品 | `superh retry <KEY>`。lane 没有 commit 也没有 spec、工作区却不干净时，retry 会拒绝并列出 `DIRTY=`，确认不要后用 `retry <KEY> --reset` 恢复到 start tag |
 | 调度者会话结束 | 在跑的 worker 随之结束，显示为 crashed | 下次 `/super-harness:run` 自动 retry 一次 |
 | 配额耗尽 | 不再派发新 lane，等在跑的结束后 halt | 额度恢复后 retry |
 | 合流代码冲突 | conflict，rebase 现场保留在 lane worktree | 子 agent 处理；不行就人工解决冲突并 `git add`，再跑 `/super-harness:run`。tick 发现冲突文件都已解决，会把这一路送回 integrate，由它完成 `rebase --continue` |

@@ -243,6 +243,7 @@ parked_statuses: [mainline-pending, spec-pending]
 ```
 cd <worktree> && claude --resume <session>                     # 进入那一路的会话
 python3 .claude/harness/scripts/superh.py retry <KEY>          # 修好后让 worker 续作
+python3 .claude/harness/scripts/superh.py retry <KEY> --reset  # retry 提示 worktree 有半成品时，丢掉没提交的改动再续作
 python3 .claude/harness/scripts/superh.py integrate <KEY>      # 合流时 held（验证失败、lane 不干净等），在 lane 里修好并 commit 后重新合流
 python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 ```
@@ -303,6 +304,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.4 | 2026-11-06 | 并行模式下 worker 派 build 子 agent 时没写 `run_in_background: false`，有的环境默认放到后台，worker 随即结束本轮，子 agent 被一起结束，这一路记为失败（#16）。现在 worker prompt 和流水线手册每次派子 agent 都显式传这个参数；launch 遇到这种退出会在 DETAIL 里说明；retry 发现 worktree 留着没提交的半成品时会提示用 `--reset` 清掉。详见 changelog。 |
 | 0.3.3 | 2026-11-06 | bmad-build-auto review 延后的问题导入账本时目标都写成 `Epic N`，以前没有任何 story 会被提示去处理它们。现在同 epic 后面的 story 开工时会看到这些条目，epic retro 再把剩下的逐条改到具体 story、版本桶，或者关掉。另外修了 lint 把合法的 `skipped` 状态报成违规的问题。详见 changelog。 |
 | 0.3.2 | 2026-11-06 | halt 说明改成按原因给建议，不再每次贴同一份 7 条菜单。bmad-build-auto 因 intent gap 停下时，会列出它提的问题，并说明怎么写回 spec 续跑；也可以直接在对话里回答。详见 changelog。 |
 | 0.3.1 | 2026-11-05 | 上线前的一轮修复，共三十多处。init 在已有 BMad 文档的项目里必然回滚的两个问题已修好。codex 审查没有发现问题时，流水线不再卡在修复阶段。pre-commit hook 在大提交时会跳过检查，也修好了。并行模式的 integrate 被超时杀掉后会无限重试，现在改为后台执行，并加了中断计数、进程组清理和调度锁。另外定下了 `.gitignore` 规则（部署资产不进 git，两份配置进 git），调整了凭据黑名单的误拦和漏拦。依赖可以写在 sprint-status 顶层的 `story_dependencies`，兼容 BMad 6.12.4（#14）；新增 `parked_statuses` 挂起状态、`ext-` 外部条件和 `epic_barrier` 开关（#15）。详见 changelog。 |

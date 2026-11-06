@@ -75,6 +75,17 @@ case "$MODE" in
   silent)
     echo '{"type":"result","result":"forgot to report","is_error":false}'
     exit 0 ;;
+  bgexit)   # issue #16: Agent went to the background, worker ended its turn
+    printf 'half-built\n' > src/half.txt
+    printf 'base, edited by a half-run build\n' > src/shared.txt
+    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu1","name":"Agent","input":{}}]}}'
+    echo '{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":[{"type":"text","text":"Async agent launched successfully. agentId: a1"}]}]}}'
+    echo '{"type":"result","result":"waiting for the build agent to finish","is_error":false,"num_turns":8}'
+    exit 0 ;;
+  nestedbg) # a nested sub-agent backgrounding a command is not the worker's own turn
+    echo '{"type":"user","parent_tool_use_id":"tu9","message":{"content":[{"type":"tool_result","tool_use_id":"tu10","content":"Command running in background with ID: b1"}]}}'
+    echo '{"type":"result","result":"forgot to report","is_error":false}'
+    exit 0 ;;
 esac
 # "implementation"
 case "$MODE" in
@@ -699,6 +710,31 @@ kill "$CH"; wait "$CH" 2>/dev/null
 $SH report 9-18-orph --status ready --summary "reported, then the launcher died" >/dev/null
 [ "$(stage_of 9-18-orph)" = "ready" ] && ok "L2e worker reported before dying → its report stands" || bad "L2e $(stage_of 9-18-orph)"
 $SH abandon 9-18-orph --yes >/dev/null
+
+echo "== B16: worker exits with a background agent still running (issue #16)"
+echo bgexit > .fake-mode-9-19-bg
+$SH prepare 9-19-bg >/dev/null && $SH launch 9-19-bg > "$TMP/bg.out"
+grep -q '^STAGE=failed' "$TMP/bg.out" && grep -q '^DETAIL=worker 启动了后台子 agent，' "$TMP/bg.out" \
+    && ok "B16a launch names the background exit" || { bad "B16a"; cat "$TMP/bg.out"; }
+OUT="$($SH retry 9-19-bg)"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -q 'retry 9-19-bg --reset' && echo "$OUT" | grep -q '^DIRTY=.*src/half.txt' \
+    && [ "$(stage_of 9-19-bg)" = "failed" ] \
+    && ok "B16b retry refuses a half-built lane and points at --reset" || { bad "B16b rc=$RC"; echo "$OUT"; }
+OUT="$($SH retry 9-19-bg --reset)"; RC=$?
+WT="$TMP/wt/9-19-bg"
+[ $RC -eq 0 ] && echo "$OUT" | grep -q '^RESET=' && [ -z "$(git -C "$WT" status --porcelain)" ] \
+    && [ "$(git -C "$WT" rev-parse HEAD)" = "$(git rev-parse 'harness/9-19-bg/start^{commit}')" ] \
+    && [ "$(stage_of 9-19-bg)" = "queued" ] \
+    && ok "B16c retry --reset restores the start point and requeues" || { bad "B16c rc=$RC"; echo "$OUT"; }
+$SH abandon 9-19-bg --yes >/dev/null
+echo nestedbg > .fake-mode-9-20-nb
+$SH prepare 9-20-nb >/dev/null && $SH launch 9-20-nb > "$TMP/nb.out"
+grep -q '^DETAIL=worker 退出' "$TMP/nb.out" && ! grep -q '启动了后台' "$TMP/nb.out" \
+    && ok "B16d background calls inside nested sub-agents are not blamed" || { bad "B16d"; cat "$TMP/nb.out"; }
+OUT="$($SH retry 9-20-nb --reset)"
+echo "$OUT" | grep -q '^NOTE=worktree 是干净的' && echo "$OUT" | grep -q '^STATUS=ok' \
+    && ok "B16e --reset on a clean lane is a no-op" || { bad "B16e"; echo "$OUT"; }
+$SH abandon 9-20-nb --yes >/dev/null
 
 OUT="$($SH end-run)"
 echo "$OUT" | grep -q '^STATUS=ok' && [ ! -f "$(git rev-parse --git-common-dir)/super-harness/dispatcher.lock" ] \

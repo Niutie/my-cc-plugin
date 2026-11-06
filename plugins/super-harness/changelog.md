@@ -4,6 +4,21 @@
 
 ---
 
+## v0.3.4 — 2026-11-06 — worker 不再把子 agent 放到后台后退出（#16）
+
+`/super-harness:run` 3 路并行时，一路 worker 在 B1 派 build 子 agent，调用里没有传 `run_in_background`。那个环境的 Agent 工具默认后台运行，worker 拿到 `Async agent launched` 后写了句「我在等它完成」就结束了本轮。worker 是 headless 的 `claude -p`，本轮结束进程就退出，build 子 agent 被一起结束。launch 记为 `failed`，worktree 里留着 build 做了一半的改动，没有 commit 也没有 spec，直接 retry 也会因为工作区不干净停下。同一批的另一路自己想到用 Monitor 等着，没出事，所以会不会出事全看模型这一次怎么做。手册原来写的是「同步等待，不要 `run_in_background`」，模型读成了「不传这个参数」，而不传恰好就是后台。
+
+- `prompts/worker.md` 新增「子 agent 和命令都要同步等待」：说明进程退出会带走后台任务；每次 Agent 调用显式传 `run_in_background: false`；Bash 不用后台模式；工具结果仍说启动到了后台时，用 Monitor 或 Bash 等到完成通知，不准结束本轮。
+- `pipeline.md`：§−1 (a) 写明每一次 Agent 调用都显式传 `run_in_background: false`。B1、B2.3、B3、⑥ 的代码块加上这一项，§0.A.0 和 ⑥.5 的文字描述也补上。`run` §3 合流冲突子 agent 同样处理。
+- `superh.py launch` 解析 stream 时记下 worker 自己发起、被放到后台的 Agent 和 Bash 调用（嵌套子 agent 里的不算），写进 proc.json 的 `bg_launches`。worker 没回报就退出时，DETAIL 写明是后台任务被一起结束，并提示 worktree 里可能有半成品。
+- `superh.py retry` 先看 lane worktree：不干净、没有 start tag（或 lane base）之后的 commit、也没有本 story 的 spec 时，拒绝重排，列出 `DIRTY=` 并给出 `retry <KEY> --reset`。加 `--reset` 会 `git reset --hard` 到起点并 `git clean -fd`（被 .gitignore 忽略的文件不动），输出 `DISCARDED=` 和 `RESET=`。有 commit 或有 spec 时只给一条 `WARN=`，照常重排，worker 按 harness-state 续作；这时传 `--reset` 会被拒绝。held 的 lane 不做这项检查。
+- `run` §1：`crashed` 自动 retry 被这项检查拒绝时，调度者不自己加 `--reset`，留给用户。§7 的命令清单加一行 `retry <KEY> --reset`。
+- 测试：`superh_test.sh` 加 B16 一组 5 项（后台退出的 DETAIL、retry 拒绝并给出 `--reset`、`--reset` 恢复到 start tag 并重新排队、嵌套子 agent 的后台调用不误报、干净 lane 上 `--reset` 不做事）。
+
+已经在跑的项目需要先 `/super-harness:update`，worker prompt 和手册才会更新。issue 里提到的本地临时修复（直接改项目里的 `.claude/harness/prompts/worker.md`）会被 update 覆盖，内容已经包含在新版里。
+
+---
+
 ## v0.3.3 — 2026-11-06 — epic 级延后项有了去处
 
 build-sync 把 spec frontmatter `deferred:` 导入 deferred-work.md 时，target 一律写 `Epic N`，bucket 写 `other`。B0 的 C11 注入只认 `[target:Story X.Y]`，retro 也不会给这些条目改 target，所以 0.2.0 以来 bmad-build-auto review 延后的问题全部停在 `pending`，没有哪条 story 会被提示去处理，只能手工翻。
