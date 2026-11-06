@@ -263,7 +263,7 @@ echo "GITIGNORE_EXIT=$?"
 1. §1 plugin 路径探测两路 fallback 全 miss → halt + 报错（同 §1 ERROR 块）
 2. §3 deploy_assets.sh `DEPLOY_EXIT ≠ 0` 或 summary 含 `FAILED=`（单文件 cp 失败：permission / 磁盘满 / 源文件缺失）→ halt + 报告失败 src/dst + 已部署计数（partial state；solo-dev 自决继续/回滚）
 3. install_git_hooks.sh exit ≠ 0 且 ≠ 3（真实安装失败：hook 源目录缺失 / cp、chmod 权限失败 / 参数错误 / 内部 bug；exit 3 = 良性拒装（hooksPath 或项目自有 hook）仅 WARN）→ halt + 贴 stderr verbatim
-4. Claude 运行时额度耗尽（判定按 `pipeline.md` §−1 (a)，只看子 agent 返回的第一行，不搜关键词）→ 用 `pipeline.md` §3 的配额模板
+4. Claude 运行时额度耗尽（判定按 `pipeline.md` §−1 (a)，只看子 agent 返回的第一行，不搜关键词）→ 按 `pipeline.md` §3.1「配额耗尽」那一行给选项
 5. §0 仓库根检查不是 `REPO_CHECK=ok`（在子目录里，或不在 git 仓库里）→ halt，什么都不写
 
 **Halt 模板**：

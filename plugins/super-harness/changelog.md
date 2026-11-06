@@ -4,6 +4,18 @@
 
 ---
 
+## v0.3.2 — 2026-11-06 — halt 说明按原因给建议
+
+以前每次 halt 都贴同一份 7 条选项（整条撤回、restore、看 git log、续跑命令、配额重启、report-issue），大多和这次停下的原因无关。intent gap 这种最常见的情况反而没说怎么继续：spec 是 `status: blocked`，bmad-build-auto 收到 blocked spec 会直接再停，`--continue` 走不通。
+
+- `pipeline.md` §3：halt 说明改成四块，停在哪、原因（一句话）、现在的状态（commit 数和工作区用命令查）、1 到 3 条建议。去掉「任何场景都打印这段」。
+- 新增 §3.1，按原因列出状态里要写的事实和对应建议，覆盖 bmad-build-auto 的 intent gap、验证失败、spec 不达标或修复循环不收敛、建 spec 前就停，以及中途退出、配额、`DIRTY_WORKTREE`、越界路径、`NO_CODE_CHANGE`、B3 脏改动、工作区不干净、连续发问、dispatch 超限、retro rejected、脚本内部错误。撤回、report-issue、配额重启只在对应原因下出现。
+- 新增 §3.2：用户在对话里回答 intent gap 的问题后，主 agent 把问答写进 spec `<intent-contract>` 的 `### Clarifications`，`status` 改成 `draft`，commit，再按 §0.B 续跑。调度模式不适用。
+- `run` §7：停滞时逐路读受阻 lane 的 `result.json`，按 §3.1 给建议；通用命令清单只列用得上的行。
+- `run-inline`、`run`、`init`、`update`、`report-issue` 里引用「选项 4/5/6」「配额模板」的地方改成指向 §3.1。
+
+---
+
 ## v0.3.1 — 2026-11-05 — 上线前的一轮修复；依赖写法和挂起状态（#14、#15）
 
 用到真实项目之前做了一次全面检查，分接入、单路流水线、提交与 hook、并行调度四块，下面的问题都在临时仓库里复现过，修完都补了回归测试。另外处理了初始化项目时提的 issue #14、#15。

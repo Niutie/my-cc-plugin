@@ -24,7 +24,7 @@
 1. 结构化校验已经失败：build-verify 报 `SPEC_STATUS_NOT_DONE=` / `SPEC_MISSING=`，或某阶段的"验收"产物缺失；
 2. 子 agent 的返回**第一行**就是 Claude Code 运行时的额度报错，以 `Claude AI usage limit reached`、`You've hit your limit`、`5-hour limit reached`、`API Error: 429` 之一开头（这类返回通常只有一两行，没有子 agent 自己写的正文）。
 
-两条都满足 → halt，用 §3 配额模板（选项 5）。只满足第 1 条 → 普通 halt。`API Error: Overloaded` 之类不是配额，按各阶段的瞬态错误规则处理。codex 的额度、登录问题不走这一条，看 `run_codex_review.sh` 输出的 `CODEX_STATUS:`（§B2.2）。
+两条都满足 → halt，按 §3.1「配额耗尽」那一行给选项。只满足第 1 条 → 普通 halt。`API Error: Overloaded` 之类不是配额，按各阶段的瞬态错误规则处理。codex 的额度、登录问题不走这一条，看 `run_codex_review.sh` 输出的 `CODEX_STATUS:`（§B2.2）。
 
 > **关于 git index**：bmad-build-auto 自己 commit；harness 自己的 commit（B2 的 3/4、B4、retro）一律经 `harness-commit.py` 预先 stage。主 agent 任何时候都不自己 `git add`。
 
@@ -237,7 +237,7 @@ python3 .claude/harness/scripts/harness-commit.py build-verify $KEY
 - **STATUS=halt**，按诊断行处理（都走 §3 halt 模板，commit 已存在、主 agent 不撤）：
   - `SPEC_STATUS_NOT_DONE=blocked` + `AUTO_RUN_RESULT=` 行：bmad-build-auto 自己 HALT 了（intent gap、spec 不达标、验证失败、review 修复循环 > 5 轮不收敛等）。把 blocking condition 贴给用户。
   - `BUILD_AUTO_RESULT=` + `AUTO_RUN_RESULT=` 行：bmad-build-auto 还没建 spec 就 HALT 了（脏工作区、分支不符、intent 不清、缺前序 story 连续性决定、uv 失败等）。贴给用户，不要重新 dispatch——同样的条件会让它再 HALT 一次。
-  - `SPEC_STATUS_NOT_DONE=<其它>` 或 `SPEC_MISSING=`：subagent 中途退出。按 §−1 (a) 的「配额耗尽的判定」看返回第一行：是运行时额度报错 → 配额模板；不是 → 普通 halt。
+  - `SPEC_STATUS_NOT_DONE=<其它>` 或 `SPEC_MISSING=`：subagent 中途退出。按 §−1 (a) 的「配额耗尽的判定」看返回第一行：是运行时额度报错 → 按 §3.1「配额耗尽」那一行给选项；不是 → 按「子 agent 中途退出」那一行。
   - `DIRTY_WORKTREE=`：跑完留下未提交文件。
   - `BLACKLIST=` / `CROSS_STORY=` / `OUT_OF_SCOPE_BMAD=`：区间里出现越界路径。
   - `NO_CODE_CHANGE=`：spec 标 done，但区间里除了 implementation-artifacts 下的文件什么都没改（可疑的"空实现"）。
@@ -582,7 +582,7 @@ halt 的落地方式按模式不同：inline 模式打印下面的 halt 模板�
 | 触发条件 | 处理 |
 |---|---|
 | 启动时（`run-inline` §0.A 第 0 步、lane 模式 B0、`run` §0）`check_bmad_runtime.sh` STATUS=fail | halt，贴 `REMEDIATION=` 行 |
-| 配额耗尽（§−1 (a) 的两条判定同时成立：结构化校验失败 + 子 agent 返回第一行是运行时额度报错） | halt + 配额模板（选项 5）。codex 的额度 / 登录问题不在此列：`run_codex_review.sh` 退出码 2 → §B2.1 skip+marker |
+| 配额耗尽（§−1 (a) 的两条判定同时成立：结构化校验失败 + 子 agent 返回第一行是运行时额度报错） | halt，按 §3.1「配额耗尽」那一行给选项。codex 的额度 / 登录问题不在此列：`run_codex_review.sh` 退出码 2 → §B2.1 skip+marker |
 | `build-verify` STATUS=halt（`SPEC_STATUS_NOT_DONE=` / `SPEC_MISSING=` / `BUILD_AUTO_RESULT=` / `AUTO_RUN_RESULT_MISSING=` / `DIRTY_WORKTREE=` / `BLACKLIST=` / `CROSS_STORY=` / `OUT_OF_SCOPE_BMAD=` / `NO_CODE_CHANGE=`） | halt，贴脚本完整 stdout。commit 已存在，**不撤** |
 | B0 工作区不干净 | halt |
 | `harness-commit.py` 退出码 1 | halt，贴脚本完整 stdout（`BLACKLIST=` / `CROSS_STORY=` / `UNEXPECTED_ARTIFACT=` / `FORBIDDEN=` / `UNSTAGED=` 等） |
@@ -605,32 +605,64 @@ halt 的落地方式按模式不同：inline 模式打印下面的 halt 模板�
 
 ### Halt 时主 agent 必须做的事（不可省略）
 
+halt 说明只讲这一次：停在哪、为什么停、现在什么状态、接下来怎么办。选项从 §3.1 表里按原因挑，最多 3 条，按推荐顺序排，每条都要写到能照着做的程度（改哪个文件、跑哪条命令、做完怎么续跑）。和这次原因无关的通用操作不要附上：整条撤回、`git restore` 全部、看 git log、report-issue、配额重启，只有 §3.1 那一行列了才出现。
+
 ```
-🛑 已 halt。当前 story: $KEY，halt 触发条件：<原因>。
+🛑 已 halt：$KEY 停在 <阶段，例如「B1 build 验收」>。
+原因：<一句话，说清楚是谁停的、为什么停。诊断行放到最后的完整输出里，这里不要只贴一个 SPEC_STATUS_NOT_DONE=blocked>
 
-可选操作（你来决定，主 agent 不会自动做任何一种）：
-  0. （配额耗尽 halt 优先看这项）跑 harness-state 看真实进度：
-       python3 .claude/harness/scripts/harness-state.py $KEY --plain
-     next_action_code = build-verify → bmad-build-auto 其实已经跑完，直接从 B1 验收继续
-     next_action_code = build（spec 已存在）→ 重启 B1 会按 spec status 续跑，不从零开始
-  1. 整条撤回本 story（含 bmad-build-auto 与 harness 的全部 commit）：
-       git reset --hard harness/$KEY/start
-  2. 撤销当前未提交的 worktree 变更，保留已有 commit：
-       git restore --source=HEAD --staged --worktree -- .
-  3. 不撤回，进现场调查：
-       git log --oneline harness/$KEY/start..HEAD
-       git diff
-       （bmad-build-auto blocked 时看 spec 的 `## Auto Run Result` 和 `## Review Triage Log`）
-  4. 修完之后继续：
-       /super-harness:run-inline --continue     （续作本 story）
-       /super-harness:run-inline                （跳到下一条 backlog；本 $KEY 应已 done 或被人为推进）
-       /super-harness:run                       （调度模式：重新进入并行调度，会从磁盘状态接着处理）
-  5. （仅配额耗尽）等到 reset 时间，告诉我"重启 <B1|B2|B3|⑥>"，我会重新调度该步
-  6. 怀疑是 plugin 缺陷？跑 /super-harness:report-issue（自动收集上下文，gh CLI 直提，附临时绕过方案）
+现在的状态：
+  - 本 story 已有 <N> 个 commit，工作区<干净 / 有 M 个未提交文件>
+  - <§3.1 表「状态要写的事实」那一列要求的内容>
 
-子 agent 完整返回 / 脚本完整 stdout 如下：
-<逐字粘贴>
+建议（主 agent 不会自动执行，你来选）：
+  A. <首选>
+  B. <备选>
+  C. <可选>
+
+完整输出（逐字）：
+<子 agent 返回 / 脚本 stdout>
 ```
 
-任何场景都打印这段，不要简化，不要替用户选。
+写法：
+
+- N 和 M 用命令查：`git rev-list --count harness/$KEY/start..HEAD`、`git status --porcelain`。没有 start tag 的 halt（启动检查、工作区检查）省掉 commit 数。
+- 「续跑」按模式写成具体命令：inline 模式是 `/super-harness:run-inline --continue`；调度模式是 `python3 .claude/harness/scripts/superh.py retry $KEY`，再执行 `/super-harness:run`。
+- 需要用户改文件时，写出文件路径和要改的位置（例如 spec 路径 + `status:` 改成什么）。
+- 不替用户选，不自动执行。git 撤回类命令（reset、restore、删 tag）只给出命令，用户明确让你执行才执行。
+
+### 3.1 按原因给选项
+
+| 原因 | 状态要写的事实 | 建议 |
+|---|---|---|
+| bmad-build-auto 停在 `intent gap`、`unclear intent`、`matrix ambiguity`（`SPEC_STATUS_NOT_DONE=blocked`，或 §0.B 的 `blocked`） | 从 spec `## Auto Run Result` 抄出它提的每个问题，编号列出，一个问题一行，保留它给的候选读法。step-04 review 阶段停的，再写出 `## Review Triage Log` 最后一条里保存的 patch 路径（代码已经被它还原） | A. 直接在对话里回答这些问题，主 agent 按 §3.2 写回 spec 并续跑。<br>B. 自己改 spec：把答案写进 `<intent-contract>` 块，frontmatter `status` 改成 `draft`，commit，然后续跑。<br>C. 答案要改需求本身（epics 里的 story 定义写错了或漏了）：先改 planning artifacts，再按 B 做。想先跳过这条：在 sprint-status 里把它改成 `parked_statuses` 里的状态（列表为空就先在 harness-project-config.yaml 里加一个），然后 `/super-harness:run-inline` 跑下一条 |
+| bmad-build-auto 停在验证失败：`implementation verification failed`、`patch verification failed`、`matrix test audit failed` | 失败的命令和报错前 10 行左右（从 Auto Run Result 抄） | A. 是环境问题（服务没起、依赖没装）：给出要补的环境，补好后 spec `status` 改成 `in-progress`，commit，续跑。<br>B. 是代码问题：用户修好并 commit，spec `status` 改成 `in-review`，续跑会从 review 接着做 |
+| bmad-build-auto 停在 spec 问题：`spec failed ready-for-development standard`、`handoff conflicts with spec`、`review repair loop exceeded 5 iterations` | 不达标的条目或互相冲突的两段原文；循环不收敛的，列出 triage log 里反复出现的那几条 finding | A. 按列出的问题改 spec（多半是 AC 互相矛盾或写得太宽），`status` 改成 `draft`，commit，续跑。<br>B. 这条 story 拆小更合适：用 BMad 改 epics 后，`git reset --hard harness/$KEY/start` 撤回本 story 重来 |
+| bmad-build-auto 在建 spec 之前就停了（`BUILD_AUTO_RESULT=`，或 §0.B `blocked` 且没有 spec） | result 文件里的 Status 和 Blocking condition | 按 condition 给一条对应的处理：工作区不干净 → 列出文件，请用户 commit 或清理；分支不对 → 写出当前分支；`unclear intent` → 指出 epics 里这条 story 缺了什么；`missing previous-story continuity decision` → 写出停在 in-review 的那条前序 story。处理完删掉这个 result 文件（已入库就 `git rm` 后 commit），续跑 |
+| 子 agent 中途退出，不是配额（`SPEC_STATUS_NOT_DONE=` 非 blocked，或 `SPEC_MISSING=`） | spec 当前 status；子 agent 返回的第一行；本 story 主步骤已经 dispatch 了几次 | A. 直接续跑，bmad-build-auto 会按 spec status 接着做（占用本 story 唯一一次中断重启；已经用过就不要列这条）。<br>B. 返回内容是 Traceback、脚本找不到之类的 plugin 或运行时错误 → `/super-harness:report-issue` |
+| 配额耗尽 | 报错里的 reset 时间（有就写）；`harness-state.py $KEY --plain` 的 `next_action_code` | A. 等到 reset 之后说「重启 <B1/B2/B3/⑥>」。`next_action_code` 是 `build-verify` 的，写明 build 其实已经跑完，重启只做验收 |
+| `DIRTY_WORKTREE=` | 未提交文件列表，每个标出是新增还是修改 | A. 这些文件该留：看过内容后自己 commit，再续跑（会重新验收）。<br>B. 不该留：给出只针对这些文件的清理命令（`git restore -- <文件>`、`rm <未跟踪文件>`），清理后续跑 |
+| `BLACKLIST=`、`CROSS_STORY=`、`OUT_OF_SCOPE_BMAD=`，或 `harness-commit.py` 报 `FORBIDDEN=`、`UNEXPECTED_ARTIFACT=` | 每个越界路径，以及引入它的 commit（`git log --oneline harness/$KEY/start..HEAD -- <路径>`） | A. 这个路径确实不该动：在一个新 commit 里改回去，然后续跑。<br>B. 判定像误报（比如本该放行的模板文件、本 story 自己的产物）→ `/super-harness:report-issue`，它会附临时绕过方案 |
+| `NO_CODE_CHANGE=` | spec Tasks 列表；Auto Run Result 里说做了什么 | A. 实现漏了：spec `status` 改成 `in-progress`，commit，续跑。<br>B. 这条 story 本来就不需要改代码（已被前序 story 做掉、纯文档）：在 sprint-status 里把它标 done，`git tag harness/$KEY/done`，然后 `/super-harness:run-inline` 跑下一条 |
+| B3 留下未提交改动（§0.B `blocked-dirty`，follow-up 那一行） | `git status --porcelain`；spec Auto Run Result 里最后一轮在修什么 | A. 丢掉这些改动：`git restore --source=HEAD --staged --worktree -- .`，未跟踪文件逐个删，续跑会重新做 B3。<br>B. 改动看过没问题：自己 commit，续跑会直接验收 |
+| 工作区不干净（B0、`run-inline` §0.A） | 未提交文件列表；能看出来源的写出来源（上一条 story 的 ⑥ 产物、用户手改） | A. 用户自己的改动：commit 或 `git stash` 后重跑。<br>B. 上一步 harness 留下的：说明是哪一步，给出对应的 commit 或清理命令 |
+| 子 agent 连续 2 次发问 | 两次问题原文 | A. 直接回答，主 agent 按 §3.2 写回 spec 并续跑。<br>B. 把答案补进 `.claude/harness/answer-policy.md` 或 harness-project-config.yaml 的项目语境，以后同类问题自动代答，然后续跑 |
+| dispatch 超过 4 次、想第二次进入 B2 修复 → B3 循环 | 每次 dispatch 的结果各一行 | A. 按最后一次失败的原因处理（套用本表对应那一行），处理完续跑。<br>B. `git reset --hard harness/$KEY/start` 撤回本 story，拆小或改 spec 后重来 |
+| `check_bmad_runtime.sh` STATUS=fail | `REMEDIATION=` 行 | A. 按 REMEDIATION 处理后重跑 |
+| `retro_gate: block` 且有 `_NO_SPEC_` 项 | 那 K 条 dev 项 | 用 §0.A.0「缺 spec 兜底」那两条 |
+| retro verdict 为 rejected | retro 文档 Acceptance verdict 段和 Open questions 段要点 | A. 补救工作开成新 story（BMad 加进 epics 和 sprint-status）后重跑。<br>B. 判断可以接受：直接重跑。retro 和 epic 在 sprint-status 里已经是 done，不会再停在这里 |
+| 脚本内部错误（Traceback、约定之外的退出码）或上面都对不上 | 报错前 10 行左右 | A. `/super-harness:report-issue`。<br>B. 能看出直接原因（权限、磁盘、缺命令）就写出来，给出修法，修完续跑 |
+
+表里没列到的原因，照同样的思路自己写：先说事实，再给 1 到 3 条针对这次原因的做法。
+
+### 3.2 用户在对话里回答了 intent gap 或子 agent 的问题
+
+只在用户明确给出答案时做，答案不完整就追问缺的那几个，不要替用户补。
+
+1. 把问答写进 spec 的 `<intent-contract>` 块末尾，标题 `### Clarifications (<日期>)`，一问一答，问题照抄，答案用用户的原话。bmad-build-auto 重新规划时会原样保留这个块。
+2. frontmatter `status` 改成 `draft`，其他字段不动。
+3. `git add <spec 路径> && git commit -m "docs($KEY): 补充 intent gap 答复"`。
+4. 调 `harness-state.py $KEY`，按 §0.B 切入（这时应是 `build`）。这次 B1 计入本 story 的 dispatch 次数。
+
+答案涉及改需求（epics 里的 story 定义）时不走这一节，按 §3.1 第一行 C 处理。调度模式不走这一节：调度者不改 lane worktree 里的文件（`run` §7）。
 

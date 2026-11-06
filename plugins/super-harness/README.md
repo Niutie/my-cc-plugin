@@ -303,6 +303,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.2 | 2026-11-06 | halt 说明改成按原因给建议，不再每次贴同一份 7 条菜单。bmad-build-auto 因 intent gap 停下时，会列出它提的问题，并说明怎么写回 spec 续跑；也可以直接在对话里回答。详见 changelog。 |
 | 0.3.1 | 2026-11-05 | 上线前的一轮修复，共三十多处。init 在已有 BMad 文档的项目里必然回滚的两个问题已修好。codex 审查没有发现问题时，流水线不再卡在修复阶段。pre-commit hook 在大提交时会跳过检查，也修好了。并行模式的 integrate 被超时杀掉后会无限重试，现在改为后台执行，并加了中断计数、进程组清理和调度锁。另外定下了 `.gitignore` 规则（部署资产不进 git，两份配置进 git），调整了凭据黑名单的误拦和漏拦。依赖可以写在 sprint-status 顶层的 `story_dependencies`，兼容 BMad 6.12.4（#14）；新增 `parked_statuses` 挂起状态、`ext-` 外部条件和 `epic_barrier` 开关（#15）。详见 changelog。 |
 | 0.3.0 | 2026-11-03 | 去掉 ⑤.5 测试阶段和 `/super-harness:run-test`。基本测试由 `bmad-build-auto` 在实现阶段完成，e2e 和验收测试交给测试团队。并行模式新增合流验证门：`parallel.yaml` 配 `verify_command` 后，lane 合入 sprint 分支前先在合流后的代码上跑一遍。`harness-project-config.yaml` 的 `e2e_framework`、`extra.e2e_test_subdir` 退役；`/super-harness:update` 会清掉项目里旧的测试阶段资产。 |
 | 0.2.2 | 2026-11-03 | 修 macOS 自带 bash 3.2 下 pre-commit 的 gate ①：`retro_gate=warn` 时也会拦下新 story spec 的 commit，现在恢复为只警告。`release_check.sh` 加了一项静态检查，防止同类写法再进来。 |

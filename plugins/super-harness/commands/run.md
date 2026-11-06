@@ -83,7 +83,7 @@ python3 .claude/harness/scripts/superh.py tick
 
 - `crashed`：worker 进程丢失，通常是上一个会话结束了。同一路第一次出现时自动执行 `SH retry <KEY>`，下一轮会重新 launch；worker 会按 harness-state 续作。第二次再出现就留给用户。
 - `blocked` / `failed` / `held` / `conflict`：留给用户，不自动重试。
-- `quota`：tick 已经停止派发新 lane，`launch` 和 `queued` 都是空的（`quota_hold: true`）。等在跑的 lane 全部结束后，按 §8 的配额模板 halt。
+- `quota`：tick 已经停止派发新 lane，`launch` 和 `queued` 都是空的（`quota_hold: true`）。等在跑的 lane 全部结束后，按 §8 halt。
 
 ## 2. 启动 lane
 
@@ -182,10 +182,12 @@ retro 期间其他 lane 照常在各自的 worktree 里运行，不受影响。
 
 ## 7. 停滞
 
-`next_action = stalled` 表示没有在跑的 lane，也没有可启动的 story，但 sprint 还没完成。执行 `SH board` 和 `SH plan`，把「需要你处理」的部分和等待原因原样给用户，执行 `SH end-run` 释放调度锁（否则用户在别的终端里执行下面这些命令会得到 `STATUS=locked`），并附上下面的说明，然后结束：
+`next_action = stalled` 表示没有在跑的 lane，也没有可启动的 story，但 sprint 还没完成。执行 `SH board` 和 `SH plan`，把「需要你处理」的部分和等待原因原样给用户，执行 `SH end-run` 释放调度锁（否则用户在别的终端里执行下面这些命令会得到 `STATUS=locked`）。
+
+接着对看板上每一路「受阻」「失败」「配额耗尽」的 lane，读 `.git/super-harness/lanes/<KEY>.result.json` 的 `halt` 字段，按 P§3 的写法给这一路写一段：原因一句话、需要的事实、P§3.1 对应那一行的 1 到 3 条建议，续跑命令写 `SH retry <KEY>` 再 `/super-harness:run`。spec 和改动在这一路的 worktree 里，要抄问题、列文件就去那里读，但不要在里面改东西；P§3.2 在调度模式下不适用，需要改 spec 的让用户自己改，或者用看板上的「接手」命令进那一路处理。合流冲突、已挂起、进程丢失的 lane 不用读 result，从下面的命令里挑对应那一行附上，用不到的行不要列。写完就结束：
 
 ```
-处理完之后重新执行 /super-harness:run。常用操作：
+处理完之后重新执行 /super-harness:run。
   接手某一路：        cd <worktree> && claude --resume <session>
   修完让 worker 续作：python3 .claude/harness/scripts/superh.py retry <KEY>
   合流冲突手工解决后：git add 解决好的文件，重新执行 /super-harness:run（会从 rebase 现场继续）
@@ -203,7 +205,7 @@ retro 期间其他 lane 照常在各自的 worktree 里运行，不受影响。
 | tick 的 `problems` 非空，或 integrate 报主 worktree 不干净、不在 sprint 分支 | 贴原文 |
 | §4 的 build-sync 等 `harness-commit.py` 退出码 1 | 按 P§3 的 halt 模板 |
 | §4 的 `postmerge` 给出 `NEXT=halt`，或报 done tag 不在 sprint 分支上 | 贴脚本输出 |
-| 配额耗尽（`quota_hold` 且没有在跑的 lane） | 按 P§3 halt 模板的选项 5 说明；恢复后执行 `SH retry <KEY>`，再重新执行本命令 |
+| 配额耗尽（`quota_hold` 且没有在跑的 lane） | 按 P§3.1「配额耗尽」那一行写；恢复后执行 `SH retry <KEY>`，再重新执行本命令 |
 | retro verdict 为 rejected | 按 P§1「verdict 门」 |
 | 任何 `SH` 命令输出 `STATUS=locked` | 贴 `REASON=` 和 `HINT=`。锁属于另一个会话，不要执行 `end-run`，也不要自行 `--take-over` |
 

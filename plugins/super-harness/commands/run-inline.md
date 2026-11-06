@@ -130,7 +130,7 @@ report "🎉 完成 (LOOP_SCOPE=<value>, target=<key 或 epic 或 —>)"
 
 **选 story 的顺序和依赖**：`next` / `next-in-epic` 按 sprint-status 文件顺序取第一条 `backlog`，但会跳过声明了依赖、依赖还没满足的 story。依赖来源和 `/super-harness:run` 一样：`parallel.yaml` 的 `deps_overrides`，然后是 sprint-status 顶层的 `story_dependencies`，最后是多行块里的 `depends_on`。`ext-` 开头的项是外部条件（例如 `ext-contract-signoff`），一直算没满足，条件满足后由用户从依赖里删掉。没声明依赖的 story 不受影响，照文件顺序跑。所有 backlog 都在等时退出码 1，stderr 打一行 `waiting=<key>(<没满足的依赖>);...`，这时 halt，把这一行转告用户：要么先完成上游 story，要么删掉已经满足的 `ext-` 条件。`--story <key>` 明确指定的 story 不做这项检查。
 
-**all 模式收尾检查**：`sprint-status.py next` 只返回 `backlog`。停在 ready-for-dev / in-progress / review 的 story（比如 halt 后用户选了选项 4 跳过）永远不会被主循环挑中，它所在 epic 的 retro 也就一直不跑。所以 `all` 模式在报完成之前跑一次：
+**all 模式收尾检查**：`sprint-status.py next` 只返回 `backlog`。停在 ready-for-dev / in-progress / review 的 story（比如 halt 后用户没处理完就跳到了下一条）永远不会被主循环挑中，它所在 epic 的 retro 也就一直不跑。所以 `all` 模式在报完成之前跑一次：
 
 ```bash
 python3 .claude/harness/scripts/sprint-status.py open-epics

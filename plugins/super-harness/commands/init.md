@@ -939,7 +939,7 @@ stdout 报告（按下表结构）：
 1. helper `run_sprint_init_check_prereq.sh` 退出码非 0/2/3（参数错误 / 内部异常）
 2. BMad markdown 提取语义后 `EXTRACTED[<key>]` 仍为空对**所有字段** → 怀疑 BMad 产物为空文件 / 损坏 → halt + 提示用户检查 `<planning_dir>/`
 3. §4.5 `harness_config.py check` exit ≠ 0（`ERROR [harness_config]:` 行），或写入的字段值读不出来 → rollback + halt。只有 `WARN [harness_config]:` 行不算
-4. Claude 运行时额度耗尽（按 `pipeline.md` §−1 (a)「配额耗尽的判定」：子 agent 返回的第一行是运行时额度报错，不在正文里搜关键词）→ 用 `pipeline.md` §3 的配额模板
+4. Claude 运行时额度耗尽（按 `pipeline.md` §−1 (a)「配额耗尽的判定」：子 agent 返回的第一行是运行时额度报错，不在正文里搜关键词）→ 按 `pipeline.md` §3.1「配额耗尽」那一行给选项
 5. §A.2 `deploy_assets.sh` `DEPLOY_EXIT ≠ 0` 或 summary 含 `FAILED=`（资产部署失败 — manifest 未写入；packaging bug / 权限问题）→ halt + 报告已部署计数 + deploy stderr verbatim（与 `/super-harness:update` §7.2 对齐）
 
 **Halt 模板**（与 `pipeline.md` §3 一致）：

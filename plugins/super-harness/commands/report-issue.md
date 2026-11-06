@@ -10,7 +10,7 @@ allowed-tools: Bash, Read, Write, AskUserQuestion
 
 **触发场景**：
 
-1. **halt 时**：`/super-harness:run-inline` / `run` / `init` 等任一命令进入 §3 halt 模板"待用户决断"页面，用户怀疑这是 plugin 缺陷而非项目侧问题 — 选项 6 引导跑本命令
+1. **halt 时**：`/super-harness:run-inline` / `run` / `init` 等任一命令halt，halt 说明里列了本命令（`pipeline.md` §3.1 只在疑似 plugin 问题时列），或用户自己怀疑这是 plugin 缺陷而非项目侧问题
 2. **阶段收尾随手**：sprint / 单 story 跑完后用户回想到刚才哪一段不顺手 — 主动跑本命令
 3. **ad-hoc 反馈**：用户日常使用时发现任何 plugin 行为/文档/脚本问题，随时跑
 
@@ -227,7 +227,7 @@ echo "ℹ️ 已取消；未提交 issue。"
 2. §1 / §2 `collect_issue_context.sh` exit ≠ 0 且 ≠ 2（参数 bug / 内部错）→ halt + 贴 stderr verbatim
 3. §4 A 路径 `gh` 未装 / 未登录 → 不 halt（已在脚本内 emit 引导文字）；exit 1 给主 agent 知道，主 agent emit 一行"装好 gh 后重跑 /super-harness:report-issue"，正常退出
 4. §4 A 路径 `gh issue create` exit ≠ 0（rate limit / repo 权限问题 / 网络问题）→ 不 halt；emit 失败原因 + body 文件路径 + 手工 fallback 指令（已在脚本内）；正常退出。注：label `not found` 类失败先走 §4 的自动降级重试（剥非默认 label 重提一次），重试仍失败才进本条
-5. Claude 运行时额度耗尽（判定方法同 `pipeline.md` §−1 (a)：返回第一行是运行时额度报错，不在正文里搜关键词）→ 与 init / run 同款配额模板（emit halt 模板请求用户授权重启）
+5. Claude 运行时额度耗尽（判定方法同 `pipeline.md` §−1 (a)：返回第一行是运行时额度报错，不在正文里搜关键词）→ 按 `pipeline.md` §3.1「配额耗尽」那一行写 halt 说明，请用户在额度恢复后授权重启
 
 **Halt 模板**（仅 §7-2 / 7-5 适用）：
 
