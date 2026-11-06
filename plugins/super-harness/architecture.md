@@ -613,6 +613,8 @@ run.md 的子 agent prompt 模板**逐字包含**格式契约段（v0.2.0 起 bu
 
 `grep_pending_deferred_for_story.sh <KEY>` 的命中结果作为机器注入段（带显式分隔符）放进 B1 的 Build intent——"本 story 应消化 N 条 deferred FU"。bmad-build-auto 把它当规划上下文，按 `bmad-build-auto-suffix.md` §3 决定纳入与否。
 
+0.3.3 起注入段分两部分：`[target:Story X.Y]` 的条目，以及 `[epic-backlog]` 之后同 epic 的 `[target:Epic N]` 条目。build-sync 从 spec `deferred:` 导入的延后项一律是 `target:Epic N`，以前没有任何 story 能匹配到，只会一直挂着。现在同 epic 后面的 story 能看到它们（门槛比指名的条目高），epic 收尾时 retro 再用 `--epic N` 把剩下的逐条改到具体去处（见 `bmad-retrospective-suffix.md`「deferred-work 分诊」）。
+
 项目自己的 BMad 覆盖写在 `_bmad/custom/<skill>.toml`（例如把 codex 挂成 bmad-build-auto 的 review layer），由 BMad skill 自身加载，harness 只读不写（`build_auto_codex_layer_ids` 探测）。旧文档里的 `_bmad/customize/` 目录名从来不对，已更正。
 
 ---

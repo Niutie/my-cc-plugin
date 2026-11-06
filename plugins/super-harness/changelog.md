@@ -4,6 +4,22 @@
 
 ---
 
+## v0.3.3 — 2026-11-06 — epic 级延后项有了去处
+
+build-sync 把 spec frontmatter `deferred:` 导入 deferred-work.md 时，target 一律写 `Epic N`，bucket 写 `other`。B0 的 C11 注入只认 `[target:Story X.Y]`，retro 也不会给这些条目改 target，所以 0.2.0 以来 bmad-build-auto review 延后的问题全部停在 `pending`，没有哪条 story 会被提示去处理，只能手工翻。
+
+- `grep_pending_deferred_for_story.sh`：story 模式在原来的 `Story X.Y` 命中之后，加一段 `[epic-backlog]`，列同 epic 的 `[target:Epic N]` open 条目（最多 10 条）。产出它的 story 自己（`source` 以 `-of-X.Y` 结尾）不列，免得续跑时回灌。两段都为空时仍输出原来那一行 `No open deferred items targeting <key>`。
+- 同一脚本新增 `--epic N` 模式：列 target 为 `Epic 1` 到 `Epic N` 的全部 open 条目，带 target 和 source，不截断。之前的 epic 留下没处理的条目，会在下一次 retro 时一起分诊。
+- `bmad-build-auto-suffix.md` §3、`harness-prompt-suffix.py build`：说明注入段的两部分。`[epic-backlog]` 条目门槛更高，本 story 本来就要改到那块代码才纳入。
+- `bmad-retrospective-suffix.md` 新增「deferred-work 分诊」一节；`pipeline.md` ⑥ 的 retro prompt 加第 5 条。retro 用 `--epic N` 列出条目，逐条改成 `resolved`、新 target（`Story X.Y` 或版本桶）、`skipped`/`superseded`，判断不了的改 `needs-review`，每条在 `历史` 留一行，retro 文档里写分诊小结。改动由 stage ⑥ 的提交一起带上（该 stage 本来就允许改 deferred-work.md）。
+- schema 文档：`历史` 允许记录 target 变动（`target: Epic N → Story 5.2`）；§3.4 `build-auto-of-X.Y`、§6、§7 同步。
+- `deferred_work_schema_lib.sh` 和 `lint_deferred_work.sh` 的 status 枚举写成了 `deferred`，漏了 schema §3.1 的 `skipped`：合法的 `skipped` 被 lint 报成 `e-bad-status`，不存在的 `deferred` 反而放行。改成和 schema 一致。pre-commit gate ② 不校验 status，提交不受影响。
+- 测试：`grep_pending_deferred_for_story_test.sh` 加 5 组 fixture（同 epic 遗留段、只有遗留、遗留截断、`--epic` 模式、坏参数），`lint_deferred_work_test.sh` 加 7 个 status 全合规和 `deferred` 被拒两组。
+
+已经在跑的项目：下一次 epic retro 会把 `Epic 1` 到当前 epic 积下的条目一起分诊。不想等的话，可以先跑 `bash .claude/harness/scripts/grep_pending_deferred_for_story.sh --epic <当前 epic>` 看有多少。部署到项目需要先 `/super-harness:update`。
+
+---
+
 ## v0.3.2 — 2026-11-06 — halt 说明按原因给建议
 
 以前每次 halt 都贴同一份 7 条选项（整条撤回、restore、看 git log、续跑命令、配额重启、report-issue），大多和这次停下的原因无关。intent gap 这种最常见的情况反而没说怎么继续：spec 是 `status: blocked`，bmad-build-auto 收到 blocked spec 会直接再停，`--continue` 走不通。

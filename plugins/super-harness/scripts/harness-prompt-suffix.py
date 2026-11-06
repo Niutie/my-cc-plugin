@@ -248,7 +248,7 @@ BUILD_CONTRACT_BLOCK = f"""**bmad-build-auto 调度契约（harness 强制）**�
 5. 不要改 `{_ARTIFACTS_REL}/sprint-status.yaml`（harness build-sync 统一推进）；新的延后项走 spec frontmatter `deferred:`，不要直接写 `{_DEFERRED_WORK_REL}`（spec Tasks 要求翻转既有 FU 状态的除外）。
 6. 若 bmad-build-auto 因 `uv` 不可用、`no subagents` 等环境原因 HALT，原样报告它的输出，不要绕过它直接实现代码。"""
 
-BUILD_DEFERRED_NOTICE_BLOCK = """**Deferred-work 注入提示（C11）**：「Build intent」里可能带一段 `## Deferred-work 待消化提示（auto-injected by C11）`，由主 agent 用 `grep_pending_deferred_for_story.sh <KEY>` 生成，列出 target 指向本 story、仍 pending 的 FU 条目。它是规划阶段的参考上下文，不是额外目标：按 `bmad-build-auto-suffix.md` §3 处理（自然范围内的写成 task + ledger 翻转 task，会膨胀范围的放过）。为空时跳过。"""
+BUILD_DEFERRED_NOTICE_BLOCK = """**Deferred-work 注入提示（C11）**：「Build intent」里可能带一段 `## Deferred-work 待消化提示（auto-injected by C11）`，由主 agent 用 `grep_pending_deferred_for_story.sh <KEY>` 生成，列出 target 指向本 story、仍 open 的 FU 条目；`[epic-backlog]` 之后是本 epic 没指定 story 的遗留项（`[target:Epic N]`），门槛更高，本 story 本来就要改到那块代码才纳入。它是规划阶段的参考上下文，不是额外目标：按 `bmad-build-auto-suffix.md` §3 处理（自然范围内的写成 task + ledger 翻转 task，会膨胀范围的放过）。为空时跳过。"""
 
 
 def _verification_block() -> str:

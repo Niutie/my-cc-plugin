@@ -178,7 +178,7 @@ python3 .claude/harness/scripts/harness-state.py --in-flight       # 开了头�
 | 在哪看 | 内容 |
 |---|---|
 | 会话里的 halt 框（并行模式是看板的「需要你处理」） | 流水线处理不了、停下来等你的问题，附处理选项。处理完用 `--continue` 接着跑 |
-| `deferred-work.md` | review 和 codex 发现、决定推迟的问题（`FU-` 条目）。`grep_deferred_buckets.sh --list` 按归属汇总，`grep_deferred_status.sh <KEY>` 看某条 story 相关的。目标是后面某条 story 的，会在那条 story 开工时自动带给 bmad-build-auto |
+| `deferred-work.md` | review 和 codex 发现、决定推迟的问题（`FU-` 条目）。`grep_deferred_buckets.sh --list` 按归属汇总，`grep_deferred_status.sh <KEY>` 看某条 story 相关的。目标是后面某条 story 的，会在那条 story 开工时自动带给 bmad-build-auto；build-sync 导入的延后项目标是所在 epic，同 epic 后面的 story 开工时也会带上，epic retro 再把剩下的逐条分到具体去处 |
 | spec 末尾 | `## Auto Run Result`：做了什么、怎么验证、遗留风险；`### Codex Review Handling (Stage 3)`：每条 codex finding 是修了、不修还是推迟 |
 | retro 文档和 `retro_action_items` | 行动项、Open questions、Assumptions。`category: dev` 的行动项在下一个 epic 开工前兑现，`grep_pending_dev_retro_items.sh` 列出还没兑现的 |
 
@@ -303,6 +303,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.3.3 | 2026-11-06 | bmad-build-auto review 延后的问题导入账本时目标都写成 `Epic N`，以前没有任何 story 会被提示去处理它们。现在同 epic 后面的 story 开工时会看到这些条目，epic retro 再把剩下的逐条改到具体 story、版本桶，或者关掉。另外修了 lint 把合法的 `skipped` 状态报成违规的问题。详见 changelog。 |
 | 0.3.2 | 2026-11-06 | halt 说明改成按原因给建议，不再每次贴同一份 7 条菜单。bmad-build-auto 因 intent gap 停下时，会列出它提的问题，并说明怎么写回 spec 续跑；也可以直接在对话里回答。详见 changelog。 |
 | 0.3.1 | 2026-11-05 | 上线前的一轮修复，共三十多处。init 在已有 BMad 文档的项目里必然回滚的两个问题已修好。codex 审查没有发现问题时，流水线不再卡在修复阶段。pre-commit hook 在大提交时会跳过检查，也修好了。并行模式的 integrate 被超时杀掉后会无限重试，现在改为后台执行，并加了中断计数、进程组清理和调度锁。另外定下了 `.gitignore` 规则（部署资产不进 git，两份配置进 git），调整了凭据黑名单的误拦和漏拦。依赖可以写在 sprint-status 顶层的 `story_dependencies`，兼容 BMad 6.12.4（#14）；新增 `parked_statuses` 挂起状态、`ext-` 外部条件和 `epic_barrier` 开关（#15）。详见 changelog。 |
 | 0.3.0 | 2026-11-03 | 去掉 ⑤.5 测试阶段和 `/super-harness:run-test`。基本测试由 `bmad-build-auto` 在实现阶段完成，e2e 和验收测试交给测试团队。并行模式新增合流验证门：`parallel.yaml` 配 `verify_command` 后，lane 合入 sprint 分支前先在合流后的代码上跑一遍。`harness-project-config.yaml` 的 `e2e_framework`、`extra.e2e_test_subdir` 退役；`/super-harness:update` 会清掉项目里旧的测试阶段资产。 |

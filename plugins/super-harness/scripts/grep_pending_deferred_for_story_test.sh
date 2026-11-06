@@ -14,6 +14,12 @@
 #   (d) 歧义不误命中：desc 含 "4.1" / target=Story 4.10 前缀重叠 → 0 命中
 #   (e) closed status 跳过：resolved / skipped / superseded 不输出；open 保留
 #   (f) 17 条命中 → 截断 15 + 摘要行（共 16 行）
+#   (g) 同 epic 遗留段（0.3.3）：[target:Epic 4] 出现在 [epic-backlog] 段；
+#       本 story 自己 defer 的（source *-of-4.1）、别的 epic、Epic 4 retro 不出现
+#   (h) 只有 epic 遗留、没有 Story 命中 → 不输出 No open，只输出遗留段
+#   (i) epic 遗留 12 条 → 截断 10 + 摘要（指向 --epic）
+#   (j) --epic N：列 Epic 1..N 的 open 项（带 target/source），不含 N+1、closed、Story 目标
+#   (k) --epic 无命中 / 非数字参数
 #
 # Exit: 0 if all pass, 1 if any fail.
 
@@ -189,6 +195,93 @@ assert_contains "f.3 摘要行含脚本路径提示" "$OUT_F" "bash .claude/harn
 assert_contains "f.4 第 15 条仍输出" "$OUT_F" "FU-4.1.15"
 # f.5 反向断言（配套 f.1/f.4 正向断言 — 非恒真）
 assert_not_contains "f.5 第 16 条被截断" "$OUT_F" "FU-4.1.16"
+
+# ---------- Fixture (g): 同 epic 遗留段 ----------
+echo "[fixture g] [target:Epic 4] 进 [epic-backlog] 段；自身 defer / 他 epic / Epic 4 retro 不进"
+TMP_G="$WORKDIR/fixture-g.md"
+cat > "$TMP_G" <<'EOF2'
+# Deferred Work — fixture g
+
+- **FU-4.1.A** `[status:pending]` `[bucket:cross-story]` `[target:Story 4.1]` `[source:dev-of-3.2]` — story 命中
+- **FU-4.0.B1** `[status:pending]` `[bucket:other]` `[target:Epic 4]` `[source:build-auto-of-4.0]` — 同 epic 遗留 alpha
+- **FU-4.1.B1** `[status:pending]` `[bucket:other]` `[target:Epic 4]` `[source:build-auto-of-4.1]` — 本 story 自己 defer 的
+- **FU-4.10.B1** `[status:pending]` `[bucket:other]` `[target:Epic 4]` `[source:build-auto-of-4.10]` — Story 4.10 defer，不是本 story
+- **FU-3.2.B1** `[status:pending]` `[bucket:other]` `[target:Epic 3]` `[source:build-auto-of-3.2]` — 别的 epic
+- **FU-4.0.B2** `[status:pending]` `[bucket:other]` `[target:Epic 4 retro]` `[source:build-auto-of-4.0]` — Epic 4 retro 不算
+- **FU-4.0.B3** `[status:resolved]` `[bucket:other]` `[target:Epic 4]` `[source:build-auto-of-4.0]` — 已关闭
+EOF2
+
+OUT_G=$(run_fixture 4-1-slug "$TMP_G")
+assert_contains "g.1 story 命中 FU-4.1.A" "$OUT_G" "FU-4.1.A"
+assert_contains "g.2 遗留段标题" "$OUT_G" "[epic-backlog] Epic 4 遗留"
+assert_contains "g.3 遗留段含 FU-4.0.B1" "$OUT_G" "FU-4.0.B1"
+assert_contains "g.4 Story 4.10 的 defer 不被当成自身来源" "$OUT_G" "FU-4.10.B1"
+assert_line_count "g.5 共 4 行（1 story + 标题 + 2 遗留）" "$OUT_G" "4"
+assert_not_contains "g.6 本 story 自己 defer 的不回灌" "$OUT_G" "FU-4.1.B1"
+assert_not_contains "g.7 别的 epic 不进" "$OUT_G" "FU-3.2.B1"
+assert_not_contains "g.8 Epic 4 retro 不进" "$OUT_G" "FU-4.0.B2"
+assert_not_contains "g.9 closed 不进" "$OUT_G" "FU-4.0.B3"
+G_FIRST=$(echo "$OUT_G" | head -1)
+assert_contains "g.10 story 命中排在遗留段之前" "$G_FIRST" "FU-4.1.A"
+
+# ---------- Fixture (h): 只有 epic 遗留 ----------
+echo "[fixture h] 只有 epic 遗留时不输出 No open"
+TMP_H="$WORKDIR/fixture-h.md"
+cat > "$TMP_H" <<'EOF2'
+# Deferred Work — fixture h
+
+- **FU-4.0.B1** `[status:needs-review]` `[bucket:other]` `[target:Epic 4]` `[source:build-auto-of-4.0]` — 只有遗留
+EOF2
+
+OUT_H=$(run_fixture 4-2 "$TMP_H")
+assert_contains "h.1 遗留段标题" "$OUT_H" "[epic-backlog] Epic 4 遗留"
+assert_contains "h.2 遗留项" "$OUT_H" "FU-4.0.B1 | status: needs-review"
+assert_not_contains "h.3 不输出 No open" "$OUT_H" "No open deferred items"
+
+# ---------- Fixture (i): epic 遗留截断 ----------
+echo "[fixture i] epic 遗留 12 条 → 截断 10 + 摘要"
+TMP_I="$WORKDIR/fixture-i.md"
+{
+    echo "# Deferred Work — fixture i"
+    echo ""
+    for i in $(seq 1 12); do
+        printf -- '- **FU-4.0.B%s** `[status:pending]` `[bucket:other]` `[target:Epic 4]` `[source:build-auto-of-4.0]` — 遗留 %s\n' "$i" "$i"
+    done
+} > "$TMP_I"
+
+OUT_I=$(run_fixture 4-3 "$TMP_I")
+assert_line_count "i.1 共 12 行（标题 + 10 + 摘要）" "$OUT_I" "12"
+assert_contains "i.2 摘要行指向 --epic" "$OUT_I" "Epic 4 遗留共 N=12 条 → bash .claude/harness/scripts/grep_pending_deferred_for_story.sh --epic 4"
+assert_contains "i.3 第 10 条仍输出" "$OUT_I" "FU-4.0.B10 |"
+assert_not_contains "i.4 第 11 条被截断" "$OUT_I" "FU-4.0.B11 |"
+
+# ---------- Fixture (j): --epic 模式 ----------
+echo "[fixture j] --epic 4 列 Epic 1..4 的 open 项"
+OUT_J=$("$GREP_SH" --epic 4 "$TMP_G")
+assert_contains "j.1 含 Epic 4 遗留" "$OUT_J" "FU-4.0.B1 | status: pending | target: Epic 4 | source: build-auto-of-4.0"
+assert_contains "j.2 含本 story 自身 defer（retro 要分诊）" "$OUT_J" "FU-4.1.B1"
+assert_contains "j.3 含更早 epic 的遗留" "$OUT_J" "FU-3.2.B1 | status: pending | target: Epic 3"
+assert_line_count "j.4 共 4 行" "$OUT_J" "4"
+assert_not_contains "j.5 Story 目标不进" "$OUT_J" "FU-4.1.A"
+assert_not_contains "j.6 Epic 4 retro 不进" "$OUT_J" "FU-4.0.B2"
+assert_not_contains "j.7 closed 不进" "$OUT_J" "FU-4.0.B3"
+OUT_J3=$("$GREP_SH" --epic 3 "$TMP_G")
+assert_contains "j.8 --epic 3 含 Epic 3" "$OUT_J3" "FU-3.2.B1"
+assert_not_contains "j.9 --epic 3 不含 Epic 4" "$OUT_J3" "FU-4.0.B1"
+
+# ---------- Fixture (k): --epic 无命中 / 坏参数 ----------
+echo "[fixture k] --epic 无命中 / 非数字"
+OUT_K=$("$GREP_SH" --epic 2 "$TMP_G")
+assert_contains "k.1 无命中文案" "$OUT_K" "No open deferred items targeting Epic 1..2"
+assert_line_count "k.2 单行" "$OUT_K" "1"
+set +e
+"$GREP_SH" --epic abc "$TMP_G" >/dev/null 2>&1
+RC_K=$?
+"$GREP_SH" --epic >/dev/null 2>&1
+RC_K2=$?
+set -e
+assert_contains "k.3 非数字 exit 1" "rc=$RC_K" "rc=1"
+assert_contains "k.4 缺参数 exit 1" "rc=$RC_K2" "rc=1"
 
 # ---------- summary ----------
 echo ""

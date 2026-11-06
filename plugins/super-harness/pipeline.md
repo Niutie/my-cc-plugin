@@ -171,7 +171,7 @@ B2 fix 续作时 prompt 头部拼 `python3 .claude/harness/scripts/harness-state
 - **工作区必须干净**（每条 story 都查，不只启动时；lane 模式查的是自己的 worktree）：`git status --porcelain` 非空 → halt。上一条 story 的 ⑥ 残留、用户在两条 story 之间的改动都会让 bmad-build-auto 在 step-01 直接 HALT。
 - **打 start tag**（撤回点，必须在 dispatch 之前）：`git tag harness/$KEY/start`
   - 任何阶段想整条撤回：`git reset --hard harness/$KEY/start`。
-- **Deferred-work 注入（C11）**：stderr 不并进来（`read_harness_config` 的 WARN 行会混进 build intent），失败时单独显示：
+- **Deferred-work 注入（C11）**：输出两部分，一是 `[target:Story <short id>]` 的 open 项，二是 `[epic-backlog]` 标题之后、`[target:Epic <EPIC>]` 的 open 项（build-sync 导入的延后项都是这个 target，本 story 自己 defer 的不列）。stderr 不并进来（`read_harness_config` 的 WARN 行会混进 build intent），失败时单独显示：
 
   ```bash
   DEFERRED_ERR="$(mktemp)"
@@ -483,6 +483,7 @@ prompt 核心：
 > 2. Action items 段**必须**按其 Form 1 书写（每条一个 H3：`### <code> — <标题>`），每条声明 `**Category**: dev` 或 `**Category**: harness`，owner 写 `solo-dev`。
 > 3. Phase 5 的 `--add-action` JSON 每条显式给 `id: "epic-<EPIC>-retro-<CODE>"`（与 H3 code 一致），不要传 `--set-action-status`。
 > 4. retro 文档 frontmatter 必须有 `verdict`。
+> 5. 按 suffix 的「deferred-work 分诊」一节，跑 `bash .claude/harness/scripts/grep_pending_deferred_for_story.sh --epic <EPIC>`，把列出的 `[target:Epic M]` 条目逐条改成具体去处（改 target、resolved、skipped 或 needs-review），在 retro 文档里写一段分诊小结。
 >
 > 不合规形态（编号列表 / 表格）会让 stage 6 commit 的 parser 全 0 命中 → fail-loud halt。
 >

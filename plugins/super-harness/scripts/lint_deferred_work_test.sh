@@ -88,6 +88,22 @@ run_fixture "f6-bad-status" 1 "e-bad-status:[status:made-up]" '# DW
 
 - **FU-1.4.A** `[status:made-up]` `[bucket:other]` `[target:Story 1.7]` `[source:dev-of-1.4]` — bad status'
 
+# F6b: schema §3.1 的 7 个 status 全部合规（0.3.3 前共享库写的是 deferred，skipped 被误报）
+run_fixture "f6b-all-statuses" 0 "" '# DW
+
+- **FU-1.4.A** `[status:pending]` `[bucket:other]` `[target:Story 1.7]` `[source:dev-of-1.4]` — a
+- **FU-1.4.B** `[status:in-progress]` `[bucket:other]` `[target:Story 1.7]` `[source:dev-of-1.4]` — b
+- **FU-1.4.C** `[status:partial]` `[bucket:other]` `[target:Story 1.7]` `[source:dev-of-1.4]` — c
+- **FU-1.4.D** `[status:resolved]` `[bucket:other]` `[target:Story 1.7]` `[source:dev-of-1.4]` — d
+- **FU-1.4.E** `[status:skipped]` `[bucket:other]` `[target:Epic 1]` `[source:build-auto-of-1.4]` — e
+- **FU-1.4.F** `[status:superseded]` `[bucket:other]` `[target:Story 1.7]` `[source:dev-of-1.4]` — f
+- **FU-1.4.G** `[status:needs-review]` `[bucket:other]` `[target:Epic 1]` `[source:build-auto-of-1.4]` — g'
+
+# F6c: deferred 不在 schema 枚举内
+run_fixture "f6c-deferred-status" 1 "e-bad-status:[status:deferred]" '# DW
+
+- **FU-1.4.A** `[status:deferred]` `[bucket:other]` `[target:Story 1.7]` `[source:dev-of-1.4]` — 非法 status'
+
 # F7: 多类 violations 同时 — exit 4 (b + c + e + a)
 run_fixture "f7-mixed-4" 4 "" '# DW
 

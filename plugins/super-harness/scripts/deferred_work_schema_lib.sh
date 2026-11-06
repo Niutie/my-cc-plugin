@@ -24,7 +24,7 @@
 # Exported so calling scripts can also use them directly if needed.
 DWSL_HEAD_FULL_RE='^- \*\*FU-[A-Za-z0-9._\-]+\*\* `\[status:[a-z\-]+\]` `\[bucket:[a-zA-Z0-9.+\-]+\]` `\[target:[^]`]*\]` `\[source:[^]`]*\]`'
 DWSL_TARGET_VALID_RE='^(Story [0-9]+\.[0-9]+[a-z]?([.-][A-Za-z0-9]+)?|Epic [0-9]+( [A-Za-z][A-Za-z0-9 -]*)?|v[0-9]+\.[0-9]+\+ [A-Za-z][A-Za-z0-9-]+|customer-feedback|N/A)$'
-DWSL_STATUS_VALID_RE='^(pending|in-progress|partial|resolved|deferred|needs-review|superseded)$'
+DWSL_STATUS_VALID_RE='^(pending|in-progress|partial|resolved|skipped|needs-review|superseded)$'
 DWSL_LEGACY_INLINE_RE='— (\*\*)?(Resolved|Partial resolution) by Story [0-9.]+(\*\*)? \([0-9]{4}-'
 DWSL_FU_HEAD_PREFIX_RE='^- \*\*FU-'
 DWSL_FU_RETRO_PREFIX_RE='^- \*\*FU-RETRO-'

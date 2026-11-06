@@ -39,8 +39,9 @@
   - **修复方向**：...（≤200 字；说"做什么"，不说"为什么 defer"）
   - **触发条件**：...（≤80 字；machine-checkable — Story key / Epic gate / customer feedback / N/A）
   - **关联**：FU-A.B.C / ADR-N / spec-X.Y.codex-review.md（多项以 ` / ` 分隔；可省）
-  - **历史**：（每次 status 翻动追加一行；不删历史）
-    - YYYY-MM-DD `<old> → <new>` by Story X.Y / Chore <name> / fresh-agent-backfill — 短证据 ≤120 字
+  - **历史**：（每次 status 或 target 变动追加一行；不删历史）
+    - YYYY-MM-DD `<old> → <new>` by Story X.Y / Chore <name> / epic-N-retro / fresh-agent-backfill — 短证据 ≤120 字
+    - YYYY-MM-DD `target: <old> → <new>` by epic-N-retro — 改 target 的理由 ≤120 字
 ```
 
 字段顺序固定。无内容字段**整行省略**（不写空 placeholder）。
@@ -153,7 +154,7 @@ pending ──→ in-progress ──→ partial ──→ resolved
 
 - `dev-of-X.Y`（Story X.Y dev-story 阶段；≤ 0.1.39 旧流水线）
 - `build-of-X.Y`（Story X.Y 的 bmad-build-auto 实现子 agent 直接登记，v0.2.0+）
-- `build-auto-of-X.Y`（bmad-build-auto review 归入 spec frontmatter `deferred:`、由 `harness-commit.py build-sync` 导入的条目；id 形如 `FU-X.Y.B<n>`，bucket 一律 `other`、target `Epic N`，导入后由人或后续 story 再细分，v0.2.0+）
+- `build-auto-of-X.Y`（bmad-build-auto review 归入 spec frontmatter `deferred:`、由 `harness-commit.py build-sync` 导入的条目；id 形如 `FU-X.Y.B<n>`，bucket 一律 `other`、target `Epic N`，v0.2.0+）。0.3.3 起：同 epic 后续 story 起跑时，这些条目出现在 C11 注入段的 `[epic-backlog]` 部分（产出它的 story 自己除外）；epic retro 用 `grep_pending_deferred_for_story.sh --epic N` 列出剩下的，逐条改成具体 target 或关闭（见 `bmad-retrospective-suffix.md`「deferred-work 分诊」）
 - `bmad-review-of-X.Y`（bmad-code-review 阶段）
 - `codex-review-of-X.Y`（codex review 阶段）
 - `epic-N-retro`
@@ -242,7 +243,7 @@ pending ──→ in-progress ──→ partial ──→ resolved
 脚本切到读 schema tag。简化：
 
 - pending grep：`grep -E '^- \*\*FU-' deferred-work.md | grep '\[status:pending\]'`
-- target grep：`... | grep '\[target:Story X.Y\]'`
+- target grep：`... | grep '\[target:Story X.Y\]'`；`grep_pending_deferred_for_story.sh` 另外列同 epic 的 `[target:Epic N]`，`--epic N` 模式列 `Epic 1..N`
 - bucket 计数：`... | awk -F'[' '{ for(i=1;i<=NF;i++) if($i ~ /^bucket:/) print $i }' | sort | uniq -c`
 
 不再需要：word boundary regex (`\bStory[[:space:]]+${EPIC}[\.\-]${SEQ}\b`) / `Resolved by` / `Partial resolution by` 文本剔除 / `--diff-filter` 兜底等。
@@ -255,7 +256,7 @@ pending ──→ in-progress ──→ partial ──→ resolved
 
 - **bmad-build-auto-suffix**（规划契约）：spec 把注入的 pending FU 纳入范围时，写成「翻转 ledger 条目」的 task；新延后项走 spec frontmatter `deferred:`，由 build-sync 导入（`source:build-auto-of-X.Y`）
 - **bmad-build-implement-suffix**（实现清单）：实现子 agent 翻 status / 加 partial / spawn 新 FU 时按 §3 状态变迁路径走，必加 `历史` 行
-- **bmad-retrospective-suffix**：retro 阶段做 superseded / 大群合并时按 schema 翻 status
+- **bmad-retrospective-suffix**：retro 阶段做 superseded / 大群合并时按 schema 翻 status；0.3.3 起另做一次分诊，把 `[target:Epic M]`（M ≤ 本 epic）的 open 条目改到具体去处
 
 ---
 

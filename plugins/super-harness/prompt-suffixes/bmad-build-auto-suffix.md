@@ -45,15 +45,23 @@ Q6 全栈追溯）的唯一渠道。其它 context 项照常按 bmad-build-auto 
 ## 3. Deferred-work 注入项的处理（C11）
 
 dispatch prompt 头部可能有一段 `## Deferred-work 待消化提示（auto-injected by C11）`，
-列出 `deferred-work.md` 里 target 指向本 story、仍 pending 的 FU 条目。规划时
-逐条判断：
+内容分两部分：
+
+- 前面不带标题的行：`deferred-work.md` 里 `[target:Story <本 story>]`、仍 open 的 FU。
+  这些是之前明确指给本 story 的。
+- `[epic-backlog] Epic N 遗留` 之后的行：`[target:Epic N]` 的 open FU，大多是本 epic
+  前面几条 story 的 review 延后项，没有指定由哪条 story 处理。它们只是顺带看看，
+  门槛比上一类高：本 story 本来就要改到那块代码、改动很小，才纳入。其余不用管，
+  epic retro 会统一重新分配。
+
+规划时逐条判断：
 
 - 在本 story 自然范围内、顺手能解决的：在 `## Tasks & Acceptance` 里写成正常
   task，并**另加一条 task**：「`{implementation_artifacts}/deferred-work.md` —
   把 FU-x.y.z 的 `[status:pending]` 翻成 `[status:resolved]` 并加 `历史` 行」。
   这样实现子 agent 才知道要改 ledger。
 - 会让范围膨胀的：不纳入，不需要写理由。
-- 注入段为空：跳过本节。
+- 注入段为空，或只有 `No open deferred items targeting …` 一行：跳过本节。
 
 不要因为注入项把 story 扩成多目标（会触发 bmad-build-auto 的
 `multiple-goals` warning）。

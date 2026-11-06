@@ -300,3 +300,51 @@ bash .claude/harness/scripts/grep_deferred_buckets.sh --emit-section1
 retro 写作时拿 emit 输出与 deferred-work.md §1 AUTO-GENERATED 块对比；如不一致
 （dev 期间漏 regen），retro 顺手 regen（用 Edit/Write 更新文件即可——
 **不做 git 操作**，commit 由主 agent 的 stage ⑥ `harness-commit.py` 统一收口）。
+
+---
+
+## deferred-work 分诊（epic 收尾，0.3.3 起）
+
+build-sync 把每条 story 的 review 延后项（spec frontmatter `deferred:`）导入
+ledger 时，target 一律写 `Epic N`，bucket 写 `other`。这类条目没有指定 story，
+同 epic 后面的 story 起跑时能在注入段里看到它们，epic 结束后就再也不会被注入。
+retro 负责给它们找到具体去处。
+
+```bash
+bash .claude/harness/scripts/grep_pending_deferred_for_story.sh --epic <EPIC>
+```
+
+输出是 target 为 `Epic 1` 到 `Epic <EPIC>` 的全部 open 条目，早期 epic 留下没处理的
+也在里面。只有一行 `No open deferred items …` 时跳过本节。
+
+逐条处理。先读 deferred-work.md 里的完整 bullet，再读 `关联` 指向的 spec（spec
+`deferred:` 里的 `evidence` 说明了问题依据），然后选一个去处：
+
+| 情况 | 改法 |
+|---|---|
+| 本 epic 某条 story 实际已经修掉，代码里找得到 | status 改 `resolved` |
+| 后续某条 story 会自然改到这块代码（看 epics 文件和 sprint-status 里还没 done 的 story） | target 改 `Story X.Y`，bucket 改 `cross-story`，status 不变 |
+| 值得做，但没有合适的 story，属于后续版本或收尾加固 | 按 schema §3.2 / §3.3 改 bucket 和 target，例如 bucket `v0.2+` + target `v0.2+ first-sprint`；加固类归 `epic-6` 桶 |
+| 不值得做、已经过时，或者被别的 FU 覆盖 | status 改 `skipped`；被覆盖的改 `superseded`，`关联` 写上覆盖它的 FU |
+| 判断不了（要做产品取舍，或证据不够） | status 改 `needs-review`，target 不动，留给 solo-dev |
+
+每改一条，在 bullet 的 `历史` 子段追加一行（没有就新建）：
+
+```markdown
+  - **历史**：
+    - YYYY-MM-DD `pending → resolved` by epic-N-retro — 证据，引 1-2 个文件路径
+    - YYYY-MM-DD `target: Epic N → Story 5.2` by epic-N-retro — 理由（≤120 字）
+```
+
+约束：
+
+- 处理完以后，列表里的条目要么已关闭，要么有了新 target，要么是 `needs-review`。
+  不要留下仍是 `pending` 的 `[target:Epic M]`。
+- 已经是 `needs-review`、这次也没有新证据的条目，不用再动。
+- 没改代码就不要写 `resolved`。拿不准就写 `needs-review`。
+- 不新增 FU，不改 FU id 和一句话描述。改 target 时，新值必须是 schema §3.3 里的合法写法
+  （`Story X.Y` 用短格式，不写 story key 全名）。
+- 改完 ledger 后，重跑上一节的 `grep_deferred_buckets.sh --emit-section1`，更新 §1 总账。
+- 在 retro 文档里加一小节 `## Deferred-work 分诊`：先写总数和各去处的条数，再每条一行
+  `FU-id：Epic N → 去处（理由）`。
+- 不做 git 操作，ledger 的改动由 stage ⑥ `harness-commit.py 6` 一起提交。
