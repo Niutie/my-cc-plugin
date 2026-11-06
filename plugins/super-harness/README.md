@@ -178,6 +178,7 @@ python3 .claude/harness/scripts/harness-state.py --in-flight       # 开了头�
 | 在哪看 | 内容 |
 |---|---|
 | 会话里的 halt 框（并行模式是看板的「需要你处理」） | 流水线处理不了、停下来等你的问题，附处理选项。处理完用 `--continue` 接着跑 |
+| 看板的「待你确认」（只有并行模式） | worker 和调度者按推荐项做了、没有停下来问你的决定。有空时批量确认，或推翻其中一条，见「不用一直守着」 |
 | `deferred-work.md` | review 和 codex 发现、决定推迟的问题（`FU-` 条目）。`grep_deferred_buckets.sh --list` 按归属汇总，`grep_deferred_status.sh <KEY>` 看某条 story 相关的。目标是后面某条 story 的，会在那条 story 开工时自动带给 bmad-build-auto；build-sync 导入的延后项目标是所在 epic，同 epic 后面的 story 开工时也会带上，epic retro 再把剩下的逐条分到具体去处 |
 | spec 末尾 | `## Auto Run Result`：做了什么、怎么验证、遗留风险；`### Codex Review Handling (Stage 3)`：每条 codex finding 是修了、不修还是推迟 |
 | retro 文档和 `retro_action_items` | 行动项、Open questions、Assumptions。`category: dev` 的行动项在下一个 epic 开工前兑现，`grep_pending_dev_retro_items.sh` 列出还没兑现的 |
@@ -243,10 +244,20 @@ parked_statuses: [mainline-pending, spec-pending]
 ```
 cd <worktree> && claude --resume <session>                     # 进入那一路的会话
 python3 .claude/harness/scripts/superh.py retry <KEY>          # 修好后让 worker 续作
+python3 .claude/harness/scripts/superh.py resume <KEY> --note "<答复>"  # 回答它停下来问的问题：写进 spec、提交、续跑
 python3 .claude/harness/scripts/superh.py retry <KEY> --reset  # retry 提示 worktree 有半成品时，丢掉没提交的改动再续作
 python3 .claude/harness/scripts/superh.py integrate <KEY>      # 合流时 held（验证失败、lane 不干净等），在 lane 里修好并 commit 后重新合流
 python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 ```
+
+### 不用一直守着
+
+并行模式按「非必要不找你」设计，0.4.0 起：
+
+- 有推荐项的决定不停下来问。 bmad-build-auto 停在 intent gap（两种读法都说得通）时，worker 按 `answer-policy.md` 选推荐的读法写进 spec 接着跑；调度者自己遇到的拍板题也一样。每个决定进收件箱，看板「待你确认」一栏列出来，epic retro 后和跑完时也会汇总一次。只有 answer-policy「必须人工确认」的几类（push 和其他对外发布、破坏性操作、硬闸门口径、钱和凭据）才真的停下。不想让它代答，把 `parallel.yaml` 的 `decision_mode` 改成 `ask`。
+- 收件箱怎么处理：`superh.py confirm --all` 全部确认，`superh.py decisions` 看完整内容，`superh.py override D3 --answer "<新决定>"` 推翻一条。推翻时这一路还没合入的，会退回到这个决定之前的提交，换上你的答复重跑（先不加 `--yes` 看要回退什么）；已经合入的只做记录，按新决定另开 story。
+- 机械故障自己修：`## Auto Run Result` 写错标题层级时照样认；B2.3 的修复早于 codex 报告提交时，`harness-commit.py 3` 只提交报告、把修复留给 stage 4；`verify_command` 超时自动重跑一次；配了 `env_check_command` / `env_up_command` 的，worker 启动前和合流验证前会检查环境，没起就先拉起来。每次都在输出里留一行 `SELF_HEAL=` 或 `AUTO_FIXED=` / `AUTO_SPLIT=`。
+- 一路停住不拖整个 epic：设 `blocked_policy: continue` 后，停住的那一路不再挡串行顺序、epic 屏障和 retro 屏障，不依赖它的 story 照常派发。
 
 ## 并行配置
 
@@ -262,6 +273,11 @@ python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 | `copy_paths` / `link_paths` | `.claude/harness`、`.claude/skills`、`_bmad` | 没进 git 的基建文件怎么带进 worktree。这些路径必须被 `.gitignore` 忽略，软链要写成不带结尾斜杠的 `/node_modules`；`superh.py doctor` 可以检查 |
 | `prepare_command` | 空 | 开 lane 后执行的命令，例如 `pnpm install --frozen-lockfile` |
 | `verify_command` / `verify_timeout_sec` | 空 / 1800 | 合流验证命令，见下文 |
+| `verify_timeout_retries` | 1 | `verify_command` 超时后自动重跑几次，命令自己失败不重跑 |
+| `env_check_command` / `env_up_command` / `env_down_command` | 空 | 前置环境的检查、拉起、停止，见「不用一直守着」 |
+| `decision_mode` | proceed | intent gap 这类有推荐读法的问题：`proceed` 按推荐项接着跑、记进收件箱；`ask` 停下等你 |
+| `blocked_policy` | wait | 一路停住时：`wait` 照样挡后面的 story；`continue` 只挡写明依赖它的 |
+| `worker_model` | 空 | worker 用的模型。建议写死，留空会跟随全机共享的 `~/.claude/settings.json`，别的会话执行 `/model` 就会改掉它；launch 输出和看板会显示实际用的模型 |
 | `worker_permission_mode` | bypassPermissions | worker 的权限模式 |
 
 ### 合流验证门
@@ -304,6 +320,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.4.0 | 2026-11-07 | #17：托管模式少打断。intent gap 这类有推荐项的问题按推荐项接着跑，决定进收件箱，看板上批量确认或推翻（推翻会把没合入的那一路退回重跑）；新增 `superh.py resume` 把你的答复写进 spec 后续跑；几种机械故障自动修（标题层级、stage 3/4 顺序、验证超时、环境没起）；可选 `blocked_policy: continue` 让停住的一路不挡后面的 story；launch 和看板显示 worker 实际用的模型。详见 changelog。 |
 | 0.3.5 | 2026-11-06 | #16 的第二个现场：worker 盯着后台子 agent 的输出文件，看它一个多小时没增长就判断卡住、报 blocked 退出，打断了正在跑交叉编译的实现子 agent，还留下没人管的容器。worker prompt 改为只认完成通知；launch 和 retry 会列出 worker 退出后仍挂载着这一路 worktree 的容器。详见 changelog。 |
 | 0.3.4 | 2026-11-06 | 并行模式下 worker 派 build 子 agent 时没写 `run_in_background: false`，有的环境默认放到后台，worker 随即结束本轮，子 agent 被一起结束，这一路记为失败（#16）。现在 worker prompt 和流水线手册每次派子 agent 都显式传这个参数；launch 遇到这种退出会在 DETAIL 里说明；retry 发现 worktree 留着没提交的半成品时会提示用 `--reset` 清掉。详见 changelog。 |
 | 0.3.3 | 2026-11-06 | bmad-build-auto review 延后的问题导入账本时目标都写成 `Epic N`，以前没有任何 story 会被提示去处理它们。现在同 epic 后面的 story 开工时会看到这些条目，epic retro 再把剩下的逐条改到具体 story、版本桶，或者关掉。另外修了 lint 把合法的 `skipped` 状态报成违规的问题。详见 changelog。 |

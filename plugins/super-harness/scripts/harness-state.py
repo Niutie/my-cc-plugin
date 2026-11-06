@@ -280,7 +280,8 @@ def _build_next_action(state, key, md_path):
     if codex_needed and not state["stage3_committed"]:
         if not state["worktree_clean"]:
             return "blocked-dirty", ("B2 codex review report in progress (worktree not clean): an untracked codex-review.md with a "
-                                     "`findings:` frontmatter line is a finished run_codex_review.sh report → harness-commit.py 3; "
+                                     "`findings:` frontmatter line is a finished run_codex_review.sh report → harness-commit.py 3 "
+                                     "(B2.3 edits already in the tree are left unstaged for stage 4: AUTO_SPLIT=); "
                                      "without that line it is a partial leftover → remove it (pipeline.md §B2.1 c)")
         return "codex", "dispatch B2: external codex adversarial review (codex is not mounted inside bmad-build-auto)"
     if state["stage3_committed"] and not state["stage4_committed"]:
@@ -297,8 +298,17 @@ def _build_next_action(state, key, md_path):
     # a stage-4 commit for a clean codex review (zero findings, `- [none]`
     # row only) fixed nothing, so it is not a B3 trigger (pipeline.md §1 B3)
     codex_fixed = state["stage4_committed"] and not state["codex_no_findings"]
-    if (codex_fixed or followup_recommended) and not state["followup_tag_exists"]:
-        fs = state["followup_start_sha"]
+    fs = state["followup_start_sha"]
+    # B3 halted (issue #17): bmad-build-auto marks the spec blocked during the
+    # follow-up review. Re-dispatching it on a blocked spec only HALTs again
+    # (`blocked spec supplied`), so this is a stop, not a resume.
+    if fs and not state["followup_tag_exists"] and st == "blocked":
+        return "blocked", (f"bmad-build-auto HALTed blocked during the B3 follow-up review — read `## Auto Run Result` "
+                           f"in {md_path}; answer it, set status back (in-review), commit, then resume B3")
+    # A B3 that has started and whose spec is not done yet is still in flight,
+    # even if the trigger flag (followup_review_recommended) changed meanwhile.
+    b3_in_flight = bool(fs) and st not in ("done", None)
+    if (codex_fixed or followup_recommended or b3_in_flight) and not state["followup_tag_exists"]:
         if fs and state["spec_status"] == "done" and state["head_sha"] and state["head_sha"] != fs:
             return "followup-verify", (f"B3 follow-up pass already ran (HEAD moved past harness/{key}/followup-start) — "
                                        f"run `harness-commit.py build-verify {key}`, then tag harness/{key}/followup; do NOT dispatch B3 again")

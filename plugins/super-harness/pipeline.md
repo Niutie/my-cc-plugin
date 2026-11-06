@@ -43,7 +43,8 @@
 **(c′) lane 模式的额外约束**：
 - 只在自己的 worktree 里工作。不 `cd` 到主 worktree 或其他 lane 的目录，不切分支，不 merge / rebase / reset，不删除或移动任何 tag（新打本 story 的 tag 除外）。
 - 不碰 `sprint-status.yaml` 里本 story 的状态。账本由调度者在合流后统一写。
-- 本手册要求「halt 并把 §3 模板贴给用户」的地方，lane 模式改为按 worker prompt 的回报命令报 `blocked`（配额耗尽报 `quota`），把 halt 原因和脚本完整输出写进 `--halt`，然后结束。不尝试自愈，也不重跑失败的子 agent。
+- 本手册要求「halt 并把 §3 模板贴给用户」的地方，lane 模式先看 §3.3：intent gap 这类有推荐读法的问题、验证命令超时，可以自己接着走。§3.3 不适用时，按 worker prompt 的回报命令报 `blocked`（配额耗尽报 `quota`），把 halt 原因和脚本完整输出写进 `--halt`，然后结束。§3.3 之外不尝试自愈，也不重跑失败的子 agent。
+- 不移动、不删除 tag 的唯一例外是 `superh.py reopen`：它重开 spec 时会把 `followup-start` 挪到新提交上，由脚本完成，worker 自己不动 tag。
 
 **(d) Commit 协议**：
 
@@ -117,12 +118,12 @@ stdout 每个待兑现 dev 项一行 `ITEM<TAB><epic-N-retro><TAB><CODE><TAB><st
 | `build` | §1 B1（spec 已存在时 intent 指向 spec 文件，bmad-build-auto 按 spec status 自己续跑） |
 | `build-verify` | §1 B1 的"验收"一步 |
 | `codex` / `codex-fix` | §1 B2 对应子步 |
-| `followup` | §1 B3（`followup-start` tag 已存在时不要重打，直接 dispatch，bmad-build-auto 按 spec status 续跑） |
+| `followup` | §1 B3（`followup-start` tag 已存在时不要重打，直接 dispatch，bmad-build-auto 按 spec status 续跑；spec 的 status 是 in-review 之类、还没到 done 时，说明 B3 停下后被 reopen / resume 过，intent 改成「继续 spec `<spec 路径>`，按 status 续跑」） |
 | `followup-verify` | §1 B3 的"验收"一步（follow-up 已经跑完，**不要**再 dispatch B3） |
 | `sync` | §1 B4 |
 | `tag-only` | `git tag harness/<KEY>/done`，进 ⑥ 判断 |
-| `blocked` | halt：bmad-build-auto 已 HALT blocked，把 spec `## Auto Run Result`（或还没有 spec 时的 `bmad-build-auto-result-*.md`）里的 Status / blocking condition 贴给用户 |
-| `blocked-dirty`（`next_action` 以 `B2 codex review report` 开头） | B2.2 跑完但没 commit。`git status --porcelain` 只有未入库的 `<KEY>.codex-review.md`，且它的 frontmatter 有 `findings:` 行（`run_codex_review.sh` 只在成功时写这个文件，写的时候带这一行）→ 跑 `harness-commit.py 3` commit，再重新切入。文件没有 `findings:` 行（旧版本中途留下的）→ 按 §B2.1 c) 的命令删掉它，重新调 `harness-state.py`（会回到 `codex`）。还有别的改动 → halt |
+| `blocked` | halt：bmad-build-auto 已 HALT blocked（B1，或 `followup-start` 之后的 B3），把 spec `## Auto Run Result`（或还没有 spec 时的 `bmad-build-auto-result-*.md`）里的 Status / blocking condition 贴给用户。lane 模式先按 §3.3 判断能不能自己接着走 |
+| `blocked-dirty`（`next_action` 以 `B2 codex review report` 开头） | B2.2 跑完但没 commit。未入库的 `<KEY>.codex-review.md` 的 frontmatter 有 `findings:` 行（`run_codex_review.sh` 只在成功时写这个文件，写的时候带这一行）→ 跑 `harness-commit.py 3` commit，再重新切入。工作区里同时还有 B2.3 已经开始的修复（项目代码、spec 的处理记录、deferred-work.md）也照样跑：脚本只提交报告，把 stage 4 能收的改动留在工作区，输出 `AUTO_SPLIT=left-for-stage-4 <路径>`；commit 后重新切入会走到下面 `B2 codex fix round` 那一行。有 stage 4 也收不了的路径（凭据、别的 story 的文件）时脚本照旧 halt。文件没有 `findings:` 行（旧版本中途留下的）→ 按 §B2.1 c) 的命令删掉它，重新调 `harness-state.py`（会回到 `codex`） |
 | `blocked-dirty`（`next_action` 以 `B2 codex fix round` 开头） | B2.3 的修复已部分落地。跑 B2.3 的"验收"：通过 → `harness-commit.py 4` commit；没通过 → 按 §0.B 末尾的续作规则重新 dispatch B2.3（prompt 头拼 `--resume-prompt --stage 4`） |
 | `blocked-dirty`（`next_action` 以 `follow-up review left a dirty worktree` 开头） | B3 的 bmad-build-auto 没收干净就退出了，改动没有经过它的 review 和 commit。**不要**用 `harness-commit.py 4` 或其他 stage 把这些改动收进去。halt，把 `git status --porcelain` 和 spec `## Auto Run Result` 贴给用户，由用户决定撤掉还是交回 bmad-build-auto 续跑 |
 | `blocked-dirty`（旧流水线，`next_action` 以 `legacy stage` 开头） | 见 §1.L：按文本提示验收对应产物，再用文本里写的 stage commit |
@@ -215,6 +216,8 @@ Agent({
   >
   > <`$DEFERRED_INJECT` 原样>
   >
+  > （lane 模式，worker prompt「调度者转交的答复」一节不是「（没有）」时再加）<那一节的 `## 已确认的答复` 原样>
+  >
   > （epic 第一个 story 时再加）## 前置 retro action items 状态
   >
   > <`grep_prev_retro_action_items.sh` 输出原样>
@@ -233,10 +236,10 @@ Agent({
 python3 .claude/harness/scripts/harness-commit.py build-verify $KEY
 ```
 
-- **STATUS=ok** → `git tag harness/$KEY/built`。记下输出里的 `SPEC_FILE=`（后续所有"spec 路径"都用它）、`FOLLOWUP_RECOMMENDED=` 与 `CODEX_LAYER_SKIPPED=`。
+- **STATUS=ok** → `git tag harness/$KEY/built`。记下输出里的 `SPEC_FILE=`（后续所有"spec 路径"都用它）、`FOLLOWUP_RECOMMENDED=` 与 `CODEX_LAYER_SKIPPED=`。`AUTO_FIXED=auto-run-result-heading` 是信息行：bmad-build-auto 把 `## Auto Run Result` 写成了别的标题层级，脚本照样认，spec 不改。
   - `CODEX_LAYER_SKIPPED=true`（codex 挂在 build 里但这一轮被跳过，常见原因是超时 / 额度）→ 现在只显示 §B2.1 b) 的通知框；marker 文件推迟到 B4 第 0 步再写（B3 可能还要跑 bmad-build-auto，它要求干净工作区）。
 - **STATUS=halt**，按诊断行处理（都走 §3 halt 模板，commit 已存在、主 agent 不撤）：
-  - `SPEC_STATUS_NOT_DONE=blocked` + `AUTO_RUN_RESULT=` 行：bmad-build-auto 自己 HALT 了（intent gap、spec 不达标、验证失败、review 修复循环 > 5 轮不收敛等）。把 blocking condition 贴给用户。
+  - `SPEC_STATUS_NOT_DONE=blocked` + `AUTO_RUN_RESULT=` 行：bmad-build-auto 自己 HALT 了（intent gap、spec 不达标、验证失败、review 修复循环 > 5 轮不收敛等）。lane 模式先按 §3.3 判断能不能自己接着走；不能的，把 blocking condition 贴给用户。
   - `BUILD_AUTO_RESULT=` + `AUTO_RUN_RESULT=` 行：bmad-build-auto 还没建 spec 就 HALT 了（脏工作区、分支不符、intent 不清、缺前序 story 连续性决定、uv 失败等）。贴给用户，不要重新 dispatch——同样的条件会让它再 HALT 一次。
   - `SPEC_STATUS_NOT_DONE=<其它>` 或 `SPEC_MISSING=`：subagent 中途退出。按 §−1 (a) 的「配额耗尽的判定」看返回第一行：是运行时额度报错 → 按 §3.1「配额耗尽」那一行给选项；不是 → 按「子 agent 中途退出」那一行。
   - `DIRTY_WORKTREE=`：跑完留下未提交文件。
@@ -580,7 +583,7 @@ SKIPPED_COUNT 必须用 Bash 实跑，> 0 时必须完整打印通知框：
 
 ## 3. 死循环 / 失控防护（**必须严格遵守**）
 
-任何一项触发都立即 halt，不要尝试自愈。子 agent 提问 / 请求确认不在此列（按 §−1.b 处理）。
+任何一项触发都立即 halt，不要尝试自愈（lane 模式的两种例外见 §3.3）。子 agent 提问 / 请求确认不在此列（按 §−1.b 处理）。
 
 halt 的落地方式按模式不同：inline 模式打印下面的 halt 模板；lane 模式按 §−1 (c′) 回报 `blocked` / `quota`；调度模式按 `run` §8，先贴看板，再贴 halt 模板。
 
@@ -596,7 +599,7 @@ halt 的落地方式按模式不同：inline 模式打印下面的 halt 模板�
 | `run-inline` §0.A 工作区不干净且没有 in-flight story | halt |
 | 子 agent 返回缺 `git status --porcelain` 自报段 | 不 halt，主 agent 自己跑一次交叉核对；发现子 agent 改了它没声称改过的文件 → halt |
 | `RETRO_VERDICT=rejected` 且 `EPIC_WONT_DO=none`、`EPIC_PARKED=none`，并且是 inline 模式 `LOOP_SCOPE=all` 或调度模式 | halt，不进下一个 epic |
-| 单条 story 主步骤（B1 / B2.3 / B3）累计 dispatch > 4 个子 agent（3 个 + 至多 1 次中断重启；B2.2 是脚本，不计）。⑥ / ⑥.5 / §0.A.0 不计入，各有上限：⑥ / ⑥.5 每 epic 各 1 个（另允许至多 1 次额外重启，配额重启与 ⑥ 瞬态重试合计）；§0.A.0 每个 dev 项 1 个 | halt |
+| 单条 story 主步骤（B1 / B2.3 / B3）累计 dispatch > 4 个子 agent（3 个 + 至多 1 次中断重启；B2.2 是脚本，不计；lane 模式 §3.3 reopen 之后的重新 dispatch 不计）。⑥ / ⑥.5 / §0.A.0 不计入，各有上限：⑥ / ⑥.5 每 epic 各 1 个（另允许至多 1 次额外重启，配额重启与 ⑥ 瞬态重试合计）；§0.A.0 每个 dev 项 1 个 | halt |
 | 想第二次进入"B2 修复 → B3 review"循环 | halt（每条 story 只有一次外部修复 + 一轮 follow-up） |
 | 同一 subagent 连续 2 次发问 | halt |
 
@@ -632,7 +635,7 @@ halt 说明只讲这一次：停在哪、为什么停、现在什么状态、接
 写法：
 
 - N 和 M 用命令查：`git rev-list --count harness/$KEY/start..HEAD`、`git status --porcelain`。没有 start tag 的 halt（启动检查、工作区检查）省掉 commit 数。
-- 「续跑」按模式写成具体命令：inline 模式是 `/super-harness:run-inline --continue`；调度模式是 `python3 .claude/harness/scripts/superh.py retry $KEY`，再执行 `/super-harness:run`。
+- 「续跑」按模式写成具体命令：inline 模式是 `/super-harness:run-inline --continue`；调度模式是 `python3 .claude/harness/scripts/superh.py retry $KEY`，再执行 `/super-harness:run`。要先把用户的答复写进 spec 的（intent gap、改 status 的那几行），调度模式写成 `python3 .claude/harness/scripts/superh.py resume $KEY --note "<答复>"`，它会写进 spec、改 status、commit、挪 `followup-start`，再重新排队。
 - 需要用户改文件时，写出文件路径和要改的位置（例如 spec 路径 + `status:` 改成什么）。
 - 不替用户选，不自动执行。git 撤回类命令（reset、restore、删 tag）只给出命令，用户明确让你执行才执行。
 
@@ -640,7 +643,7 @@ halt 说明只讲这一次：停在哪、为什么停、现在什么状态、接
 
 | 原因 | 状态要写的事实 | 建议 |
 |---|---|---|
-| bmad-build-auto 停在 `intent gap`、`unclear intent`、`matrix ambiguity`（`SPEC_STATUS_NOT_DONE=blocked`，或 §0.B 的 `blocked`） | 从 spec `## Auto Run Result` 抄出它提的每个问题，编号列出，一个问题一行，保留它给的候选读法。step-04 review 阶段停的，再写出 `## Review Triage Log` 最后一条里保存的 patch 路径（代码已经被它还原） | A. 直接在对话里回答这些问题，主 agent 按 §3.2 写回 spec 并续跑。<br>B. 自己改 spec：把答案写进 `<intent-contract>` 块，frontmatter `status` 改成 `draft`，commit，然后续跑。<br>C. 答案要改需求本身（epics 里的 story 定义写错了或漏了）：先改 planning artifacts，再按 B 做。想先跳过这条：在 sprint-status 里把它改成 `parked_statuses` 里的状态（列表为空就先在 harness-project-config.yaml 里加一个），然后 `/super-harness:run-inline` 跑下一条 |
+| bmad-build-auto 停在 `intent gap`、`unclear intent`、`matrix ambiguity`（`SPEC_STATUS_NOT_DONE=blocked`，或 §0.B 的 `blocked`） | 从 spec `## Auto Run Result` 抄出它提的每个问题，编号列出，一个问题一行，保留它给的候选读法。step-04 review 阶段停的，再写出 `## Review Triage Log` 最后一条里保存的 patch 路径（代码已经被它还原） | A. 直接在对话里回答这些问题，主 agent 按 §3.2 写回 spec 并续跑。<br>B. 自己改 spec：把答案写进 `<intent-contract>` 块，frontmatter `status` 改成 `draft`（B3 停的改成 `in-review`），commit，然后续跑。调度模式用 `superh.py resume $KEY --note "<答复>"` 代替这几步。<br>C. 答案要改需求本身（epics 里的 story 定义写错了或漏了）：先改 planning artifacts，再按 B 做。想先跳过这条：在 sprint-status 里把它改成 `parked_statuses` 里的状态（列表为空就先在 harness-project-config.yaml 里加一个），然后 `/super-harness:run-inline` 跑下一条 |
 | bmad-build-auto 停在验证失败：`implementation verification failed`、`patch verification failed`、`matrix test audit failed` | 失败的命令和报错前 10 行左右（从 Auto Run Result 抄） | A. 是环境问题（服务没起、依赖没装）：给出要补的环境，补好后 spec `status` 改成 `in-progress`，commit，续跑。<br>B. 是代码问题：用户修好并 commit，spec `status` 改成 `in-review`，续跑会从 review 接着做 |
 | bmad-build-auto 停在 spec 问题：`spec failed ready-for-development standard`、`handoff conflicts with spec`、`review repair loop exceeded 5 iterations` | 不达标的条目或互相冲突的两段原文；循环不收敛的，列出 triage log 里反复出现的那几条 finding | A. 按列出的问题改 spec（多半是 AC 互相矛盾或写得太宽），`status` 改成 `draft`，commit，续跑。<br>B. 这条 story 拆小更合适：用 BMad 改 epics 后，`git reset --hard harness/$KEY/start` 撤回本 story 重来 |
 | bmad-build-auto 在建 spec 之前就停了（`BUILD_AUTO_RESULT=`，或 §0.B `blocked` 且没有 spec） | result 文件里的 Status 和 Blocking condition | 按 condition 给一条对应的处理：工作区不干净 → 列出文件，请用户 commit 或清理；分支不对 → 写出当前分支；`unclear intent` → 指出 epics 里这条 story 缺了什么；`missing previous-story continuity decision` → 写出停在 in-review 的那条前序 story。处理完删掉这个 result 文件（已入库就 `git rm` 后 commit），续跑 |
@@ -665,9 +668,48 @@ halt 说明只讲这一次：停在哪、为什么停、现在什么状态、接
 只在用户明确给出答案时做，答案不完整就追问缺的那几个，不要替用户补。
 
 1. 把问答写进 spec 的 `<intent-contract>` 块末尾，标题 `### Clarifications (<日期>)`，一问一答，问题照抄，答案用用户的原话。bmad-build-auto 重新规划时会原样保留这个块。
-2. frontmatter `status` 改成 `draft`，其他字段不动。
+2. frontmatter `status` 改成 `draft`，其他字段不动。B3 停下的（已有 `harness/$KEY/built` 和 `followup-start` tag）改成 `in-review`：代码已经在了，只要接着 review，`draft` 会让 bmad-build-auto 整条重新规划。
 3. `git add <spec 路径> && git commit -m "docs($KEY): 补充 intent gap 答复"`。
-4. 调 `harness-state.py $KEY`，按 §0.B 切入（这时应是 `build`）。这次 B1 计入本 story 的 dispatch 次数。
+4. 调 `harness-state.py $KEY`，按 §0.B 切入（B1 停的这时应是 `build`，B3 停的是 `followup`）。这次 dispatch 计入本 story 的 dispatch 次数。
 
-答案涉及改需求（epics 里的 story 定义）时不走这一节，按 §3.1 第一行 C 处理。调度模式不走这一节：调度者不改 lane worktree 里的文件（`run` §7）。
+答案涉及改需求（epics 里的 story 定义）时不走这一节，按 §3.1 第一行 C 处理。调度模式不走这一节，调度者不自己改 lane worktree 里的文件，改用 `superh.py resume <KEY> --note "<答复>"`（每条答复一个 `--note`），它做的就是上面 1 到 3 步，另外把 `followup-start` 挪到新提交上，再把这一路重新排队（`run` §7）。
+
+### 3.3 lane 模式：能自己接着走的两种停顿
+
+只在 lane 模式生效。B1 或 B3 的验收报 `SPEC_STATUS_NOT_DONE=blocked`（或 §0.B 切入时是 `blocked`）时，先对照下面两种情况，都不符合再回报 `blocked`。两种都用 `superh.py reopen`：它在 lane worktree 里把 spec 改回能续跑的状态并 commit（spec 还没入库时先把停下时的样子单独 commit 一次，用户推翻时回到这里），B3 阶段再把 `followup-start` 挪到新提交上，最后输出 `STATUS=ok`。bmad-build-auto 在 review 阶段停下时保存的尝试改动（artifacts 目录下未入库的 `.patch` / `.diff`）会被挪到 `.git/super-harness/patches/<KEY>/`，输出 `MOVED_PATCH=`，不删除。之后调 `harness-state.py $KEY`，按 §0.B 切入（B1 停的回到 `build`，B3 停的回到 `followup`）。reopen 之后的重新 dispatch 不计入 §3 表里「主步骤 dispatch > 4」的次数，它的次数由 reopen 自己限制（代答 2 次、超时重跑 1 次）。
+
+**(a) 有推荐读法的问题，按推荐项代答**
+
+条件，全部满足才做：
+
+1. worker prompt 里的决策模式是 `proceed`。
+2. blocking condition 是 `intent gap`、`unclear intent`、`matrix ambiguity`，或者 Auto Run Result 列出了待回答的问题。
+3. 每个问题都能按 `.claude/harness/answer-policy.md` 的决策原则和项目语境挑出一个读法。bmad-build-auto 给了候选读法时从候选里挑。
+4. 没有一个问题落在 answer-policy「必须人工确认」那几类里。
+
+做法：
+
+1. 用 Write 在仓库之外写一个临时 JSON 文件（例如 `mktemp` 得到的路径），每个问题一项：
+   ```json
+   [{"question": "<Auto Run Result 里的问题原文>",
+     "options": ["<候选读法 1>", "<候选读法 2>"],
+     "chosen": "<挑中的读法，写到实现者照着做不会再有歧义>",
+     "why": "<一句理由，指向 answer-policy 的哪条原则或项目语境的哪一点>"}]
+   ```
+2. `python3 .claude/harness/scripts/superh.py reopen $KEY --why "<blocking condition>" --decisions-file <文件>`。答复写在 spec `<intent-contract>` 末尾的 `### Clarifications（<日期>，按推荐项代答，待确认）` 里，带决定编号；B1 停的 spec 改成 `draft`（bmad-build-auto 重新规划时原样保留这一块），B3 停的改成 `in-review`。
+3. `STATUS=ok`：删掉临时文件，记下 `DECISION_IDS=`，按 §0.B 续跑。最后回报 `ready` 时在 summary 里带上这些编号。决定进了调度者的收件箱，用户之后批量确认，推翻某一条时调度者会把这一路退回到决定之前按新答复重跑，worker 不用管。
+4. `STATUS=halt`（同一条 story 已经代答过 2 次、决策模式是 `ask`、工作区里有 spec 之外的改动）：按 §3 回报 `blocked`，把 reopen 的输出也写进 `--halt`。
+
+还没有 spec 就停下的（`BUILD_AUTO_RESULT=`）同样适用：reopen 会删掉 result 文件，输出 `INTENT_APPENDIX<<` 段。按 §0.B 切入时是 `build`（还没有 spec，用 B1「首次」intent），把这一段原样加在 intent 末尾。
+
+**(b) 验证命令超时，重跑一次**
+
+blocking condition 是 `implementation verification failed` 或 `patch verification failed`，并且 Auto Run Result 写明失败的命令是超时或挂住被结束的（不是断言失败、编译错误）：
+
+```bash
+python3 .claude/harness/scripts/superh.py reopen $KEY --kind transient \
+  --why "<失败的命令> 超时，重跑一次" --status <in-progress|in-review>
+```
+
+`implementation verification failed` 用 `in-progress`，`patch verification failed` 用 `in-review`。每条 story 只能用一次，第二次 reopen 会返回 `STATUS=halt`，那时按 §3 回报 `blocked`。
 

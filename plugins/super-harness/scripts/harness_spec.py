@@ -429,6 +429,35 @@ def section_text(path: str, title: str) -> str | None:
     return None if out is None else "\n".join(out)
 
 
+def section_any_level(path: str, title: str) -> tuple[int, str] | None:
+    """First `#…# <title>` heading at ANY level (case-insensitive substring match):
+    (level, body up to the next heading of the same or a higher level). For
+    sections a sub-agent sometimes writes at the wrong level — bmad-build-auto's
+    `## Auto Run Result` turning up as `### Auto Run Result` (issue #17) is a
+    formatting slip, not a missing result. Fenced code blocks are skipped."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    level, out, fence = None, [], False
+    for line in text.splitlines():
+        if re.match(r"^\s*(```|~~~)", line):
+            fence = not fence
+        m = None if fence else re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if m:
+            n = len(m.group(1))
+            if level is not None:
+                if n <= level:
+                    break
+            elif title.lower() in m.group(2).lower():
+                level = n
+                continue
+        if level is not None:
+            out.append(line)
+    return None if level is None else (level, "\n".join(out))
+
+
 def latest_review_pass(path: str) -> str | None:
     """Last `### ... Review pass` entry inside `## Review Triage Log`."""
     body = section_text(path, "Review Triage Log")

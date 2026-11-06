@@ -71,16 +71,19 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 
 ### 4.1 存放位置和写入者
 
-全部放在 `$(git rev-parse --git-common-dir)/super-harness/`，不进 git，所有 worktree 看到的是同一份。每个文件只有一个写入者，避免并发写坏：
+全部放在 `$(git rev-parse --git-common-dir)/super-harness/`，不进 git，所有 worktree 看到的是同一份。除了 `decisions.json`，每个文件只有一个写入者，避免并发写坏：
 
 | 文件 | 写入者 | 内容 |
 |---|---|---|
 | `run.json` | 调度者（`start-run`） | 本次运行固定的 sprint 分支、`--slots` 覆盖值 |
 | `dispatcher.lock` | 调度者（`start-run` 取得，`end-run` 释放） | 持有调度权的会话：pid 和进程启动时间。见 §4.3 |
 | `lanes/<KEY>.json` | 调度者（prepare / integrate / mark / retry / cleanup / abandon） | phase、分支、worktree、rebase 的 onto、要搬的 tag、自动消解记录；prepare / integrate 进行中的标记（pid、启动时间、子进程组）和被打断的次数；held 时的 `hold_kind` / `hold_reason` |
-| `lanes/<KEY>.proc.json` | `launch` 包装进程 | pid、session id、attempt、退出码、最后的 result 文本、花费 |
+| `lanes/<KEY>.proc.json` | `launch` 包装进程 | pid、session id、attempt、退出码、最后的 result 文本、花费、worker 实际用的模型（stream 的 init 事件） |
 | `lanes/<KEY>.result.json` | worker（`superh report`） | status、summary、codex 跳过原因、follow-up 提示、halt 原文 |
 | `logs/<KEY>.attempt-N.*` | `launch` | 渲染后的 prompt、stream-json 全量日志、stderr |
+| `lanes/<KEY>.reopen.json` | worker（`superh reopen`） | 本 story 自己重开 spec 的次数（按推荐项代答最多 2 次，验证超时重跑 1 次） |
+| `lanes/<KEY>.notes.json` | `reopen` / `resume` / `override` | 还没有 spec 时的答复，下一次渲染 worker prompt 时带进 B1 intent |
+| `decisions.json` | worker（`reopen`）、调度者（`decide`、`resume`）、用户（`confirm`、`override`） | 决策收件箱。这是唯一一个多写入者的文件，所有写入都在同一把 flock 下做完整的读改写 |
 
 流水线自己的状态源（`harness/<KEY>/*` tag、spec frontmatter、sprint-status.yaml）保持不变。tag 是仓库级的，任何 worktree 里打的 tag 主 worktree 都能看到。
 
@@ -93,7 +96,7 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 | done / abandoned | phase 为 done / abandoned | |
 | conflict | phase = conflict（rebase 停在代码冲突上） | 是 |
 | preparing / integrating（进行中） | lane 上有 prepare 或 integrate 的进行中标记，且记录的进程还活着（pid 和启动时间都对得上） | |
-| held | phase = held。`hold_kind` 说明原因：`prepare`、`build-verify`、`verify`、`lane-dirty`、`rebase`、`branch-missing`、`worktree-missing`、`foreign`（分支或目录不是 superh 建的）、`interrupted`（prepare / integrate 被杀超过 2 次）、`retry-limit`、`git-error`、`error` | 是 |
+| held | phase = held。`hold_kind` 说明原因：`prepare`、`env`（worker 启动前环境没起来）、`verify-env`、`build-verify`、`verify`、`lane-dirty`、`rebase`、`branch-missing`、`worktree-missing`、`foreign`（分支或目录不是 superh 建的）、`interrupted`（prepare / integrate 被杀超过 2 次）、`retry-limit`、`git-error`、`error` | 是 |
 | integrating | phase 为 integrating / merged | |
 | queued | phase 为 prepared，或 preparing 但进程已不在（prepare 被打断，待重做），或这一次 attempt 还没有 proc 记录 | |
 | working | proc 没有退出码，launch 进程或 claude 子进程有一个还活着（pid 和启动时间都对得上，防止 pid 被复用后误判） | |
@@ -207,7 +210,9 @@ marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文�
 
 | 情况 | 结果 | 恢复 |
 |---|---|---|
-| worker 报 blocked / failed | 只停这一路 | 接手 session 修好后 `superh retry <KEY>`，worker 按 harness-state 续作 |
+| bmad-build-auto 停在 intent gap 这类有推荐读法的问题上 | 不停。worker 按 answer-policy 选推荐项，`superh reopen` 写进 spec、commit、续跑，决定进收件箱（`decision_mode: proceed`，默认） | 用户批量 `confirm`；不同意就 `override <ID> --answer`：没合入的 lane 回退到决定之前的提交（`reopen` 会把停下时的 spec 单独 commit 一次，回退点就是它），换上新答复重新排队；已合入的只记录 |
+| worker 报 blocked / failed | 只停这一路。`blocked_policy: continue` 时它不再挡串行顺序、epic 屏障和 retro 屏障 | 要回答问题的用 `superh resume <KEY> --note`（写进 spec、改 status、commit、挪 `followup-start`、重新排队）；其他的接手 session 修好后 `superh retry <KEY>`，worker 按 harness-state 续作 |
+| 环境没起（配了 `env_check_command`） | launch 前、verify_command 前先执行 `env_up_command`；还不行记为 held（`env` / `verify-env`），worker 不启动、sprint 分支不动 | 把环境起好后 `superh retry <KEY>`（`env`）或 `superh integrate <KEY>`（`verify-env`） |
 | worker 退出但没有回报 | failed | 看 `logs/<KEY>.attempt-N.stream.jsonl`，然后同上 |
 | worker 把子 agent 或命令放到后台后结束了本轮 | failed，DETAIL 写明是后台任务被一起结束；worktree 可能留有没提交的半成品 | `superh retry <KEY>`。lane 没有 commit 也没有 spec、工作区却不干净时，retry 会拒绝并列出 `DIRTY=`，确认不要后用 `retry <KEY> --reset` 恢复到 start tag |
 | worker 退出后还有容器挂载着 lane worktree | launch 和 retry 输出 `ORPHAN_CONTAINER=` | 确认是子 agent 留下的后 `docker stop <id>` |
@@ -223,7 +228,7 @@ marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文�
 | 收口在 sync 步骤里被打断（marker 已写或 build-sync 已暂存，未 commit） | 主 worktree 是脏的 | `start-run` 核对脏文件是否全部属于某个 merged、无 done tag 的 lane 的收口产物（sprint-status、deferred-work、该 lane 的 marker）。是则报 `MAIN_CLEAN=resumable` 放行，重跑 build-sync 时一并提交；混进任何其他文件仍然 halt |
 | 补进 lane 的文件没被 .gitignore 忽略 | prepare 失败，lane 记为 held | 按输出的 `GITIGNORE=` 行补 `.gitignore` 并提交，`abandon --yes` 后重新排队 |
 | rebase 后 build-verify 不通过 | held，sprint 分支不动 | 在 lane 里修好并 commit，重跑 `superh integrate <KEY>`（0.3.1 起 integrate 接受这种 held 的 lane） |
-| rebase 后 `verify_command` 不通过 | held，sprint 分支不动 | 在 lane worktree 里修好并 commit，重跑 `superh integrate <KEY>`（retry 会重启 worker，而 worker 看到状态已是 sync 会直接回报 ready，修不了测试） |
+| rebase 后 `verify_command` 不通过 | 超时先自动重跑 `verify_timeout_retries` 次；仍不通过 held，sprint 分支不动 | 在 lane worktree 里修好并 commit，重跑 `superh integrate <KEY>`（retry 会重启 worker，而 worker 看到状态已是 sync 会直接回报 ready，修不了测试） |
 | build-sync halt | 全局 halt | 按 pipeline.md §3 halt 模板 |
 | 放弃某一路 | `superh abandon <KEY> --yes`：删 worktree、分支，以及这条 story 没有 done 的 `harness/<KEY>/*` tag | story 回到 backlog，可以重新排队 |
 

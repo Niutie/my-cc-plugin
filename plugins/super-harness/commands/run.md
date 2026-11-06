@@ -18,10 +18,11 @@ allowed-tools: Bash, Read, Write, Agent, AskUserQuestion
 
 - 决策只依据脚本的结构化输出：`SH tick` 的 JSON、各命令的 `STATUS=` 行和退出码。不要从 worker 日志的自然语言里推断成败。
 - 主 worktree 的写操作只有四种来源：`SH integrate` 的 ff 合并，`harness-commit.py` 的 stage（commit 用它给的 message），P§1 B2.1 a) 的 marker 文件，以及 pipeline.md 规定的 `git tag`。你自己不 `git add`，也不改代码。
-- 不进入 lane worktree 改文件。lane 里的事要么交给 worker，要么交给合流冲突子 agent（§3）。
-- 以下动作必须先得到用户同意：`SH abandon`、删除 tag、`git reset`、切换主 worktree 的分支。
+- 不进入 lane worktree 改文件。lane 里的事要么交给 worker，要么交给合流冲突子 agent（§3），要么用 `SH resume`（把用户的答复写进 spec 并续跑，§7）和 `SH override`（§6.5）这两个命令，它们在 lane 里的改动由脚本完成。
+- 以下动作必须先得到用户同意：`SH abandon`、`SH override ... --yes`、删除 tag、`git reset`、切换主 worktree 的分支。
 - 某一路出问题时，只停这一路，其他路照常推进。只有 §8 列出的情况才停下整个调度。
 - P§−1 (b) 的代答政策在这里同样有效。子 agent 发问时，按 `.claude/harness/answer-policy.md` 自行决定。
+- 非必要不找用户。你自己遇到要拍板的事（规则例外怎么算、复审结果怎么入账、两种做法选哪个），有推荐项就按 answer-policy 选推荐项，用 `SH decide <KEY 或 -> --question "<问题>" --chosen "<采用的做法>" --why "<理由>"`（可加多个 `--option`）记进收件箱，然后继续，不用 AskUserQuestion，也不停下等。只有 answer-policy「必须人工确认」那几类（push 和其他对外发布、破坏性操作、硬闸门口径、钱和凭据）才停下来问。问了还没回音时，和这件事无关的 lane 照常推进。
 - 任何 `SH` 命令输出 `STATUS=locked`（退出码 4）时，说明另一个会话持有调度锁（见 §0 第 3 步），按 §8 全局 halt。
 
 ### 后台命令
@@ -51,7 +52,7 @@ Bash({
    - `MAIN_CLEAN=false`：halt，贴出 `DIRTY=` 行，执行 `SH end-run` 释放调度锁。合流需要干净的主 worktree。刚跑完 `/super-harness:init` 或 `update` 时，脏文件通常是 `.gitignore`、`.claude/harness/harness-project-config.yaml`、`.claude/harness/parallel.yaml` 和新建的 `deferred-work.md`：提示用户按 init §5 把它们提交（仓库还没有任何 commit 时先做一次初始提交），不要替用户提交。
    - `MAIN_CLEAN=resumable`：上次收口在 sync 步骤中途被打断（marker 已写或 build-sync 已暂存，还没 commit），脏文件都属于 `RESUMABLE_LANES=` 里的 lane。照常继续：tick 会先给出 `post-merge`，§4 的 `postmerge` 会给出 `NEXT=sync`，重跑 build-sync 时这些改动会一起提交。告诉用户一行「接着上次中断的收口：<KEY>」。
 4. `--dry-run`：执行 `SH plan` 和 `SH board`，把输出原样给用户，执行 `SH end-run`，然后退出。不 prepare，不 launch。
-5. 给用户一行开场：sprint 分支、slot 数、就绪的 story 数（来自 `SH tick` 的 `launch` 和 `waiting`）。
+5. 给用户一行开场：sprint 分支、slot 数、就绪的 story 数（来自 `SH tick` 的 `launch` 和 `waiting`）。start-run 输出里有 `WARN=parallel.yaml 的 worker_model 留空` 时，把这行转告用户（worker 会跟着别的会话的 `/model` 变）；有 `DECISIONS_PENDING=` 时说一句收件箱里还有几条待确认。
 
 上次运行留下的 lane 不需要特殊处理，`SH tick` 会从磁盘状态把它们读出来。
 
@@ -82,7 +83,10 @@ python3 .claude/harness/scripts/superh.py tick
 每一轮都检查 `attention`。出现了新的条目（和你上次告诉用户的不同），就用一行告诉用户：key、阶段、detail、接手命令（`takeover` 字段）。然后继续循环，不要等用户回复。处理规则：
 
 - `crashed`：worker 进程丢失，通常是上一个会话结束了。同一路第一次出现时自动执行 `SH retry <KEY>`，下一轮会重新 launch；worker 会按 harness-state 续作。第二次再出现就留给用户。retry 输出 `STATUS=halt`、说 worktree 里有没提交的半成品时，不要自己加 `--reset`，这一路留给用户，把 `REASON=` 和 `DIRTY=` 行转告用户。retry 输出里有 `ORPHAN_CONTAINER=` 行时同样转告。
-- `blocked` / `failed` / `held` / `conflict`：留给用户，不自动重试。
+- `blocked` / `failed` / `held` / `conflict`：留给用户，不自动重试。worker 已经按 P§3.3 先自己处理过，能到这里的多半是 answer-policy「必须人工确认」的事、reopen 到了上限，或者是机械故障之外的问题。`held` 且 `HOLD_KIND=env` 的是环境没起来（§2 第 3 步）。
+- `parallel.yaml` 设了 `blocked_policy: continue` 时，tick 的 `stuck_released` 列出这些停住的 lane：它们不再挡串行顺序、epic 屏障和 retro 屏障，后面不依赖它们的 story 照常派发（声明了依赖的仍然等）。开场或第一次出现时告诉用户一行。
+
+每一轮也看 `decisions_pending`。有新编号时（worker 按推荐项代答的，或你自己 `decide` 记的），用一行告诉用户：编号、story、问题、采用了什么，提示「有空时 `SH confirm --all` 或推翻某一条」。不等回复，继续循环。
 - `quota`：tick 已经停止派发新 lane，`launch` 和 `queued` 都是空的（`quota_hold: true`）。等在跑的 lane 全部结束后，按 §8 halt。
 
 ## 2. 启动 lane
@@ -102,7 +106,11 @@ python3 .claude/harness/scripts/superh.py tick
      run_in_background: true
    })
    ```
-   worker 跑完时你会收到通知。读这条命令的输出，有 `ORPHAN_CONTAINER=` 行时，把容器 id 和名字转告用户：worker 退出后还挂载着这一路 worktree 的容器，多半是子 agent 起的、没人管了。不要自己停，由用户确认。
+   worker 跑完时你会收到通知。读这条命令的输出：
+   - 有 `ORPHAN_CONTAINER=` 行时，把容器 id 和名字转告用户：worker 退出后还挂载着这一路 worktree 的容器，多半是子 agent 起的、没人管了。不要自己停，由用户确认。
+   - 第一行是 `STATUS=halt` 且有 `HOLD_KIND=env`：`parallel.yaml` 配了 `env_check_command`，环境没就绪，`env_up_command` 也没能把它起来，worker 没有启动。这一路记为 held，把 `REASON=` 和 `ENV_OUTPUT<<` 段转告用户，环境好了之后 `SH retry <KEY>`。
+   - `SELF_HEAL=` 行是脚本自己修好的机械问题（例如环境没起，已经执行 `env_up_command` 起好），给用户一行进度即可。
+   - `WORKER_MODEL=` 是 worker 实际用的模型。本次运行第一次 launch 时告诉用户一行，和用户预期的不一样时提醒检查 `parallel.yaml` 的 `worker_model`。
 4. 回到 §1。
 
 ## 3. 合流
@@ -129,7 +137,8 @@ python3 .claude/harness/scripts/superh.py integrate <KEY> 2>&1; echo "SUPERH_EXI
   2. 输出里有 `HOLD_KIND=`：这一路已经记为 held，sprint 分支没有被改动，tick 会把它放进 `attention`，不会再送回合流。把 `REASON=` 贴给用户，`HOLD_KIND=verify` 时连同 `VERIFY_OUTPUT<<` 段、`build-verify` 时连同 `BUILD_VERIFY<<` 段一起贴。然后回到 §1，不要自己修，也不要自动重试。各种 `HOLD_KIND`：
      | HOLD_KIND | 含义 |
      |---|---|
-     | `verify` | 合流后的代码没通过 `verify_command`（包括超时） |
+     | `verify` | 合流后的代码没通过 `verify_command`（超时会先自动重跑 `verify_timeout_retries` 次，输出 `SELF_HEAL=verify-timeout-retry`，仍超时才挂起） |
+     | `verify-env` | 跑 `verify_command` 之前环境没就绪，`env_up_command` 也没能起来，贴 `ENV_OUTPUT<<` 段 |
      | `build-verify` | rebase 之后 build-verify 不通过 |
      | `lane-dirty` | lane worktree 里有未提交或未跟踪的文件（例如测试留下的 coverage 文件） |
      | `rebase` | rebase 没能启动、`rebase --continue` 失败，或推进步数超限 |
@@ -174,22 +183,42 @@ epic retro 不在这里执行。epic 的最后一条 story 收口之后，下一
 
 retro 期间其他 lane 照常在各自的 worktree 里运行，不受影响。
 
+retro commit 之后，执行 `SH decisions`，把这个 epic 的 story 上还没确认的决定和这个 epic 里仍然停住的 lane 一起交给用户（每条一行），提示用户有空时批量确认。不等回复，回到 §1。
+
 ## 6. 等待
 
 没有可做的事时（`next_action = wait`），执行一次 `SH board`，把「进行中」那几行原样给用户，然后结束这一轮回复。
 
 不要 sleep，不要轮询日志。任何一个后台命令（worker、prepare、integrate、watch）退出，你都会被唤醒；醒来后从 §1 继续。等待期间调度锁仍由本会话持有，不要执行 `end-run`。
 
+## 6.5 收件箱
+
+worker 按推荐项代答的决定、你用 `SH decide` 记下的决定，都在 `.git/super-harness/decisions.json`。用户随时可以处理：
+
+| 用户想做的 | 命令 |
+|---|---|
+| 看全部待确认的 | `SH decisions`（`--all` 连已处理的一起列） |
+| 全部确认 / 确认几条 | `SH confirm --all`（`--key <KEY>` 只确认一条 story 的）/ `SH confirm D3 D4` |
+| 推翻一条 | `SH override D3 --answer "<新决定>"` |
+
+`confirm` 只改收件箱，调度锁在谁手里都能执行。`override` 会动 lane，用户在别的终端执行会得到 `STATUS=locked`，这时由你在本会话里执行：
+
+1. 先不带 `--yes` 执行一次。输出 `STATUS=confirm` 时，把 `REASON=`、`DROP_TAG=`、`SUPERSEDE=`、`DISCARD=` 原样给用户，等用户明确同意。
+2. 同意后加 `--yes` 再执行。没合入的 lane 会退回到这个决定之前的提交，答复换成用户的，重新排队，下一轮 tick 会把它 launch 出来。
+3. `STATUS=halt` 说这一路合流时 rebase 过、或回退点上没有 spec：worktree 没有被动过，把 `REASON=` 转告用户，按看板「接手」处理。`NEXT=manual`：这一路已经合入 sprint 分支，回退不了。告诉用户需要按新决定开一条修正 story 或手工改。`NEXT=dispatcher`：这是你自己记的决定，按新答复调整你接下来的做法。
+4. `STATUS=busy`：这一路还在跑，等它停下（看板上变成待合流、受阻或失败）再执行。
+
 ## 7. 停滞
 
 `next_action = stalled` 表示没有在跑的 lane，也没有可启动的 story，但 sprint 还没完成。执行 `SH board` 和 `SH plan`，把「需要你处理」的部分和等待原因原样给用户，执行 `SH end-run` 释放调度锁（否则用户在别的终端里执行下面这些命令会得到 `STATUS=locked`）。
 
-接着对看板上每一路「受阻」「失败」「配额耗尽」的 lane，读 `.git/super-harness/lanes/<KEY>.result.json` 的 `halt` 字段，按 P§3 的写法给这一路写一段：原因一句话、需要的事实、P§3.1 对应那一行的 1 到 3 条建议，续跑命令写 `SH retry <KEY>` 再 `/super-harness:run`。spec 和改动在这一路的 worktree 里，要抄问题、列文件就去那里读，但不要在里面改东西；P§3.2 在调度模式下不适用，需要改 spec 的让用户自己改，或者用看板上的「接手」命令进那一路处理。合流冲突、已挂起、进程丢失的 lane 不用读 result，从下面的命令里挑对应那一行附上，用不到的行不要列。写完就结束：
+接着对看板上每一路「受阻」「失败」「配额耗尽」的 lane，读 `.git/super-harness/lanes/<KEY>.result.json` 的 `halt` 字段，按 P§3 的写法给这一路写一段：原因一句话、需要的事实、P§3.1 对应那一行的 1 到 3 条建议，续跑命令写 `SH retry <KEY>` 再 `/super-harness:run`。spec 和改动在这一路的 worktree 里，要抄问题、列文件就去那里读，但不要在里面改东西。需要用户回答问题的（intent gap、要改 spec status 的那几种），续跑命令写成 `SH resume <KEY> --note "<答复>"`：用户在对话里给了答复，你就直接执行它，它会把答复写进 spec、改 status、commit、挪 `followup-start`，再重新排队，然后重新执行 `/super-harness:run`。收件箱里还有待确认的决定时，最后附上 `SH decisions` 的输出。合流冲突、已挂起、进程丢失的 lane 不用读 result，从下面的命令里挑对应那一行附上，用不到的行不要列。写完就结束：
 
 ```
 处理完之后重新执行 /super-harness:run。
   接手某一路：        cd <worktree> && claude --resume <session>
   修完让 worker 续作：python3 .claude/harness/scripts/superh.py retry <KEY>
+  回答问题后续跑：    python3 .claude/harness/scripts/superh.py resume <KEY> --note "<答复>"
   worker 留下半成品：  python3 .claude/harness/scripts/superh.py retry <KEY> --reset（retry 提示时才用，会丢掉没提交的改动）
   合流冲突手工解决后：git add 解决好的文件，重新执行 /super-harness:run（会从 rebase 现场继续）
   合流挂起（held）的：按看板「接手」一行处理后，python3 .claude/harness/scripts/superh.py integrate <KEY>
@@ -210,14 +239,14 @@ retro 期间其他 lane 照常在各自的 worktree 里运行，不受影响。
 | retro verdict 为 rejected | 按 P§1「verdict 门」 |
 | 任何 `SH` 命令输出 `STATUS=locked` | 贴 `REASON=` 和 `HINT=`。锁属于另一个会话，不要执行 `end-run`，也不要自行 `--take-over` |
 
-halt 时先执行一次 `SH board`，把输出贴在 halt 说明前面，让用户看到每一路停在哪里。接着执行 `SH end-run` 释放调度锁，但 `STATUS=locked` 和 §0 第 3 步之前就 halt 的情况除外（那时锁不属于本会话）。在跑的 worker 不用停，它们结束后状态会落盘，下次执行 `/super-harness:run` 时会接着处理。
+halt 时先执行一次 `SH board`，把输出贴在 halt 说明前面，让用户看到每一路停在哪里（看板里也有「待你确认」一栏）。接着执行 `SH end-run` 释放调度锁，但 `STATUS=locked` 和 §0 第 3 步之前就 halt 的情况除外（那时锁不属于本会话）。在跑的 worker 不用停，它们结束后状态会落盘，下次执行 `/super-harness:run` 时会接着处理。
 
 ## 9. 完成
 
 1. 执行 `SH board`，贴出结果。
 2. 执行 P§2 收尾提醒（codex-skipped 通知框 + report-issue 提示）。
-3. 执行 `SH end-run` 释放调度锁。
-4. 一行总结：完成的 story 数、跑过 retro 的 epic。
+3. 执行 `SH end-run --finished` 释放调度锁。`parallel.yaml` 配了 `env_down_command` 时它会接着把环境停掉，输出 `ENV_DOWN=failed` 时转告用户。
+4. 一行总结：完成的 story 数、跑过 retro 的 epic、收件箱里还有几条待确认（`DECISIONS_PENDING=`，有的话附上 `SH decisions` 的输出）。
 
 ## 参数
 

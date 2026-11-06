@@ -62,7 +62,7 @@ cat > "$FAKE" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 cat >/dev/null   # consume prompt
-echo '{"type":"system","subtype":"init","session_id":"sess-'"$SUPERH_KEY"'"}'
+echo '{"type":"system","subtype":"init","model":"fake-model","session_id":"sess-'"$SUPERH_KEY"'"}'
 KEY="$SUPERH_KEY"
 ART=_bmad-output/implementation-artifacts
 MODE="$(cat "$SUPERH_MAIN_ROOT/.fake-mode-$KEY" 2>/dev/null || echo ok)"
@@ -634,6 +634,8 @@ T1=$(date +%s)
 [ $RC -eq 1 ] && echo "$OUT" | grep -qx 'HOLD_KIND=verify' && echo "$OUT" | grep -q '超时' && [ $((T1 - T0)) -lt 15 ] \
     && ok "M2d manual re-run accepted; verify timeout → held verify, quickly" || { bad "M2d rc=$RC $((T1 - T0))s"; echo "$OUT"; }
 echo "$OUT" | sed -n '/VERIFY_OUTPUT<</,/>>/p' | grep -q verify-err && ok "M2e verify timeout keeps stderr" || { bad "M2e"; echo "$OUT"; }
+echo "$OUT" | grep -q '^SELF_HEAL=verify-timeout-retry' && echo "$OUT" | grep -q '跑了 2 次' \
+    && ok "M2f a verify timeout is re-run once before the lane is held" || { bad "M2f"; echo "$OUT"; }
 cfg_set verify_command "''"
 cfg_set verify_timeout_sec 1800
 OUT="$($SH integrate 9-12-ik)"; RC=$?
@@ -755,6 +757,294 @@ OUT="$($SH retry 9-20-nb --reset)"
 echo "$OUT" | grep -q '^NOTE=worktree 是干净的' && echo "$OUT" | grep -q '^STATUS=ok' \
     && ok "B16e --reset on a clean lane is a no-op" || { bad "B16e"; echo "$OUT"; }
 $SH abandon 9-20-nb --yes >/dev/null
+
+echo "== D17: decision inbox, reopen / resume / override, self-heal (issue #17)"
+blocked_spec() {  # blocked_spec <worktree> <key>
+cat > "$1/$ART/spec-$2.md" <<SPEC
+---
+title: 'fixture'
+status: 'blocked' # draft | ready-for-dev | in-progress | in-review | done | blocked
+---
+
+<intent-contract>
+
+## Intent
+
+**Problem:** list order unspecified
+
+</intent-contract>
+
+## Code Map
+
+- src/
+
+## Auto Run Result
+
+Status: blocked
+Blocking condition: intent gap
+- Q1: 列表按什么排序？候选：按时间 / 按名称
+SPEC
+}
+fake_exit() {  # fake_exit <KEY> <status> — the worker ran (attempt 1) and reported
+python3 - "$LANES/$1.proc.json" "$1" <<'PY'
+import json, sys
+json.dump({"key": sys.argv[2], "attempt": 1, "pid": 1, "pid_start": "gone", "exit_code": 0}, open(sys.argv[1], "w"))
+PY
+lane_edit "$1" 'd["phase"] = "launched"; d["attempts"] = 1'
+SUPERH_ATTEMPT=1 $SH report "$1" --status "$2" --summary "fixture" >/dev/null
+}
+hs_code() { (cd "$1" && python3 .claude/harness/scripts/harness-state.py "$2" --json | jget 'd["next_action_code"]'); }
+
+K=9-30-gap; WT="$TMP/wt/$K"
+$SH prepare $K >/dev/null
+lane_edit $K 'd["phase"] = "launched"; d["attempts"] = 1'
+git -C "$WT" tag "harness/$K/start"
+blocked_spec "$WT" $K
+cat > "$TMP/dec.json" <<'J'
+[{"question": "列表按什么排序？", "options": ["按时间", "按名称"], "chosen": "按时间", "why": "和上一条 story 的列表一致"}]
+J
+OUT="$($SH reopen $K --why "intent gap" --decisions-file "$TMP/dec.json")"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -q '要在这一路的 worktree' && ok "D1 reopen refuses to run outside the lane worktree" || { bad "D1 rc=$RC"; echo "$OUT"; }
+printf 'diff --git a/src/x b/src/x\n' > "$WT/$ART/spec-$K-intent-gap-attempt.patch"   # step-04 intent-gap leftover
+OUT="$(cd "$WT" && $SH reopen $K --why "intent gap" --decisions-file "$TMP/dec.json")"; RC=$?
+SPEC="$WT/$ART/spec-$K.md"
+echo "$OUT" | grep -q "^MOVED_PATCH=.*patches/$K/spec-$K-intent-gap-attempt.patch" \
+    && ok "D2b the saved attempt patch is moved out of the worktree, not deleted" || { bad "D2b"; echo "$OUT"; }
+[ $RC -eq 0 ] && echo "$OUT" | grep -qx 'DECISION_IDS=D1' && echo "$OUT" | grep -qx 'SPEC_STATUS=draft' \
+    && grep -q "^status: 'draft'" "$SPEC" && [ -z "$(git -C "$WT" status --porcelain)" ] \
+    && ok "D2 reopen: spec back to draft, committed, worktree clean" || { bad "D2 rc=$RC"; echo "$OUT"; }
+python3 - "$SPEC" <<'PY' && ok "D3 the answer sits inside <intent-contract>, tagged with its decision id" || bad "D3"
+import sys
+t = open(sys.argv[1], encoding="utf-8").read()
+i, j = t.find("### Clarifications"), t.find("</intent-contract>")
+assert 0 <= i < j and "A: 按时间（D1，按推荐项代答，待确认）" in t[i:j], t
+PY
+[ "$(git -C "$WT" log -2 --format=%s | tail -1)" = "docs($K): record bmad-build-auto halt" ] \
+    && git -C "$WT" log -1 --format=%s | grep -q 'D1' \
+    && ok "D4 the halted spec is its own commit (override resets to it), then the answer" || { bad "D4"; git -C "$WT" log -3 --format=%s; }
+[ "$(hs_code "$WT" $K)" = "build" ] && ok "D5 harness-state routes the reopened spec back to B1" || bad "D5 $(hs_code "$WT" $K)"
+[ "$($SH tick | jget 'd["decisions_pending"]')" = "['D1']" ] && $SH board | grep -q '待你确认（已按推荐项继续，1 条）' \
+    && $SH board | grep -q 'D1 \[9-30-gap B1\]' && ok "D6 tick and board list the pending decision" || { bad "D6"; $SH board; }
+cfg_set decision_mode ask
+OUT="$(cd "$WT" && $SH reopen $K --why x --decisions-file "$TMP/dec.json")"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -q 'decision_mode 是 ask' && ok "D7 decision_mode=ask: no auto-answer" || { bad "D7 rc=$RC"; echo "$OUT"; }
+cfg_set decision_mode proceed
+blocked_spec "$WT" $K
+OUT="$(cd "$WT" && $SH reopen $K --why "intent gap again" --decisions-file "$TMP/dec.json")"
+echo "$OUT" | grep -qx 'DECISION_IDS=D2' && echo "$OUT" | grep -qx 'REOPEN_LEFT=0' && ok "D8 second reopen allowed" || { bad "D8"; echo "$OUT"; }
+blocked_spec "$WT" $K
+OUT="$(cd "$WT" && $SH reopen $K --why x --decisions-file "$TMP/dec.json")"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -q '到上限了' && ok "D9 third reopen refused (limit 2)" || { bad "D9 rc=$RC"; echo "$OUT"; }
+git -C "$WT" checkout -q -- "$ART/spec-$K.md"
+OUT="$($SH confirm D1)"
+echo "$OUT" | grep -qx 'CONFIRMED=D1' && [ "$($SH tick | jget 'd["decisions_pending"]')" = "['D2']" ] \
+    && ok "D10 confirm moves D1 out of the inbox" || { bad "D10"; echo "$OUT"; }
+fake_exit $K blocked
+BASE2="$($SH decisions --json | jget '[r for r in d if r["id"]=="D2"][0]["base"]')"
+OUT="$($SH override D2 --answer "按名称")"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -qx 'STATUS=confirm' && [ "$(git -C "$WT" rev-parse HEAD)" != "$BASE2" ] \
+    && ok "D11 override without --yes only explains what it would reset" || { bad "D11 rc=$RC"; echo "$OUT"; }
+OUT="$($SH override D2 --answer "按名称" --yes)"; RC=$?
+[ $RC -eq 0 ] && echo "$OUT" | grep -qx "RESET=$BASE2" && grep -q 'A: 按名称（D2，用户改判）' "$SPEC" \
+    && ! grep -q 'D2，按推荐项代答' "$SPEC" && [ "$(git -C "$WT" rev-parse HEAD~1)" = "$BASE2" ] \
+    && [ "$(stage_of $K)" = "queued" ] \
+    && ok "D12 override --yes resets to the halt commit, writes the new answer, requeues" || { bad "D12 rc=$RC"; echo "$OUT"; }
+[ "$($SH decisions --all --json | jget '[r["status"] for r in d if r["id"]=="D2"][0]')" = "overridden" ] \
+    && ok "D13 D2 recorded as overridden" || bad "D13"
+OUT="$($SH decide - --question "要不要 push 到远端？" --chosen "先不 push" --why "answer-policy：对外发布要人确认")"
+DID="$(echo "$OUT" | sed -n 's/^DECISION_ID=//p')"
+OUT="$($SH override "$DID" --answer "push")"
+echo "$OUT" | grep -qx 'NEXT=dispatcher' && ok "D14 dispatcher decisions are recorded and overridable without touching a lane" || { bad "D14"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+
+K=9-31-b3; WT="$TMP/wt/$K"; SPEC="$WT/$ART/spec-$K.md"
+$SH prepare $K >/dev/null
+git -C "$WT" tag "harness/$K/start"
+echo b3 > "$WT/src/$K.txt"; blocked_spec "$WT" $K
+printf '{"key":"%s","reason":"quota_exhausted"}\n' "$K" > "$WT/$ART/$K.codex-skipped.json"   # B2 skipped
+sed -i "s/^status: 'blocked'/status: 'done'/" "$SPEC"
+git -C "$WT" add -A && git -C "$WT" commit -qm "feat($K): implement" && git -C "$WT" tag "harness/$K/built" && git -C "$WT" tag "harness/$K/followup-start"
+sed -i "s/^status: 'done'/status: 'blocked'/" "$SPEC"
+fake_exit $K blocked
+[ "$(hs_code "$WT" $K)" = "blocked" ] && ok "D15 harness-state: spec blocked during B3 → blocked, not another B3 dispatch" || bad "D15 $(hs_code "$WT" $K)"
+OUT="$($SH resume $K --note "按方案 A：只在列表页加排序")"; RC=$?
+[ $RC -eq 0 ] && echo "$OUT" | grep -qx 'SPEC_STATUS=in-review' && echo "$OUT" | grep -qx "MOVED_TAG=harness/$K/followup-start" \
+    && [ "$(git rev-parse "harness/$K/followup-start^{commit}")" = "$(git -C "$WT" rev-parse HEAD)" ] \
+    && grep -q '按方案 A' "$SPEC" && [ "$(stage_of $K)" = "queued" ] && [ -z "$(git -C "$WT" status --porcelain)" ] \
+    && ok "D16 resume: answer in spec, status in-review, followup-start on the new commit, requeued" || { bad "D16 rc=$RC"; echo "$OUT"; }
+[ "$(hs_code "$WT" $K)" = "followup" ] && ok "D17 harness-state resumes B3 (not followup-verify)" || bad "D17 $(hs_code "$WT" $K)"
+OUT="$($SH resume $K --note again)"; RC=$?
+[ $RC -eq 1 ] && ok "D18 resume refuses a lane that is not stopped" || { bad "D18 rc=$RC"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+
+K=9-32-ns; WT="$TMP/wt/$K"
+$SH prepare $K >/dev/null
+git -C "$WT" tag "harness/$K/start"
+printf -- '---\nstatus: blocked\n---\n\n# BMad Build Auto Result\n\nStatus: blocked\nBlocking condition: unclear intent\n' \
+    > "$WT/$ART/bmad-build-auto-result-x.md"
+fake_exit $K blocked
+OUT="$($SH resume $K --note "数据库用 PostgreSQL")"; RC=$?
+PROMPT="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import superh; c = superh.Ctx(); print(superh.render_worker_prompt(c, c.lane(sys.argv[2]), 2))' "$SCRIPTS" $K)"
+[ $RC -eq 0 ] && [ ! -e "$WT/$ART/bmad-build-auto-result-x.md" ] && echo "$OUT" | grep -q '数据库用 PostgreSQL' \
+    && echo "$PROMPT" | grep -q -- '- 数据库用 PostgreSQL' && ! echo "$PROMPT" | grep -q '{{' \
+    && ok "D19 no spec yet: result file removed, the answer goes into the next worker prompt" || { bad "D19 rc=$RC"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+
+K=9-33-split; WT="$TMP/wt/$K"
+$SH prepare $K >/dev/null
+git -C "$WT" tag "harness/$K/start"
+printf -- '---\nstatus: done\n---\n<intent-contract>\n</intent-contract>\n\n## Auto Run Result\n\nStatus: done\n' > "$WT/$ART/spec-$K.md"
+echo v1 > "$WT/src/$K.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "feat($K): implement"
+printf -- '---\nstory: %s\nfindings: 1\n---\n- [high] something\n' "$K" > "$WT/$ART/$K.codex-review.md"
+echo v2 > "$WT/src/$K.txt"
+printf '\n### Codex Review Handling (Stage 3)\n\n- [F-1 high] x — fixed: src\n' >> "$WT/$ART/spec-$K.md"
+OUT="$(cd "$WT" && python3 .claude/harness/scripts/harness-commit.py 3 $K)"; RC=$?
+[ $RC -eq 0 ] && echo "$OUT" | grep -qx "AUTO_SPLIT=left-for-stage-4 src/$K.txt" \
+    && [ "$(git -C "$WT" diff --cached --name-only)" = "$ART/$K.codex-review.md" ] \
+    && ok "D20 stage 3 with B2.3 edits in the tree: commits the report alone" || { bad "D20 rc=$RC"; echo "$OUT"; }
+git -C "$WT" commit -qm "story($K): codex adversarial review report"
+OUT="$(cd "$WT" && python3 .claude/harness/scripts/harness-commit.py 4 $K)"; RC=$?
+[ $RC -eq 0 ] && echo "$OUT" | grep -qx "STAGED=src/$K.txt" && ok "D21 stage 4 then takes the fixes" || { bad "D21 rc=$RC"; echo "$OUT"; }
+git -C "$WT" commit -qm "story($K): apply codex review fixes"
+git -C "$WT" rm -q --cached "$ART/$K.codex-review.md" >/dev/null; git -C "$WT" commit -qm "drop report for D22"
+echo v3 > "$WT/src/$K.txt"; printf 'x\n' > "$WT/$ART/9-99-other.md"
+OUT="$(cd "$WT" && python3 .claude/harness/scripts/harness-commit.py 3 $K)"; RC=$?
+[ $RC -eq 1 ] && ! echo "$OUT" | grep -q '^AUTO_SPLIT=' && ok "D22 no split when an extra path is one stage 4 would refuse" || { bad "D22 rc=$RC"; echo "$OUT"; }
+rm -f "${WT:?}/${ART:?}/9-99-other.md" "${WT:?}/${ART:?}/$K.codex-review.md"; git -C "$WT" checkout -q -- src
+sed -i 's/^## Auto Run Result/### Auto Run Result/' "$WT/$ART/spec-$K.md"; git -C "$WT" commit -qam "h3 result heading"
+OUT="$(cd "$WT" && python3 .claude/harness/scripts/harness-commit.py build-verify $K)"; RC=$?
+[ $RC -eq 0 ] && echo "$OUT" | grep -q '^AUTO_FIXED=auto-run-result-heading level=h3' && ! echo "$OUT" | grep -q AUTO_RUN_RESULT_MISSING \
+    && ok "D23 build-verify accepts an Auto Run Result written at the wrong heading level" || { bad "D23 rc=$RC"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+
+cfg_set env_check_command "'test -f $TMP/env.up'"
+cfg_set env_up_command "'touch $TMP/env.up'"
+K=9-34-env
+$SH prepare $K >/dev/null
+OUT="$($SH launch $K)"
+echo "$OUT" | grep -q '^SELF_HEAL=env-up' && [ -f "$TMP/env.up" ] && echo "$OUT" | grep -q '^STAGE=ready' \
+    && ok "D24 environment not up → env_up_command, then the worker starts" || { bad "D24"; echo "$OUT"; }
+echo "$OUT" | grep -q '^WORKER_MODEL=fake-model' && ok "D25 launch reports the model the worker really used" || { bad "D25"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+rm -f "${TMP:?}/env.up"; cfg_set env_up_command "'exit 3'"
+K=9-35-noenv
+$SH prepare $K >/dev/null
+OUT="$($SH launch $K)"; RC=$?
+[ $RC -eq 1 ] && echo "$OUT" | grep -qx 'HOLD_KIND=env' && [ "$(stage_of $K)" = "held" ] && [ ! -f "$LANES/$K.proc.json" ] \
+    && $SH tick | jget 'd["attention"]' | grep -q "retry $K" \
+    && ok "D26 environment can't be brought up → lane held before any worker starts" || { bad "D26 rc=$RC"; echo "$OUT"; }
+cfg_set env_up_command "'touch $TMP/env.up'"
+OUT="$($SH retry $K)"
+echo "$OUT" | grep -q '^STATUS=ok' && [ "$(stage_of $K)" = "queued" ] && ok "D27 retry after fixing the environment" || { bad "D27"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+cfg_set env_check_command "''"; cfg_set env_up_command "''"
+
+cp "$ART/sprint-status.yaml" "$TMP/sprint-status.bak"
+cat > "$ART/sprint-status.yaml" <<'EOF'
+development_status:
+  epic-8: in-progress
+  8-1-a: backlog
+  8-2-b: backlog
+  8-3-c: backlog
+  epic-8-retrospective: optional
+story_dependencies:
+  8-3-c: [8-1-a]
+EOF
+$SH prepare 8-1-a >/dev/null; fake_exit 8-1-a blocked
+reasons() { $SH plan --json | jget "[s for s in d['stories'] if s['key']=='$1'][0]['reasons']"; }
+reasons 8-2-b | grep -q '按串行等待 8-1-a' && ok "D28 blocked_policy=wait: a blocked lane holds the serial order" || bad "D28 $(reasons 8-2-b)"
+cfg_set blocked_policy continue
+TICK="$($SH tick)"
+[ "$(reasons 8-2-b)" = "[]" ] && reasons 8-3-c | grep -q '等待依赖 8-1-a' && echo "$TICK" | jget 'd["stuck_released"]' | grep -q 8-1-a \
+    && echo "$TICK" | jget 'd["launch"]' | grep -q 8-2-b \
+    && ok "D29 blocked_policy=continue: serial order released, explicit deps still wait" || { bad "D29"; $SH plan; }
+cfg_set blocked_policy wait
+$SH abandon 8-1-a --yes >/dev/null
+cp "$TMP/sprint-status.bak" "$ART/sprint-status.yaml"
+
+echo "== D17b: review follow-ups"
+K=9-36-batch; WT="$TMP/wt/$K"; SPEC="$WT/$ART/spec-$K.md"
+$SH prepare $K >/dev/null
+lane_edit $K 'd["phase"] = "launched"; d["attempts"] = 1'
+git -C "$WT" tag "harness/$K/start"
+blocked_spec "$WT" $K
+cat > "$TMP/dec2.json" <<'J'
+[{"question": "排序？", "chosen": "按时间"}, {"question": "分页？", "chosen": "每页 20 条"}]
+J
+OUT="$(cd "$WT" && $SH reopen $K --why "intent gap" --decisions-file "$TMP/dec2.json")"
+IDS="$(echo "$OUT" | sed -n 's/^DECISION_IDS=//p')"; X="${IDS%,*}"; Y="${IDS#*,}"
+fake_exit $K blocked
+$SH override "$X" --answer "按名称" --yes >/dev/null
+fake_exit $K blocked
+OUT="$($SH override "$Y" --answer "每页 50 条" --yes)"; RC=$?
+[ $RC -eq 0 ] && grep -q "A: 按名称（${X}，用户改判）" "$SPEC" && grep -q "A: 每页 50 条（${Y}，用户改判）" "$SPEC" \
+    && ok "D32 a second override in the same batch keeps the first one's answer" || { bad "D32 rc=$RC"; echo "$OUT"; cat "$SPEC"; }
+$SH abandon $K --yes >/dev/null
+
+K=9-37-nsov; WT="$TMP/wt/$K"
+$SH prepare $K >/dev/null
+lane_edit $K 'd["phase"] = "launched"; d["attempts"] = 1'
+git -C "$WT" tag "harness/$K/start"
+printf -- '---\nstatus: blocked\n---\n\nStatus: blocked\nBlocking condition: unclear intent\n' > "$WT/$ART/bmad-build-auto-result-y.md"
+cat > "$TMP/dec3.json" <<'J'
+[{"question": "用哪个数据库？", "chosen": "PostgreSQL"}]
+J
+OUT="$(cd "$WT" && $SH reopen $K --why "unclear intent" --decisions-file "$TMP/dec3.json")"
+DID="$(echo "$OUT" | sed -n 's/^DECISION_IDS=//p')"; BASE="$(git -C "$WT" rev-parse HEAD)"
+echo built > "$WT/src/$K.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "feat($K): built on the old answer"; git -C "$WT" tag "harness/$K/built"
+fake_exit $K blocked
+OUT="$($SH override "$DID" --answer "MySQL" --yes)"; RC=$?
+[ $RC -eq 0 ] && [ "$(git -C "$WT" rev-parse HEAD)" = "$BASE" ] && ! git rev-parse -q --verify "refs/tags/harness/$K/built" >/dev/null \
+    && grep -q 'MySQL' "$LANES/$K.notes.json" && ! grep -q 'PostgreSQL' "$LANES/$K.notes.json" \
+    && [ "$($SH decisions --all --json | jget "[r['status'] for r in d if r['id']=='$DID'][0]")" = "overridden" ] \
+    && [ "$(stage_of $K)" = "queued" ] \
+    && ok "D33 override of a no-spec decision: reset, built dropped, notes carry the new answer" || { bad "D33 rc=$RC"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+
+K=9-38-done; WT="$TMP/wt/$K"; SPEC="$WT/$ART/spec-$K.md"
+$SH prepare $K >/dev/null
+git -C "$WT" tag "harness/$K/start"
+blocked_spec "$WT" $K; sed -i "s/^status: 'blocked'/status: 'done'\nfollowup_review_recommended: true/" "$SPEC"
+printf '{"key":"%s","reason":"quota_exhausted"}\n' "$K" > "$WT/$ART/$K.codex-skipped.json"
+echo v1 > "$WT/src/$K.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "feat($K)"
+git -C "$WT" tag "harness/$K/built"; git -C "$WT" tag "harness/$K/followup-start"
+echo v2 > "$WT/src/$K.txt"; git -C "$WT" commit -qam "review($K): follow-up pass"
+FS="$(git rev-parse "harness/$K/followup-start^{commit}")"
+fake_exit $K failed
+OUT="$($SH resume $K --note "看过了，没问题")"; RC=$?
+[ $RC -eq 0 ] && ! echo "$OUT" | grep -q '^MOVED_TAG=' && [ "$(git rev-parse "harness/$K/followup-start^{commit}")" = "$FS" ] \
+    && [ "$(hs_code "$WT" $K)" = "followup-verify" ] \
+    && ok "D34 resume after B3 already ran (spec done) leaves followup-start alone" || { bad "D34 rc=$RC $(hs_code "$WT" $K)"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+
+python3 - "$SCRIPTS" <<'PY' && ok "D35 status rewrite keeps a single key on CRLF specs" || bad "D35"
+import sys
+sys.path.insert(0, sys.argv[1])
+import superh
+t = "---\r\ntitle: x\r\nstatus: 'blocked' # note\r\n---\r\nbody\r\n"
+out = superh._with_status(t, "draft")
+assert out.count("status:") == 1 and "status: 'draft' # note\r\n" in out, repr(out)
+PY
+
+K=9-39-busy
+$SH prepare $K >/dev/null
+sleep 300 & SP=$!
+lane_edit $K "d['op'] = {'name': 'launch', 'pid': $SP, 'pid_start': '$(pstart $SP)', 'started_at': 'now'}"
+OUT="$($SH launch $K)"; RC=$?
+[ $RC -eq 4 ] && echo "$OUT" | grep -qx 'STATUS=busy' && [ "$(stage_of $K)" = "preparing" ] \
+    && ! $SH tick | jget 'd["launch"] + d["queued"]' | grep -q $K \
+    && ok "D36 a launch still checking the environment is not handed out or started twice" || { bad "D36 rc=$RC"; echo "$OUT"; }
+kill $SP; wait $SP 2>/dev/null
+$SH abandon $K --yes >/dev/null
+
+OUT="$($SH start-run)"
+echo "$OUT" | grep -q '^WARN=parallel.yaml 的 worker_model 留空' && echo "$OUT" | grep -qx 'DECISION_MODE=proceed' \
+    && ok "D30 start-run warns about an empty worker_model" || { bad "D30"; echo "$OUT"; }
+cfg_set env_down_command "'touch $TMP/env.down'"
+OUT="$($SH end-run --finished)"
+echo "$OUT" | grep -qx 'ENV_DOWN=ok' && [ -f "$TMP/env.down" ] && ok "D31 end-run --finished runs env_down_command" || { bad "D31"; echo "$OUT"; }
+cfg_set env_down_command "''"
+$SH start-run >/dev/null
 
 OUT="$($SH end-run)"
 echo "$OUT" | grep -q '^STATUS=ok' && [ ! -f "$(git rev-parse --git-common-dir)/super-harness/dispatcher.lock" ] \

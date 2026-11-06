@@ -14,6 +14,10 @@ worktree 看到的是同一份。每个文件只有一个写入者：
     lanes/<KEY>.proc.json    launch 进程写：pid / child_pid（各带启动时间）/ session_id / exit_code
     lanes/<KEY>.result.json  worker 写（经 `superh.py report`）：status / summary
     lanes/<KEY>.watch.json   watch 进程写：pid
+    lanes/<KEY>.reopen.json  worker 写（经 `reopen`）：本 story 自己重开 spec 的次数
+    lanes/<KEY>.notes.json   reopen / resume / override 写：还没有 spec 时的答复，下一次 worker prompt 带上
+    decisions.json           决策收件箱（worker 的 reopen、调度者的 decide / resume、用户的
+                             confirm / override 都会写，经 flock 串行）
     dispatcher.lock          start-run 写：持有调度权的会话（pid + 启动时间）
 
 子命令（都在项目根目录或任一 worktree 内运行）：
@@ -24,7 +28,7 @@ worktree 看到的是同一份。每个文件只有一个写入者：
     tick                    调度者每轮循环读的结构化快照（JSON），含 next_action
     board [--json]          看板：先列需要人处理的 lane
     start-run               取调度锁，固定本次运行的 sprint 分支
-    end-run                 释放调度锁
+    end-run [--finished]    释放调度锁（--finished：再执行 env_down_command）
     prepare <KEY>           开 worktree + 分支，补齐未入库的基建文件，跑 prepare_command
     launch <KEY>            前台运行 worker（headless claude -p），退出时落盘；
                             调度者用 Bash run_in_background 调它
@@ -36,6 +40,12 @@ worktree 看到的是同一份。每个文件只有一个写入者：
     postmerge <KEY>         只读：已合入的 lane 收口还差哪一步（NEXT=sync / tag / finish）
     mark <KEY> --phase P    调度者推进 phase（done / held）
     retry <KEY>             worker 失败后重新排队（保留 worktree，续作）
+    resume <KEY> --note N   把用户的决定写进 spec、提交、挪 followup-start，重新排队
+    reopen <KEY> --why W    worker 用：intent gap 按推荐项代答（--decisions-file）或瞬态失败后重开 spec
+    decide <KEY|-> ...      调度者记一条自己按推荐项做的决定
+    decisions [--all]       列出决策收件箱
+    confirm <ID...>|--all   确认决定
+    override <ID> --answer  推翻一条决定：没合入的 lane 回退到决定之前，按新答复重跑
     cleanup <KEY>           done 之后删 worktree 与分支
     abandon <KEY> --yes     放弃本路：删 worktree / 分支 / 未 done 的 harness tag
 
@@ -88,8 +98,15 @@ MAX_TRANSIENT = 3
 EXIT_BUSY = 4   # STATUS=busy (this lane's prepare/integrate is already running) or STATUS=locked
 # hold_kind values integrate sets; a lane held with one of these is accepted by a
 # manual `integrate` re-run once the person has fixed the cause.
-INTEGRATE_HOLD_KINDS = ("verify", "build-verify", "lane-dirty", "rebase", "branch-missing",
+INTEGRATE_HOLD_KINDS = ("verify", "verify-env", "build-verify", "lane-dirty", "rebase", "branch-missing",
                         "worktree-missing", "interrupted", "ff", "retry-limit", "git-error", "error")
+# Lane stages a person (or `resume`) has to act on before the lane moves again.
+# With blocked_policy=continue they stop holding back the serial order and the
+# epic / retro barriers; explicit depends_on still waits for them.
+STUCK_STAGES = ("blocked", "failed", "held", "conflict")
+# How many times a worker may reopen its own spec (pipeline.md §3.3) per story.
+REOPEN_LIMITS = {"decision": 2, "transient": 1}
+SPEC_STATUSES = ("draft", "ready-for-dev", "in-progress", "in-review")
 LOCK_FILE = "dispatcher.lock"
 
 DEFAULT_CONFIG = {
@@ -106,6 +123,13 @@ DEFAULT_CONFIG = {
     "prepare_timeout_sec": 600,
     "verify_command": "",
     "verify_timeout_sec": 1800,
+    "verify_timeout_retries": 1,         # verify_command 超时后自动重跑的次数（失败不重跑）
+    "env_check_command": "",             # 前置环境是否就绪（exit 0 = 就绪）
+    "env_up_command": "",                # 环境没就绪时执行一次，起好后再检查
+    "env_down_command": "",              # end-run --finished 时执行
+    "env_timeout_sec": 600,
+    "decision_mode": "proceed",          # proceed = 有推荐项就按推荐项续跑、记进收件箱；ask = 停下等人
+    "blocked_policy": "wait",            # wait | continue（受阻的 lane 不再挡串行顺序、epic 屏障、retro 屏障）
     "worker_permission_mode": "bypassPermissions",
     "worker_model": "",
     "claude_bin": "claude",
@@ -467,16 +491,22 @@ def lock_owner() -> dict:
 
 
 @contextmanager
-def _lock_guard(ctx):
-    """Serialises read-check-write of the lock file between superh processes."""
+def _guard(ctx, name: str):
+    """Exclusive flock on state/<name>: serialises read-modify-write of a shared
+    state file between superh processes (dispatcher, workers, the user's shell)."""
     ctx.state.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(ctx.state / ".lock.guard"), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = os.open(str(ctx.state / name), os.O_RDWR | os.O_CREAT, 0o644)
     try:
         if fcntl is not None:
             fcntl.flock(fd, fcntl.LOCK_EX)
         yield
     finally:
         os.close(fd)
+
+
+def _lock_guard(ctx):
+    """Serialises read-check-write of the lock file between superh processes."""
+    return _guard(ctx, ".lock.guard")
 
 
 def _lock_live(lk) -> bool:
@@ -705,6 +735,15 @@ def load_config(path: Path) -> dict:
         cfg["max_slots"] = 1
     if cfg.get("no_deps_policy") not in ("serial", "epic-parallel"):
         cfg["no_deps_policy"] = "serial"
+    if cfg.get("decision_mode") not in ("proceed", "ask"):
+        cfg["decision_mode"] = "proceed"
+    if cfg.get("blocked_policy") not in ("wait", "continue"):
+        cfg["blocked_policy"] = "wait"
+    for k, dflt in (("verify_timeout_retries", 1), ("env_timeout_sec", 600)):
+        try:
+            cfg[k] = max(0, int(cfg.get(k) if cfg.get(k) is not None else dflt))
+        except (TypeError, ValueError):
+            cfg[k] = dflt
     for k in ("copy_paths", "link_paths"):
         if not isinstance(cfg.get(k), list):
             cfg[k] = []
@@ -881,6 +920,8 @@ def lane_stage(ctx, lane) -> tuple[str, str]:
     if op and op_live(op):
         if op.get("name") == "prepare":
             return "preparing", f"prepare 进行中（pid {op.get('pid')}，{op.get('started_at', '')} 起）"
+        if op.get("name") == "launch":
+            return "preparing", f"launch 正在检查环境（pid {op.get('pid')}，{op.get('started_at', '')} 起）"
         return "integrating", f"合流进行中（pid {op.get('pid')}，{op.get('started_at', '')} 起）"
     if phase == "conflict":
         wt = Path(lane.get("worktree", ""))
@@ -900,12 +941,13 @@ def lane_stage(ctx, lane) -> tuple[str, str]:
         return "queued", "等待启动 worker"
     res = read_json(ctx.lane_path(key, "result"))
     if proc.get("exit_code") is None:
+        model = f"，模型 {proc['model']}" if proc.get("model") else ""
         if proc_matches(proc.get("pid"), proc.get("pid_start"), ("superh",)):
-            return "working", f"worker 运行中（第 {proc.get('attempt')} 次）"
+            return "working", f"worker 运行中（第 {proc.get('attempt')} 次{model}）"
         if _worker_child_alive(ctx, proc):
             # the launcher died but claude is still working in the worktree:
             # reporting `crashed` here would get a second worker started next to it
-            return "working", (f"worker 运行中（第 {proc.get('attempt')} 次；launch 进程已退出，"
+            return "working", (f"worker 运行中（第 {proc.get('attempt')} 次{model}；launch 进程已退出，"
                                f"claude 进程 {proc.get('child_pid')} 仍在运行）")
         if not res or res.get("attempt") != proc.get("attempt"):
             return "crashed", "worker 进程已消失但没有落盘退出码（宿主会话结束或被杀）"
@@ -949,6 +991,10 @@ HOLD_HINTS = {
     "retry-limit": "合流连续重试仍不成功，按 hold_reason 核对 sprint 分支和 lane 分支" + _REINTEGRATE,
     "git-error": "合流时 git 命令出错，按 hold_reason 处理" + _REINTEGRATE,
     "error": "合流时脚本出错，按 hold_reason 处理" + _REINTEGRATE,
+    "env": ("worker 启动前环境没就绪（env_check_command / env_up_command），按 hold_reason 把环境起好，"
+            "然后执行 " + SH_CMD + " retry {key}"),
+    "verify-env": ("合流验证前环境没就绪（env_check_command / env_up_command），按 hold_reason 把环境起好"
+                   + _REINTEGRATE),
     "prepare": ("prepare 没完成，按 hold_reason 修好原因后执行 " + SH_CMD +
                 " abandon {key} --yes（会删这一路的 worktree 和分支），再重新执行 /super-harness:run"),
     "foreign": ("分支或目录不是这次 prepare 建的，super-harness 不会删它；确认无用后手工删掉，再执行 " + SH_CMD +
@@ -983,6 +1029,14 @@ def analyze(ctx):
     for k, t in tags.items():
         if "start" in t and "done" not in t and status.get(k) not in terminal:
             inflight.add(k)
+    # blocked_policy=continue: a lane waiting for a person no longer holds back the
+    # implicit orders (serial, epic barrier, retro barrier). Explicit deps still wait.
+    stuck = set()
+    if cfg.get("blocked_policy") == "continue":
+        stuck = {k for k in active_lane if lane_stage(ctx, lanes[k])[0] in STUCK_STAGES}
+
+    def _order_ok(t):
+        return t["status"] in settled or t["key"] in stuck
 
     rows = []
     for idx, s in enumerate(stories):
@@ -1007,19 +1061,22 @@ def analyze(ctx):
             if e is not None and cfg.get("epic_barrier", True):
                 pend = sorted({epic_of(t["key"]) for t in stories
                                if epic_of(t["key"]) is not None and epic_of(t["key"]) < e
-                               and t["status"] not in settled})
+                               and not _order_ok(t)})
                 for pe in pend:
                     reasons.append(f"epic {pe} 还有未完成的 story")
                 if cfg.get("retro_barrier"):
+                    # an epic whose only unfinished stories are stuck cannot have its
+                    # retro yet; with blocked_policy=continue it doesn't hold the next epic
+                    stuck_epics = {epic_of(k) for k in stuck if status.get(k) not in settled}
                     for pe in sorted({epic_of(t["key"]) for t in stories
                                       if epic_of(t["key"]) is not None and epic_of(t["key"]) < e}):
                         rs = epics.get(f"epic-{pe}-retrospective")
-                        if rs is not None and rs != "done" and pe not in pend:
+                        if rs is not None and rs != "done" and pe not in pend and pe not in stuck_epics:
                             reasons.append(f"epic {pe} 的 retro 还没 done")
             deps = row["deps"]
             if deps is None:
                 if cfg.get("no_deps_policy") == "serial":
-                    earlier = [t["key"] for t in stories[:idx] if t["status"] not in settled]
+                    earlier = [t["key"] for t in stories[:idx] if not _order_ok(t)]
                     if earlier:
                         reasons.append(f"未声明 depends_on，按串行等待 {earlier[0]}")
             else:
@@ -1068,7 +1125,8 @@ def cmd_plan(ctx, a):
         return 0
     label = {"done": "完成", "inflight": "在飞", "ready": "就绪", "waiting": "等待", "parked": "挂起"}
     print(f"策略：max_slots={ctx.config['max_slots']} no_deps_policy={ctx.config['no_deps_policy']} "
-          f"epic_barrier={ctx.config.get('epic_barrier', True)} retro_barrier={ctx.config['retro_barrier']}")
+          f"epic_barrier={ctx.config.get('epic_barrier', True)} retro_barrier={ctx.config['retro_barrier']} "
+          f"blocked_policy={ctx.config.get('blocked_policy')}")
     for r in rows:
         if r["state"] == "done":
             continue
@@ -1169,6 +1227,10 @@ def cmd_tick(ctx, _a):
         "waiting": [{"key": r["key"], "reasons": r["reasons"]} for r in rows if r["state"] == "waiting"][:20],
         "external": [{"key": r["key"], "conditions": r["external"]} for r in rows if r["external"]],
         "parked": [r["key"] for r in rows if r["state"] == "parked"],
+        # lanes that no longer hold back the serial order / barriers (blocked_policy=continue)
+        "stuck_released": sorted(k for k, (s, _) in stages.items() if s in STUCK_STAGES)
+        if ctx.config.get("blocked_policy") == "continue" else [],
+        "decisions_pending": [r["id"] for r in _pending(ctx)],
         "problems": problems,
     }, ensure_ascii=False, indent=2))
     return 0
@@ -1179,6 +1241,7 @@ def cmd_board(ctx, a):
     stages = {k: lane_stage(ctx, l) for k, l in lanes.items()}
     order = {s: i for i, s in enumerate(PERSON_STAGES + ("ready", "integrating", "working", "preparing", "queued", "done", "abandoned"))}
     items = sorted(stages.items(), key=lambda kv: (order.get(kv[1][0], 99), kv[0]))
+    pending = _pending(ctx)
     if a.json:
         print(json.dumps([{"key": k, "stage": s, "detail": d, "takeover": resume_hint(ctx, lanes[k])}
                           for k, (s, d) in items], ensure_ascii=False, indent=2))
@@ -1192,8 +1255,20 @@ def cmd_board(ctx, a):
         for k, s, d in person:
             print(f"  [{zh.get(s, s)}] {k}  {d}")
             print(f"      接手：{resume_hint(ctx, lanes[k])}")
+        if ctx.config.get("blocked_policy") == "continue" and any(s in STUCK_STAGES for _k, s, _d in person):
+            print("  （blocked_policy=continue：受阻、失败、挂起、冲突的这几路不挡串行顺序和 epic 屏障，依赖它们的 story 仍在等）")
     else:
         print("没有需要你处理的 lane。")
+    if pending:
+        print(f"待你确认（已按推荐项继续，{len(pending)} 条）：")
+        for r in pending:
+            where = "调度" if r["key"] == "-" else f"{r['key']} {r.get('stage', '')}".strip()
+            q = r["question"] if len(r["question"]) <= 80 else r["question"][:78] + "…"
+            c = r["chosen"] if len(r["chosen"]) <= 80 else r["chosen"][:78] + "…"
+            print(f"  {r['id']} [{where}] {q}")
+            print(f"      采用：{c}")
+        print(f"  全部确认：{SH_CMD} confirm --all；看详情：{SH_CMD} decisions；"
+              f"推翻一条：{SH_CMD} override <ID> --answer \"<新决定>\"")
     live = [(k, s, d) for k, (s, d) in items if s in ("ready", "integrating", "working", "preparing", "queued")]
     if live:
         print("进行中：")
@@ -1479,10 +1554,13 @@ def render_worker_prompt(ctx, lane, attempt) -> str:
     if not tpl_path.exists():
         die(f"没找到 {tpl_path}：先跑 /super-harness:init")
     text = tpl_path.read_text(encoding="utf-8")
+    notes = (read_json(_notes_path(ctx, lane["key"])) or {}).get("entries") or []
     subs = {
         "KEY": lane["key"], "WORKTREE": lane["worktree"], "BRANCH": lane["branch"],
         "SPRINT_BRANCH": lane["sprint_branch"], "ATTEMPT": str(attempt),
         "SUPERH": f"python3 {ctx.harness_scripts / 'superh.py'}", "MAIN_ROOT": str(ctx.root),
+        "DECISION_MODE": str(ctx.config.get("decision_mode") or "proceed"),
+        "CLARIFICATIONS": _clarifications_text(notes) or "（没有）",
     }
     for k, v in subs.items():
         text = text.replace("{{" + k + "}}", v)
@@ -1575,6 +1653,32 @@ def cmd_launch(ctx, a):
     claude = shutil.which(str(ctx.config.get("claude_bin") or "claude"))
     if not claude:
         die("找不到 claude CLI（config.claude_bin）")
+    # The env check can take minutes while the lane still reads as `queued`; a
+    # launch marker (shown as `preparing`) keeps tick from handing it out again,
+    # and a second launch of the same key backs off.
+    with _guard(ctx, ".launch.guard"):
+        cur = ctx.lane(key) or lane
+        if op_live(cur.get("op")):
+            print("STATUS=busy")
+            print(f"REASON=lane {key} 的 {cur['op'].get('name')} 正在运行（pid {cur['op'].get('pid')}），不要重复启动")
+            return EXIT_BUSY
+        if cur.get("phase") != lane.get("phase") or cur.get("attempts") != lane.get("attempts"):
+            die(f"lane {key} 在这次 launch 开始后被改动过（phase={cur.get('phase')}），不启动")
+        if cur.get("op"):
+            _reap_dead_op(cur)
+        lane = cur
+        lane["op"] = op_record("launch")
+        ctx.save_lane(lane)
+    try:
+        env_state = _ensure_env(ctx, lane)
+    finally:
+        lane.pop("op", None)
+    if not env_state["ok"]:
+        _hold(ctx, lane, "env", f"worker 没有启动：{env_state['detail']}", f"WORKTREE={wt}",
+              "ENV_OUTPUT<<", env_state["output"], ">>")
+    if env_state["healed"]:
+        print(f"SELF_HEAL=env-up {env_state['detail']}")
+        lane.setdefault("notes", []).append(f"self-heal before launch: {env_state['detail']}")
     attempt = int(lane.get("attempts") or 0) + 1
     prompt = render_worker_prompt(ctx, lane, attempt)
     ctx.logs.mkdir(parents=True, exist_ok=True)
@@ -1583,8 +1687,10 @@ def cmd_launch(ctx, a):
     lane["attempts"] = attempt
     lane["phase"] = "launched"
     ctx.save_lane(lane)
+    configured = str(ctx.config.get("worker_model") or "")
     proc_rec = {"key": key, "attempt": attempt, "pid": os.getpid(), "pid_start": proc_start_time(os.getpid()),
-                "started_at": now_iso(), "session_id": None, "exit_code": None, "log": f"{stem}.stream.jsonl"}
+                "started_at": now_iso(), "session_id": None, "exit_code": None, "log": f"{stem}.stream.jsonl",
+                "model_config": configured or f"(跟随 settings：{_settings_model() or '默认'})"}
     write_json(ctx.lane_path(key, "proc"), proc_rec)
 
     env = {k: v for k, v in os.environ.items() if not k.startswith(SCRUB_ENV_PREFIXES)}
@@ -1613,6 +1719,12 @@ def cmd_launch(ctx, a):
             if evt.get("session_id") and not proc_rec.get("session_id"):
                 proc_rec["session_id"] = evt["session_id"]
                 write_json(ctx.lane_path(key, "proc"), proc_rec)
+            if evt.get("type") == "system" and evt.get("subtype") == "init" and evt.get("model") \
+                    and not proc_rec.get("model"):
+                # the model the worker really runs on (issue #17: an empty worker_model
+                # follows ~/.claude/settings.json, which any other session's /model changes)
+                proc_rec["model"] = str(evt["model"])
+                write_json(ctx.lane_path(key, "proc"), proc_rec)
             if evt.get("type") == "result":
                 result_evt = evt
             kind = _bg_launch_kind(evt)
@@ -1635,6 +1747,7 @@ def cmd_launch(ctx, a):
     print(f"STAGE={stage}")
     print(f"DETAIL={detail}")
     print(f"SESSION={proc_rec.get('session_id')}")
+    print(f"WORKER_MODEL={proc_rec.get('model') or '?'}（配置：{proc_rec['model_config']}）")
     _print_orphans(wt)
     return 0
 
@@ -1804,15 +1917,30 @@ def _run_verify(ctx, lane, wt: Path) -> dict:
         return {"status": "skipped-unset"}
     if not lane.get("rebased"):
         return {"status": "skipped-not-rebased"}
+    env_state = _ensure_env(ctx, lane)
+    if not env_state["ok"]:
+        return {"status": "env-failed", "detail": f"合流验证没有运行：{env_state['detail']}", "output": env_state["output"]}
+    if env_state["healed"]:
+        print(f"SELF_HEAL=env-up {env_state['detail']}")
+        lane.setdefault("notes", []).append(f"self-heal before verify: {env_state['detail']}")
     env = dict(os.environ, SUPERH_KEY=lane["key"], SUPERH_WORKTREE=str(wt), SUPERH_MAIN_ROOT=str(ctx.root))
     timeout = int(ctx.config.get("verify_timeout_sec") or 1800)
-    pr = run_group(["sh", "-c", cmd], cwd=wt, env=env, timeout=timeout, on_start=_record_child(ctx, lane))
-    out = (pr["out"] + pr["err"])[-4000:]
-    if pr["timed_out"]:
-        return {"status": "failed", "detail": f"verify_command 超时（{timeout}s，它的整个进程组已结束）", "output": out}
-    if pr["rc"] != 0:
-        return {"status": "failed", "detail": f"verify_command exit={pr['rc']}", "output": out}
-    return {"status": "passed"}
+    retries = int(ctx.config.get("verify_timeout_retries") or 0)
+    for n in range(retries + 1):
+        pr = run_group(["sh", "-c", cmd], cwd=wt, env=env, timeout=timeout, on_start=_record_child(ctx, lane))
+        out = (pr["out"] + pr["err"])[-4000:]
+        if pr["timed_out"] and n < retries:
+            # a hung test is usually a one-off; a real failure (exit != 0) is never re-run
+            print(f"SELF_HEAL=verify-timeout-retry verify_command 第 {n + 1} 次超时（{timeout}s），重跑一次")
+            lane.setdefault("notes", []).append(f"self-heal: verify_command timed out, re-run #{n + 1}")
+            continue
+        if pr["timed_out"]:
+            return {"status": "failed", "output": out,
+                    "detail": f"verify_command 超时（{timeout}s，跑了 {n + 1} 次，它的整个进程组已结束）"}
+        if pr["rc"] != 0:
+            return {"status": "failed", "detail": f"verify_command exit={pr['rc']}", "output": out}
+        return {"status": "passed"}
+    return {"status": "failed", "detail": "verify_command 没有运行", "output": ""}
 
 
 def _print_merged(ctx, lane, bv_out, recovered=False, verify=""):
@@ -2033,6 +2161,9 @@ def _integrate(ctx, lane):
         print(">>")
         return 1
     verify = _run_verify(ctx, lane, wt)
+    if verify["status"] == "env-failed":
+        _hold(ctx, lane, "verify-env", verify["detail"] + "；sprint 分支未改动", f"WORKTREE={wt}",
+              "ENV_OUTPUT<<", verify["output"], ">>")
     if verify["status"] == "failed":
         lane["phase"] = "held"
         lane["hold_kind"] = "verify"
@@ -2062,6 +2193,649 @@ def _integrate(ctx, lane):
     ctx.save_lane(lane)
     _print_merged(ctx, lane, bv_out, verify=verify["status"])
     return 0
+
+
+# -------------------------------------------------------------- decisions inbox
+#
+# issue #17: a lane that hits an intent gap no longer stops and waits for the
+# user. The worker picks the recommended reading (answer-policy.md), writes it
+# into the spec, and the decision lands here as `pending`. The user confirms in
+# bulk or overrides one; an override resets that lane to the commit before the
+# decision and re-runs it with the new answer. decisions.json is shared by the
+# workers (`reopen`), the dispatcher (`decide`, `resume`) and the user
+# (`confirm`, `override`); every write goes through one flock.
+
+DECISIONS_FILE = "decisions.json"
+
+
+def load_decisions(ctx) -> dict:
+    d = read_json(ctx.state / DECISIONS_FILE)
+    if not isinstance(d, dict) or not isinstance(d.get("items"), list):
+        d = {"next_id": 1, "items": []}
+    d.setdefault("next_id", len(d["items"]) + 1)
+    return d
+
+
+@contextmanager
+def _decisions_txn(ctx):
+    """Read-modify-write decisions.json under its flock. An exception inside the
+    block leaves the file untouched."""
+    with _guard(ctx, ".decisions.guard"):
+        d = load_decisions(ctx)
+        yield d
+        write_json(ctx.state / DECISIONS_FILE, d)
+
+
+def _new_decisions(ctx, key, items, kind, **extra) -> list:
+    out = []
+    with _decisions_txn(ctx) as d:
+        for it in items:
+            rec = {"id": f"D{d['next_id']}", "key": key, "kind": kind, "status": "pending",
+                   "question": str(it.get("question") or "").strip(),
+                   "options": [str(o) for o in (it.get("options") or [])],
+                   "chosen": str(it.get("chosen") or "").strip(),
+                   "why": str(it.get("why") or "").strip(),
+                   "created_at": now_iso()}
+            rec.update(extra)
+            d["next_id"] += 1
+            d["items"].append(rec)
+            out.append(rec)
+    return out
+
+
+def _update_decisions(ctx, ids, **fields):
+    with _decisions_txn(ctx) as d:
+        for rec in d["items"]:
+            if rec["id"] in ids:
+                rec.update(fields)
+
+
+def _drop_decisions(ctx, ids):
+    with _decisions_txn(ctx) as d:
+        d["items"] = [r for r in d["items"] if r["id"] not in ids]
+
+
+def _read_decision_items(path: str) -> list:
+    """`--decisions-file`: a JSON list of {question, chosen, options?, why?}."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        die(f"读不了 decisions 文件 {path}：{e}")
+    if isinstance(data, dict):
+        data = data.get("items") or data.get("decisions") or [data]
+    if not isinstance(data, list) or not data:
+        die("decisions 文件要是一个非空的 JSON 列表，每项至少有 question 和 chosen")
+    for i, it in enumerate(data, 1):
+        if not isinstance(it, dict) or not str(it.get("question") or "").strip() or not str(it.get("chosen") or "").strip():
+            die(f"decisions 文件第 {i} 项缺 question 或 chosen")
+        if it.get("options") is not None and not isinstance(it["options"], list):
+            die(f"decisions 文件第 {i} 项的 options 要是列表")
+    return data
+
+
+# ---------------------------------------------------------------- spec reopen
+#
+# `reopen` (worker), `resume` (dispatcher) and `override` (user) all end the same
+# way: write the answers into the halted spec, flip its status back to where
+# bmad-build-auto resumes, commit, and keep harness-state's view consistent
+# (followup-start moves onto the new commit, so "HEAD moved past followup-start"
+# still means "B3 ran"). A spec that was still uncommitted when bmad-build-auto
+# halted is committed as-is first: that commit is the point an override resets to.
+
+def _today() -> str:
+    return datetime.date.today().isoformat()
+
+
+def _wt_dirty(wt: Path) -> list:
+    return [ln for ln in git(["status", "--porcelain", "-uall"], cwd=wt).stdout.splitlines() if ln.strip()]
+
+
+def _porcelain_path(ln: str) -> str:
+    p = ln[3:]
+    if " -> " in p:
+        p = p.split(" -> ", 1)[1]
+    return p.strip().strip('"')
+
+
+def _lane_spec(ctx, key, wt: Path):
+    art = ctx.artifacts_rel().rstrip("/")
+    try:
+        name = _harness_spec_mod().resolve_story_md(key, str(wt / art))
+    except (ImportError, AttributeError):
+        name = None
+    return f"{art}/{name}" if name and name.startswith("spec-") else None
+
+
+def _lane_results(ctx, wt: Path) -> list:
+    art = ctx.artifacts_rel().rstrip("/")
+    try:
+        return sorted(f"{art}/{f}" for f in os.listdir(wt / art)
+                      if f.startswith("bmad-build-auto-result-") and f.endswith(".md"))
+    except OSError:
+        return []
+
+
+def _spec_status_of(path: Path):
+    try:
+        return _harness_spec_mod().spec_status(str(path))
+    except (ImportError, AttributeError):
+        return None
+
+
+_FM_STATUS_RE = re.compile(r"(?m)^(status:[ \t]*)(['\"]?)([^'\"\r\n#]*?)\2([ \t]*(?:#[^\r\n]*)?)(\r?)$")
+
+
+def _with_status(text: str, status: str) -> str:
+    m = re.match(r"^---\r?\n(.*?\r?\n)---\r?\n", text, re.S)
+    if not m:
+        die("spec 没有 frontmatter，改不了 status")
+    fm = m.group(1)
+    new_fm, n = _FM_STATUS_RE.subn(
+        lambda mm: f"{mm.group(1)}{mm.group(2)}{status}{mm.group(2)}{mm.group(4)}{mm.group(5)}", fm, count=1)
+    if n == 0:
+        new_fm = fm + f"status: {status}" + ("\r\n" if fm.endswith("\r\n") else "\n")
+    return text[:m.start(1)] + new_fm + text[m.end(1):]
+
+
+def _with_block(text: str, block: str, inside_contract: bool) -> str:
+    """Clarifications go at the end of <intent-contract>: bmad-build-auto keeps that
+    block verbatim when it re-plans a draft. Notes that are not answers go at the
+    end of the file."""
+    i = text.rfind("</intent-contract>") if inside_contract else -1
+    if i < 0:
+        return text.rstrip("\n") + "\n\n" + block.rstrip("\n") + "\n"
+    return text[:i].rstrip("\n") + "\n\n" + block.rstrip("\n") + "\n\n" + text[i:]
+
+
+def _clar_block(title: str, entries) -> str:
+    lines = [f"### {title}", ""]
+    for e in entries:
+        if e.get("question"):
+            lines.append(f"- Q: {e['question']}")
+            lines.append(f"  A: {e['answer']}" + (f"（{e['tag']}）" if e.get("tag") else ""))
+        else:
+            lines.append(f"- {e['answer']}" + (f"（{e['tag']}）" if e.get("tag") else ""))
+    return "\n".join(lines)
+
+
+def _default_reopen_status(ctx, key) -> str:
+    # B1 halted → re-plan from the clarified contract; B3 (review pass on a built
+    # story) halted → back into review, the code is already there
+    return "in-review" if "built" in harness_tags(ctx).get(key, set()) else "draft"
+
+
+def _commit(wt: Path, paths_add, paths_rm, subject: str):
+    if paths_add:
+        r = git(["add", "--", *paths_add], cwd=wt)
+        if r.returncode != 0:
+            die(f"git add 失败：{r.stderr.strip()}", f"WORKTREE={wt}")
+    if paths_rm:
+        r = git(["rm", "-q", "--", *paths_rm], cwd=wt)
+        if r.returncode != 0:
+            die(f"git rm 失败：{r.stderr.strip()}", f"WORKTREE={wt}")
+    if git(["diff", "--cached", "--quiet"], cwd=wt).returncode == 0:
+        return None
+    r = git(["commit", "-q", "-m", subject], cwd=wt)
+    if r.returncode != 0:
+        die(f"git commit 失败（pre-commit hook？）：{(r.stderr or r.stdout).strip()[:600]}", f"WORKTREE={wt}")
+    return git(["rev-parse", "HEAD"], cwd=wt).stdout.strip()
+
+
+def _notes_path(ctx, key) -> Path:
+    return ctx.lane_path(key, "notes")
+
+
+def _reopen(ctx, lane, *, title: str, entries, status, subject: str, log_line: str = "",
+            keep_status_unless_blocked: bool = False) -> dict:
+    """Write `entries` (dicts: question?, answer, tag?, id?) into the lane's spec and
+    reopen it. Without a spec (bmad-build-auto halted before creating one) the
+    answers go to lanes/<KEY>.notes.json, which the next worker prompt carries
+    into the B1 intent, and the halt result file is removed.
+    Returns {base, head, spec, status, appendix}."""
+    key, wt = lane["key"], Path(lane["worktree"])
+    if not wt.is_dir():
+        die(f"lane worktree {wt} 不存在")
+    if _rebase_in_progress(wt):
+        die("lane worktree 正处在 rebase 中（合流冲突），先解决或放弃合流", f"WORKTREE={wt}")
+    spec = _lane_spec(ctx, key, wt)
+    results = _lane_results(ctx, wt)
+    dirty = _wt_dirty(wt)
+    # bmad-build-auto's step-04 intent-gap branch saves the reverted attempt as an
+    # untracked .patch under the artifacts dir. Left there it dirties the tree
+    # (bmad-build-auto refuses to start); committed it fails build-verify. Keep it
+    # outside the worktree instead of deleting it.
+    art = ctx.artifacts_rel().rstrip("/") + "/"
+    moved = []
+    for ln in list(dirty):
+        p = _porcelain_path(ln)
+        if ln.startswith("?? ") and p.startswith(art) and p.endswith((".patch", ".diff")):
+            dst = ctx.state / "patches" / key / os.path.basename(p)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(wt / p), str(dst))
+            moved.append(str(dst))
+            dirty.remove(ln)
+    allowed = set(results) | ({spec} if spec else set())
+    others = [ln for ln in dirty if _porcelain_path(ln) not in allowed]
+    if others:
+        die("lane worktree 里除了本 story 的 spec 还有没提交的改动，先处理这些文件（看是不是上次 worker 的半成品）",
+            *[f"DIRTY={d}" for d in others[:30]], f"WORKTREE={wt}")
+    if not spec and not results:
+        die("这一路既没有 spec，也没有 bmad-build-auto-result 文件，没有可以写答复的地方；"
+            "worker 还没开始 build 的话直接 retry")
+    out = {"spec": spec, "appendix": "", "moved": moved}
+    if spec:
+        sp = wt / spec
+        if any(_porcelain_path(ln) == spec for ln in dirty):
+            # keep the halted spec as its own commit: an override resets to it
+            _commit(wt, [spec], [], f"docs({key}): record bmad-build-auto halt")
+        out["base"] = git(["rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        cur = _spec_status_of(sp)
+        if keep_status_unless_blocked and cur != "blocked" and not status:
+            target = cur
+        else:
+            target = status or _default_reopen_status(ctx, key)
+        text = sp.read_text(encoding="utf-8")
+        if entries:
+            text = _with_block(text, _clar_block(title, entries), inside_contract=True)
+        if log_line:
+            text = _with_block(text, f"### Harness resume（{_today()}）\n\n- {log_line}", inside_contract=False)
+        if target and target != cur:
+            text = _with_status(text, target)
+        sp.write_text(text, encoding="utf-8")
+        tracked_results = [r for r in results if git(["ls-files", "--error-unmatch", "--", r], cwd=wt).returncode == 0]
+        for r in results:
+            if r not in tracked_results:
+                (wt / r).unlink(missing_ok=True)
+        head = _commit(wt, [spec], tracked_results, subject)
+        out["status"] = target
+    else:
+        out["base"] = git(["rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        notes = read_json(_notes_path(ctx, key)) or {"entries": []}
+        drop = {e.get("id") for e in entries if e.get("id")} | {e.get("replaces") for e in entries if e.get("replaces")}
+        notes["entries"] = [e for e in notes.get("entries", []) if e.get("id") not in drop] + list(entries)
+        write_json(_notes_path(ctx, key), notes)
+        tracked_results = [r for r in results if git(["ls-files", "--error-unmatch", "--", r], cwd=wt).returncode == 0]
+        for r in results:
+            if r not in tracked_results:
+                (wt / r).unlink(missing_ok=True)
+        head = _commit(wt, [], tracked_results, f"chore({key}): clear bmad-build-auto halt result for resume")
+        out["status"] = None
+        out["appendix"] = _clarifications_text(notes["entries"])
+    out["head"] = head or git(["rev-parse", "HEAD"], cwd=wt).stdout.strip()
+    tags = harness_tags(ctx).get(key, set())
+    # only while B3 still has to run: a spec left `done` means B3 already ran, and
+    # moving the tag onto HEAD would make harness-state dispatch it again
+    if "followup-start" in tags and "followup" not in tags and head and out.get("status") not in ("done", None):
+        git(["tag", "-f", f"harness/{key}/followup-start", head], cwd=wt)
+        out["moved_tag"] = f"harness/{key}/followup-start"
+    return out
+
+
+def _clarifications_text(entries) -> str:
+    if not entries:
+        return ""
+    lines = ["## 已确认的答复", ""]
+    for e in entries:
+        if e.get("question"):
+            lines.append(f"- Q: {e['question']}")
+            lines.append(f"  A: {e['answer']}" + (f"（{e['tag']}）" if e.get("tag") else ""))
+        else:
+            lines.append(f"- {e['answer']}")
+    return "\n".join(lines)
+
+
+def _print_reopened(info):
+    print("STATUS=ok")
+    if info.get("spec"):
+        print(f"SPEC={info['spec']}")
+        print(f"SPEC_STATUS={info.get('status')}")
+    print(f"BASE={info.get('base', '')}")
+    print(f"HEAD={info.get('head', '')}")
+    if info.get("moved_tag"):
+        print(f"MOVED_TAG={info['moved_tag']}")
+    for m in info.get("moved") or []:
+        print(f"MOVED_PATCH={m}（bmad-build-auto 停下时保存的尝试改动，挪出 worktree 保存）")
+    if info.get("appendix"):
+        print("INTENT_APPENDIX<<")
+        print(info["appendix"])
+        print(">>")
+
+
+def _in_lane_worktree(lane) -> bool:
+    top = git(["rev-parse", "--show-toplevel"]).stdout.strip()
+    try:
+        return bool(top) and Path(top).resolve() == Path(lane["worktree"]).resolve()
+    except OSError:
+        return False
+
+
+def cmd_reopen(ctx, a):
+    """Worker-side (pipeline.md §3.3): bmad-build-auto halted on something the
+    worker may settle by itself — an intent gap with a recommended reading
+    (--decisions-file), or a transient verification failure (--kind transient).
+    Writes it into the spec, commits, records the decisions as pending."""
+    key = a.key
+    lane = ctx.lane(key)
+    if not lane:
+        die(f"lane {key} 不存在")
+    if lane.get("phase") != "launched":
+        die(f"lane {key} phase={lane.get('phase')}：reopen 只给正在运行的 worker 用；调度者和用户用 resume")
+    if not _in_lane_worktree(lane):
+        die(f"reopen 要在这一路的 worktree（{lane['worktree']}）里执行")
+    kind = a.kind or ("decision" if a.decisions_file else "transient")
+    items = _read_decision_items(a.decisions_file) if a.decisions_file else []
+    if kind == "decision":
+        if not items:
+            die("--kind decision 需要 --decisions-file")
+        if ctx.config.get("decision_mode") != "proceed":
+            die("parallel.yaml 的 decision_mode 是 ask：不按推荐项续跑，按 pipeline.md §3 回报 blocked")
+    counts_path = ctx.lane_path(key, "reopen")
+    counts = read_json(counts_path) or {}
+    used = int(counts.get(kind, 0))
+    if used >= REOPEN_LIMITS[kind]:
+        die(f"本 story 已经 reopen（{kind}）{used} 次，到上限了，按 pipeline.md §3 回报 blocked")
+    stage = "B3" if "built" in harness_tags(ctx).get(key, set()) else "B1"
+    recs = _new_decisions(ctx, key, items, "intent-gap", stage=stage, attempt=lane.get("attempts"),
+                          why_reopen=a.why) if items else []
+    ids = [r["id"] for r in recs]
+    entries = [{"id": r["id"], "question": r["question"], "answer": r["chosen"],
+                "tag": f"{r['id']}，按推荐项代答，待确认"} for r in recs]
+    try:
+        info = _reopen(ctx, lane, title=f"Clarifications（{_today()}，按推荐项代答，待确认）", entries=entries,
+                       status=a.status, subject=f"docs({key}): " + (f"按推荐项代答 {', '.join(ids)}（待确认）" if ids
+                                                                     else f"reopen spec: {a.why[:60]}"),
+                       log_line="" if ids else a.why)
+    except SystemExit:
+        if ids:
+            _drop_decisions(ctx, ids)
+        raise
+    if ids:
+        _update_decisions(ctx, ids, base=info["base"], commit=info["head"], reopen_status=info.get("status"),
+                          no_spec=not info.get("spec"), spec=info.get("spec"))
+    counts[kind] = used + 1
+    write_json(counts_path, counts)
+    _print_reopened(info)
+    if ids:
+        print(f"DECISION_IDS={','.join(ids)}")
+    print(f"REOPEN_LEFT={REOPEN_LIMITS[kind] - used - 1}")
+    print("NEXT=重新调 harness-state.py，按 pipeline.md §0.B 切入")
+    return 0
+
+
+def cmd_resume(ctx, a):
+    """Dispatcher / user: a lane stopped for a person, the person decided. Write the
+    decision into the spec, commit, move followup-start, requeue (issue #17 ③)."""
+    key = a.key
+    lane = ctx.lane(key)
+    if not lane:
+        die(f"lane {key} 不存在")
+    stage, _ = lane_stage(ctx, lane)
+    if stage not in ("blocked", "failed", "quota", "crashed") or lane.get("phase") in ("merged", "conflict", "integrating", "held"):
+        die(f"lane {key} 阶段 {stage}（phase={lane.get('phase')}）：resume 只用于 worker 停下的 lane"
+            + ("；held 的按看板「接手」一行处理" if lane.get("phase") == "held" else ""))
+    notes = [n.strip() for n in (a.note or []) if n and n.strip()]
+    if not notes:
+        die("resume 需要 --note \"<决定>\"（可以写多条）")
+    info = _reopen(ctx, lane, title=f"Clarifications（{_today()}，用户决定）",
+                   entries=[{"answer": n} for n in notes], status=a.status,
+                   subject=f"docs({key}): 记录用户决定，续跑", keep_status_unless_blocked=True)
+    _print_orphans(Path(lane["worktree"]))
+    lane["phase"] = "prepared"
+    lane.pop("hold_reason", None)
+    lane.pop("hold_kind", None)
+    lane.setdefault("notes", []).append(f"resume after {stage}: " + " / ".join(notes)[:300])
+    ctx.save_lane(lane)
+    _print_reopened(info)
+    return 0
+
+
+def cmd_decide(ctx, a):
+    """Dispatcher-side record-only entry: a choice the dispatcher made itself
+    (answer-policy recommended option) instead of asking the user."""
+    if a.key != "-" and not any(s["key"] == a.key for s in parse_sprint(ctx.sprint_file())[0]):
+        die(f"{a.key} 不是 sprint-status.yaml 里的 story（调度层面的决定用 -）")
+    recs = _new_decisions(ctx, a.key, [{"question": a.question, "chosen": a.chosen, "options": a.option or [],
+                                        "why": a.why}], "dispatcher")
+    print("STATUS=ok")
+    print(f"DECISION_ID={recs[0]['id']}")
+    return 0
+
+
+def _pending(ctx):
+    return [r for r in load_decisions(ctx)["items"] if r.get("status") == "pending"]
+
+
+def cmd_decisions(ctx, a):
+    items = load_decisions(ctx)["items"]
+    if not a.all:
+        items = [r for r in items if r.get("status") == "pending"]
+    if a.json:
+        print(json.dumps(items, ensure_ascii=False, indent=2))
+        return 0
+    if not items:
+        print("收件箱是空的。" if a.all else "没有待确认的决定。")
+        return 0
+    for r in items:
+        where = "调度" if r["key"] == "-" else f"{r['key']} {r.get('stage', '')}".strip()
+        print(f"{r['id']} [{r['status']}] {where}")
+        print(f"    问题：{r['question']}")
+        if r.get("options"):
+            print(f"    选项：{' / '.join(r['options'])}")
+        print(f"    采用：{r['chosen']}" + (f"（{r['why']}）" if r.get("why") else ""))
+        if r.get("commit"):
+            print(f"    提交：{r['commit'][:12]}")
+        if r.get("answer"):
+            print(f"    改判：{r['answer']}")
+    return 0
+
+
+def cmd_confirm(ctx, a):
+    with _decisions_txn(ctx) as d:
+        pend = [r for r in d["items"] if r.get("status") == "pending"]
+        if a.all:
+            hit = [r for r in pend if not a.key or r["key"] == a.key]
+        else:
+            want = set(a.ids or [])
+            if not want:
+                die("confirm 需要决定编号（D3 D4）或 --all")
+            known = {r["id"]: r for r in d["items"]}
+            missing = sorted(want - set(known))
+            if missing:
+                die(f"没有这些决定：{', '.join(missing)}")
+            hit = [known[i] for i in sorted(want) if known[i].get("status") == "pending"]
+        for r in hit:
+            r["status"] = "confirmed"
+            r["resolved_at"] = now_iso()
+    print("STATUS=ok")
+    print(f"CONFIRMED={','.join(r['id'] for r in hit)}")
+    return 0
+
+
+def cmd_override(ctx, a):
+    """The user disagrees with decision <ID>. Dispatcher decisions and merged lanes
+    are only marked (the fix is a new change); a lane that is not merged yet is
+    reset to the commit before the decision and re-run with the new answer."""
+    recs = {r["id"]: r for r in load_decisions(ctx)["items"]}
+    d = recs.get(a.id)
+    if not d:
+        die(f"没有决定 {a.id}")
+    if d.get("status") not in ("pending", "confirmed"):
+        die(f"{a.id} 已经是 {d.get('status')}")
+    answer = (a.answer or "").strip()
+    if not answer:
+        die("override 需要 --answer \"<新决定>\"")
+    mark = dict(status="overridden", answer=answer, resolved_at=now_iso())
+    key = d["key"]
+    lane = ctx.lane(key) if key != "-" else None
+    if key == "-" or d.get("kind") == "dispatcher":
+        _update_decisions(ctx, {a.id}, **mark)
+        print("STATUS=ok")
+        print("NEXT=dispatcher")
+        print("REASON=这是调度者自己做的决定，没有对应的 lane 提交；调度者下一轮读 decisions 按新决定处理")
+        return 0
+    if not lane or lane.get("phase") in ("merged", "done", "abandoned"):
+        _update_decisions(ctx, {a.id}, needs_followup=True, **mark)
+        print("STATUS=ok")
+        print("NEXT=manual")
+        print(f"REASON={key} 已经合入 sprint 分支（或这一路已不在），不能再回退这一路；"
+              "按新决定开一条修正 story，或者手工改")
+        if d.get("commit"):
+            print(f"DECISION_COMMIT={d['commit']}")
+        return 0
+    stage, _ = lane_stage(ctx, lane)
+    if stage in ("working", "preparing", "integrating") or op_live(lane.get("op")):
+        print("STATUS=busy")
+        print(f"REASON={key} 正在{stage}，等这一路停下（看板上变成待合流、受阻或失败）再 override")
+        return EXIT_BUSY
+    if lane.get("phase") == "conflict" or _rebase_in_progress(Path(lane["worktree"])):
+        die(f"{key} 处在合流冲突中，先解决冲突或 abandon 再 override")
+    if lane.get("rebased"):
+        # integrate rebased the lane and moved its tags onto the rewritten commits:
+        # the recorded base is no longer on this branch's history
+        die(f"{key} 已经在合流时 rebase 过，{a.id} 记录的回退点不在现在的分支上；"
+            f"按看板「接手」一行处理，或 abandon 后让这条 story 重跑")
+    wt = Path(lane["worktree"])
+    base = d.get("base")
+    if not base or git(["cat-file", "-e", f"{base}^{{commit}}"], cwd=wt).returncode != 0:
+        die(f"{a.id} 没有记录可回退的提交（base），只能手工处理")
+    if not _is_ancestor(ctx, base, git(["rev-parse", "HEAD"], cwd=wt).stdout.strip()):
+        die(f"{a.id} 的回退点 {base[:12]} 不在 {key} 现在的分支上，只能手工处理")
+    spec_at_base = None
+    if not d.get("no_spec"):
+        spec_at_base = d.get("spec") or _lane_spec(ctx, key, wt)
+        if not spec_at_base or git(["cat-file", "-e", f"{base}:{spec_at_base}"], cwd=wt).returncode != 0:
+            die(f"{a.id} 的回退点上没有 spec（{spec_at_base or '?'}），回退后没法写答复，只能手工处理")
+    ahead = git(["rev-list", "--count", f"{base}..HEAD"], cwd=wt).stdout.strip() or "?"
+    tags = harness_tags(ctx).get(key, set())
+    drop, repoint = [], []
+    for t in ("built", "followup-start", "followup"):
+        if t in tags:
+            sha = git(["rev-parse", f"refs/tags/harness/{key}/{t}^{{commit}}"], cwd=ctx.root).stdout.strip()
+            if not _is_ancestor(ctx, sha, base):
+                # a B3 decision (built survives the reset): followup-start still means
+                # "B3 has started", keep it at the reset point. A B1 decision drops it.
+                b3 = t == "followup-start" and "built" in tags and "built" not in drop
+                (repoint if b3 else drop).append(t)
+    # decisions made after this one were answered on commits the reset throws away
+    later = [r for r in recs.values() if r["key"] == key and r["id"] != a.id
+             and r.get("status") in ("pending", "confirmed", "overridden")
+             and r.get("base") and r["base"] != base and _is_ancestor(ctx, base, r["base"])]
+    # decisions from the same reopen batch survive the reset with their current answer
+    same = [r for r in recs.values() if r["key"] == key and r["id"] != a.id and r.get("base") == base
+            and r.get("status") in ("pending", "confirmed", "overridden")]
+    if not a.yes:
+        print("STATUS=confirm")
+        print(f"REASON=override 会把 {key} 的 worktree 恢复到 {a.id} 之前的提交 {base[:12]}，"
+              f"丢掉之后的 {ahead} 个提交，再按新决定重跑这一路；确认后加 --yes")
+        for t in drop:
+            print(f"DROP_TAG=harness/{key}/{t}")
+        for t in repoint:
+            print(f"MOVE_TAG=harness/{key}/{t} → {base[:12]}")
+        for r in later:
+            print(f"SUPERSEDE={r['id']}（在 {a.id} 之后做的决定，回退后作废）")
+        dirty = _wt_dirty(wt)
+        for ln in dirty[:20]:
+            print(f"DISCARD={ln}")
+        return 1
+    r1 = git(["reset", "-q", "--hard", base], cwd=wt)
+    r2 = git(["clean", "-fdq"], cwd=wt)
+    if r1.returncode != 0 or r2.returncode != 0:
+        die(f"恢复 worktree 失败：{(r1.stderr + r2.stderr).strip()}", f"WORKTREE={wt}")
+    for t in drop:
+        git(["tag", "-d", f"harness/{key}/{t}"], cwd=ctx.root)
+    for t in repoint:
+        git(["tag", "-f", f"harness/{key}/{t}", base], cwd=ctx.root)
+
+    def _label(r):
+        return {"confirmed": "已确认", "overridden": "用户改判"}.get(r.get("status"), "按推荐项代答，待确认")
+
+    entries = [{"id": r["id"], "question": r["question"], "answer": r.get("answer") or r["chosen"],
+                "tag": f"{r['id']}，{_label(r)}"} for r in same]
+    entries.append({"id": a.id, "question": d["question"], "answer": answer, "tag": f"{a.id}，用户改判"})
+    if d.get("no_spec"):
+        # no spec to write into: the answers live in notes.json and reach the next
+        # worker prompt; the reset already removed whatever that build produced
+        notes = read_json(_notes_path(ctx, key)) or {"entries": []}
+        gone = {r["id"] for r in later} | {e["id"] for e in entries}
+        notes["entries"] = [e for e in notes.get("entries", []) if e.get("id") not in gone] + entries
+        write_json(_notes_path(ctx, key), notes)
+        info = {"base": base, "head": base, "spec": None, "appendix": _clarifications_text(notes["entries"])}
+    else:
+        info = _reopen(ctx, lane, title=f"Clarifications（{_today()}，用户改判 {a.id}）", entries=entries,
+                       status=d.get("reopen_status"), subject=f"docs({key}): 按用户改判 {a.id} 更新答复")
+    _update_decisions(ctx, {a.id}, base=info["base"], commit=info["head"], **mark)
+    if later:
+        _update_decisions(ctx, {r["id"] for r in later}, status="superseded", resolved_at=now_iso())
+    if same:
+        _update_decisions(ctx, {r["id"] for r in same}, base=info["base"], commit=info["head"])
+    lane["phase"] = "prepared"
+    lane.pop("hold_reason", None)
+    lane.pop("hold_kind", None)
+    lane.setdefault("notes", []).append(f"override {a.id}: {answer[:200]}")
+    ctx.save_lane(lane)
+    print(f"RESET={base}")
+    for t in drop:
+        print(f"DELETED_TAG=harness/{key}/{t}")
+    for r in later:
+        print(f"SUPERSEDED={r['id']}")
+    _print_reopened(info)
+    return 0
+
+
+# ------------------------------------------------------------------ environment
+#
+# A story that needs a running service (database, integration env) used to have
+# its worker halt on the first verification. `env_check_command` says whether the
+# environment is up; `env_up_command` brings it up. launch runs them before it
+# starts a worker, integrate before verify_command. Every self-heal is printed as
+# a SELF_HEAL= line and noted on the lane.
+
+def _env_run(ctx, cmd: str, lane, timeout: int):
+    env = dict(os.environ, SUPERH_MAIN_ROOT=str(ctx.root))
+    if lane:
+        env.update(SUPERH_KEY=lane["key"], SUPERH_WORKTREE=str(lane.get("worktree", "")))
+    return run_group(["sh", "-c", cmd], cwd=ctx.root, env=env, timeout=timeout,
+                     on_start=_record_child(ctx, lane) if lane else None)
+
+
+def _ensure_env(ctx, lane) -> dict:
+    """{"ok": bool, "detail": str, "output": str, "healed": bool}."""
+    check = str(ctx.config.get("env_check_command") or "").strip()
+    up = str(ctx.config.get("env_up_command") or "").strip()
+    if not check and not up:
+        return {"ok": True, "detail": "", "output": "", "healed": False}
+    timeout = int(ctx.config.get("env_timeout_sec") or 600)
+
+    def ok_of(r):
+        return not r["timed_out"] and r["rc"] == 0
+
+    with _guard(ctx, ".env.guard"):
+        if check:
+            r = _env_run(ctx, check, lane, min(timeout, 300))
+            if ok_of(r):
+                return {"ok": True, "detail": "", "output": "", "healed": False}
+            if not up:
+                return {"ok": False, "detail": f"env_check_command 不通过（{'超时' if r['timed_out'] else 'exit=' + str(r['rc'])}），"
+                        "没有配 env_up_command", "output": (r["out"] + r["err"])[-3000:], "healed": False}
+        r = _env_run(ctx, up, lane, timeout)
+        if not ok_of(r):
+            return {"ok": False, "detail": f"env_up_command 失败（{'超时 ' + str(timeout) + 's' if r['timed_out'] else 'exit=' + str(r['rc'])}）",
+                    "output": (r["out"] + r["err"])[-3000:], "healed": False}
+        if check:
+            r = _env_run(ctx, check, lane, min(timeout, 300))
+            if not ok_of(r):
+                return {"ok": False, "detail": "env_up_command 跑完了，env_check_command 仍不通过",
+                        "output": (r["out"] + r["err"])[-3000:], "healed": False}
+    if check:
+        return {"ok": True, "detail": "env_check_command 不通过，已执行 env_up_command 起好", "output": "", "healed": True}
+    return {"ok": True, "detail": "", "output": "", "healed": False}
+
+
+def _settings_model() -> str:
+    if os.environ.get("ANTHROPIC_MODEL"):
+        return os.environ["ANTHROPIC_MODEL"] + "（ANTHROPIC_MODEL）"
+    d = read_json(Path.home() / ".claude" / "settings.json") or {}
+    return str(d.get("model") or "")
 
 
 # ------------------------------------------------------------- lifecycle helpers
@@ -2357,6 +3131,17 @@ def cmd_end_run(ctx, _a):
         except FileNotFoundError:
             pass
     print("STATUS=ok")
+    down = str(ctx.config.get("env_down_command") or "").strip()
+    if getattr(_a, "finished", False) and down:
+        r = _env_run(ctx, down, None, int(ctx.config.get("env_timeout_sec") or 600))
+        if r["timed_out"] or r["rc"] != 0:
+            print(f"ENV_DOWN=failed（{'超时' if r['timed_out'] else 'exit=' + str(r['rc'])}）")
+            print(f"WARN=env_down_command 没有成功，环境可能还开着：{(r['out'] + r['err']).strip()[-300:]}")
+        else:
+            print("ENV_DOWN=ok")
+    n = len(_pending(ctx))
+    if n:
+        print(f"DECISIONS_PENDING={n}")
     return 0
 
 
@@ -2407,6 +3192,19 @@ def cmd_start_run(ctx, a):
             print(f"DIRTY={d}")
     print(f"WORKTREE_ROOT={ctx.wt_root}")
     print(f"MAX_SLOTS={info.get('max_slots') or load_config(ctx.config_path)['max_slots']}")
+    wm = str(ctx.config.get("worker_model") or "")
+    if wm:
+        print(f"WORKER_MODEL={wm}")
+    else:
+        cur = _settings_model() or "默认"
+        print(f"WORKER_MODEL=(跟随 settings：{cur})")
+        print("WARN=parallel.yaml 的 worker_model 留空，worker 跟随 ~/.claude/settings.json 的 model"
+              f"（现在是 {cur}）。别的仓库的会话执行一次 /model 就会改掉它，建议在 parallel.yaml 里写死，例如 worker_model: opus")
+    print(f"DECISION_MODE={ctx.config.get('decision_mode')}")
+    print(f"BLOCKED_POLICY={ctx.config.get('blocked_policy')}")
+    n = len(_pending(ctx))
+    if n:
+        print(f"DECISIONS_PENDING={n}")
     return 0
 
 
@@ -2414,7 +3212,9 @@ def cmd_start_run(ctx, a):
 
 # subcommands that change lanes / git state: refused while another live session
 # holds the dispatcher lock (`report` is the worker's and stays open)
-MUTATING = ("prepare", "launch", "integrate", "retry", "mark", "cleanup", "abandon")
+# (`report` and `reopen` are the worker's and stay open; `decide` / `confirm` only
+# touch the decisions inbox, which has its own flock)
+MUTATING = ("prepare", "launch", "integrate", "retry", "resume", "override", "mark", "cleanup", "abandon")
 
 
 def main(argv=None) -> int:
@@ -2430,7 +3230,8 @@ def main(argv=None) -> int:
     p.add_argument("--slots", type=int, default=None, help="本次运行的并发数（覆盖 config.max_slots，写进 run.json）")
     p.add_argument("--reset-slots", action="store_true", help="清除上次 --slots 覆盖，回到 config.max_slots")
     p.add_argument("--take-over", action="store_true", help="接管另一个仍然活着的会话持有的调度锁（先征得用户同意）")
-    sub.add_parser("end-run")
+    p = sub.add_parser("end-run")
+    p.add_argument("--finished", action="store_true", help="sprint 跑完了：释放锁后执行 env_down_command")
     for name in ("prepare", "launch", "integrate", "postmerge", "retry", "cleanup"):
         p = sub.add_parser(name); p.add_argument("key")
         if name == "retry":
@@ -2450,6 +3251,31 @@ def main(argv=None) -> int:
     p.add_argument("--phase", choices=["done", "held"])
     p.add_argument("--reason", default="")
     p = sub.add_parser("abandon"); p.add_argument("key"); p.add_argument("--yes", action="store_true")
+    p = sub.add_parser("reopen", help="worker：按推荐项代答 / 瞬态失败后重开 spec（pipeline.md §3.3）")
+    p.add_argument("key")
+    p.add_argument("--why", required=True)
+    p.add_argument("--decisions-file", default="")
+    p.add_argument("--kind", choices=["decision", "transient"], default=None)
+    p.add_argument("--status", choices=list(SPEC_STATUSES), default=None)
+    p = sub.add_parser("resume", help="把用户的决定写进 spec、提交、挪 tag，重新排队")
+    p.add_argument("key")
+    p.add_argument("--note", action="append", default=[])
+    p.add_argument("--status", choices=list(SPEC_STATUSES), default=None)
+    p = sub.add_parser("decide", help="调度者记一条自己按推荐项做的决定")
+    p.add_argument("key", help="story key，调度层面的决定写 -")
+    p.add_argument("--question", required=True)
+    p.add_argument("--chosen", required=True)
+    p.add_argument("--option", action="append", default=[])
+    p.add_argument("--why", default="")
+    p = sub.add_parser("decisions"); p.add_argument("--json", action="store_true"); p.add_argument("--all", action="store_true")
+    p = sub.add_parser("confirm")
+    p.add_argument("ids", nargs="*")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--key", default="")
+    p = sub.add_parser("override")
+    p.add_argument("id")
+    p.add_argument("--answer", required=True)
+    p.add_argument("--yes", action="store_true")
     a = ap.parse_args(argv)
     # line-buffered: prepare / integrate run in the background and may be killed;
     # whatever they printed up to that point should be in the output file
@@ -2464,7 +3290,8 @@ def main(argv=None) -> int:
         "env": cmd_env, "doctor": cmd_doctor, "plan": cmd_plan, "tick": cmd_tick, "board": cmd_board, "start-run": cmd_start_run,
         "prepare": cmd_prepare, "launch": cmd_launch, "report": cmd_report, "integrate": cmd_integrate, "postmerge": cmd_postmerge,
         "mark": cmd_mark, "retry": cmd_retry, "cleanup": cmd_cleanup, "abandon": cmd_abandon,
-        "end-run": cmd_end_run, "watch": cmd_watch,
+        "end-run": cmd_end_run, "watch": cmd_watch, "reopen": cmd_reopen, "resume": cmd_resume,
+        "decide": cmd_decide, "decisions": cmd_decisions, "confirm": cmd_confirm, "override": cmd_override,
     }[a.cmd]
     try:
         return fn(ctx, a)

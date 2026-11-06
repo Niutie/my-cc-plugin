@@ -24,6 +24,19 @@ epic_barrier: true
 # epic N 的 story 要等 epic 1..N-1 的 retrospective 为 done 才启动（epic_barrier 为 true 时才生效）。
 retro_barrier: true
 
+# 一路停下来等人（受阻、失败、合流挂起、合流冲突）时，后面的 story 怎么办：
+#   wait      它照样挡住串行顺序、epic 屏障和 retro 屏障（默认，和 0.3.x 一样）
+#   continue  不再挡这几样，后面不依赖它的 story 照常派发；depends_on 写明依赖它的仍然等，
+#             它所在 epic 的 retro 也等它处理完才跑
+blocked_policy: wait
+
+# worker 遇到 intent gap 这类有推荐读法的问题时：
+#   proceed  按 answer-policy 选推荐项写进 spec 接着跑，决定进收件箱（superh.py decisions），
+#            你有空时批量确认或推翻（默认）
+#   ask      停下，lane 记为受阻，等你回答
+# 对外发布、破坏性操作、硬闸门口径这几类不受这个开关影响，总是停下来问。
+decision_mode: proceed
+
 # lane worktree 放在哪。空 = <仓库上级目录>/<仓库名>.worktrees
 worktree_root: ''
 
@@ -58,12 +71,24 @@ prepare_timeout_sec: 600
 # 超时算作验证失败，处理方式同上，命令起的整个进程组都会被结束。
 verify_command: ''
 verify_timeout_sec: 1800
+# verify_command 超时后自动重跑几次（偶发挂住的测试）。命令自己失败（exit 非 0）不重跑。
+verify_timeout_retries: 1
+
+# 前置环境（数据库、集成环境等），worker 启动前和 verify_command 之前检查（sh -c，在主 worktree 里执行）。
+# env_check_command 退出码 0 = 就绪；不就绪时执行一次 env_up_command 再检查，还不行这一路记为 held。
+# 只配 env_up_command 时每次都执行它，所以它要能重复执行（例如 docker compose up -d）。
+# env_down_command 在整个 sprint 跑完（end-run --finished）时执行。留空 = 不管环境。
+env_check_command: ''
+env_up_command: ''
+env_down_command: ''
+env_timeout_sec: 600
 
 # worker（headless claude -p）的权限模式。无人值守需要 bypassPermissions；
 # 改成更严格的模式时，worker 会在需要授权的地方失败退出。
 worker_permission_mode: bypassPermissions
-# worker 用的模型，例如 opus、sonnet，或完整模型 id。留空 = 跟随 claude 的默认设置
-# （~/.claude/settings.json 的 model）。worker 里 bmad-build-auto 派的子 agent 继承这个模型。
+# worker 用的模型，例如 opus、sonnet，或完整模型 id。worker 里 bmad-build-auto 派的子 agent 继承这个模型。
+# 建议写死。留空 = 跟随 ~/.claude/settings.json 的 model，这个文件全机共享，别的仓库的会话执行一次
+# /model 就会改掉它。start-run 在留空时会提醒，launch 会输出 worker 实际用的模型。
 worker_model: ''
 claude_bin: claude
 

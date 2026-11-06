@@ -2607,14 +2607,22 @@ def run_build_verify(key, base=None):
         deferred = fm.get("deferred") or []
         infos.append(f"DEFERRED_COUNT={len(deferred) if isinstance(deferred, list) else 0}")
         infos.append("CODEX_LAYER_SKIPPED=" + ("true" if harness_spec.codex_layer_skipped(spec_path) else "false"))
+        arr = harness_spec.section_text(spec_path, "Auto Run Result")
+        if arr is None:
+            # issue #17: the section written at the wrong heading level is still the
+            # result — accept it (read-only, the spec is not rewritten) and say so
+            alt = harness_spec.section_any_level(spec_path, "Auto Run Result")
+            if alt is not None:
+                arr = alt[1]
+                infos.append(f"AUTO_FIXED=auto-run-result-heading level=h{alt[0]} "
+                             "action=accepted (expected `## Auto Run Result`; spec not modified)")
         if status != "done":
             halts.append(f"SPEC_STATUS_NOT_DONE={status}")
-            arr = harness_spec.section_text(spec_path, "Auto Run Result")
             if arr:
                 for ln in arr.strip().splitlines()[:6]:
                     if ln.strip():
                         halts.append(f"AUTO_RUN_RESULT={ln.strip()}")
-        elif harness_spec.section_text(spec_path, "Auto Run Result") is None:
+        elif arr is None:
             halts.append("AUTO_RUN_RESULT_MISSING=spec has no `## Auto Run Result` section")
 
     changed, err = _range_paths(base)
@@ -2914,6 +2922,33 @@ def main():
             emit("SUGGEST_TAG=" + spec["suggest_tag"].format(key=key, epic=epic or ""))
         sys.exit(2)
 
+    # 1.9 — stage 3 run after B2.3 already started (issue #17). The codex report
+    # was never committed, the fix agent's edits are in the tree next to it, and
+    # stage 3 (report only) would halt UNEXPECTED_ARTIFACT / FORBIDDEN. When every
+    # extra path is one stage 4 would accept, commit the report alone and leave the
+    # rest (unstaged) for stage 4. Anything stage 4 would refuse keeps the halt.
+    split_to_stage4 = []
+    if args.stage == "3" and any(p == f"{ARTIFACTS_DIR}{key}.codex-review.md" for _, p in paths):
+        xs4 = read_cross_story_allowlist(key)
+        extras = [(xy, p) for xy, p in paths if classify(p, key, epic, spec, xs4) != "expected"]
+
+        def _stage4_ok(p):
+            return (not matches_blacklist(p) and not is_out_of_scope_bmad_output(p)
+                    and cross_story_ok(p, key, epic, xs4)
+                    and classify(p, key, epic, STAGES["4"], xs4) in ("expected", "project"))
+
+        if extras and all(_stage4_ok(p) for _, p in extras):
+            split_to_stage4 = [p for _, p in extras]
+            staged = [p for xy, p in extras if xy[0] not in (" ", "?")]
+            if staged and not args.dry_run:
+                r = run(["git", "reset", "-q", "--"] + staged)
+                if r.returncode != 0:
+                    emit("STATUS=halt")
+                    emit(f"REASON=git reset (keeping B2.3 edits out of the stage 3 commit) failed: {r.stderr.strip()}")
+                    sys.exit(1)
+            keep = set(split_to_stage4)
+            paths = [(xy, p) for xy, p in paths if p not in keep]
+
     # 2 — global blacklist
     blacklist_hits = []
     for _, p in paths:
@@ -3095,6 +3130,8 @@ def main():
             # exemption here — same judgment as filter_junk_paths.
             if matches_junk(rest) and not path_in_head(rest):
                 continue
+            if rest in split_to_stage4:
+                continue  # left for stage 4 on purpose (step 1.9)
             # Worktree column is xy[1]; non-space means unstaged remainder
             if xy[1] != " ":
                 unstaged.append(rest)
@@ -3127,6 +3164,8 @@ def main():
         emit(f"AUTO_FIXED=process-marker {p} action={action} tag={tag}")
     for p in planning_writebacks:
         emit(f"PLANNING_ARTIFACT={p}")
+    for p in split_to_stage4:
+        emit(f"AUTO_SPLIT=left-for-stage-4 {p}")
     for p in expected:
         emit(f"STAGED={p}")
     for p in project:

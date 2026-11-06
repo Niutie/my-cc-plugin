@@ -1,5 +1,5 @@
 ---
-description: 查看 super-harness 各路 lane 的状态：先列需要人处理的（受阻、失败、合流冲突），再列进行中的，最后是 story 就绪情况
+description: 查看 super-harness 各路 lane 的状态：先列需要人处理的（受阻、失败、合流冲突），再列按推荐项继续、待你确认的决定，然后是进行中的，最后是 story 就绪情况
 argument-hint: '[--plan]'
 allowed-tools: Bash
 ---
@@ -14,6 +14,7 @@ allowed-tools: Bash
 每一条下面的「接手」一行是针对它的处理办法。常用操作：
 接手某一路：         cd <worktree> && claude --resume <session>
 修完让 worker 续作： python3 .claude/harness/scripts/superh.py retry <KEY>
+回答问题后续跑：     python3 .claude/harness/scripts/superh.py resume <KEY> --note "<答复>"
 合流冲突手工解决后： git add 解决好的文件，重新执行 /super-harness:run（会从 rebase 现场继续）
 合流挂起（held）的： 按「接手」一行修好后，python3 .claude/harness/scripts/superh.py integrate <KEY>
 放弃某一路：         python3 .claude/harness/scripts/superh.py abandon <KEY> --yes
@@ -21,4 +22,16 @@ allowed-tools: Bash
 在那个会话里让它执行，或者等它结束调度再执行。
 ```
 
-只读，不要执行 retry、abandon 或任何会改状态的命令。
+4. 有「待你确认」一栏时，在后面附上这段说明：
+
+```
+这些决定 worker 或调度者已经按推荐项做了，开发没有停。有空时处理：
+全部确认：     python3 .claude/harness/scripts/superh.py confirm --all
+确认其中几条： python3 .claude/harness/scripts/superh.py confirm D3 D4
+看完整内容：   python3 .claude/harness/scripts/superh.py decisions
+推翻一条：     python3 .claude/harness/scripts/superh.py override D3 --answer "<新决定>"
+override 先不加 --yes 执行，会列出要回退的提交；确认后加 --yes。有调度会话在跑时，
+override 会报 STATUS=locked，在那个会话里让它执行；confirm 随时都能执行。
+```
+
+只读，不要执行 retry、resume、confirm、override、abandon 或任何会改状态的命令。

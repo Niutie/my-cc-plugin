@@ -908,6 +908,11 @@ stdout 报告（按下表结构）：
 
   并行模式建议在 .claude/harness/parallel.yaml 配 verify_command（例如 go test ./... && pnpm test），
   lane 合入 sprint 分支前会先在合流后的代码上跑一遍；不配就跳过这道检查。
+  <parallel.yaml 的 worker_model 为空时加这两行：>
+  worker_model 还是空的：worker 会跟随 ~/.claude/settings.json 的 model，别的仓库的会话执行一次
+  /model 就会改掉它。建议在 parallel.yaml 里写死，例如 worker_model: opus。
+  <story 需要数据库或集成环境才能验证时加：>
+  需要的服务可以配 env_check_command / env_up_command，worker 启动前会自动检查并拉起。
 ```
 
 **`--dry-run` 模式报告**（无写入）：

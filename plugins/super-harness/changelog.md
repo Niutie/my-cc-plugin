@@ -4,6 +4,49 @@
 
 ---
 
+## v0.4.0 — 2026-11-07 — 托管模式少打断：决策收件箱、机械故障自愈、resume 续跑（#17）
+
+`/super-harness:run` 3 路并行跑一个 6 条 story 的 epic，调度会话打断了用户十来次。其中 6 次是脚本能判断的机械故障，5 次是有推荐项的决定（用户每次都选了推荐项），真正要人拍板的只有 2 到 3 次。这一版按 issue 的四条建议改，外加 `worker_model` 的提示。
+
+**决策收件箱（`decision_mode`，默认 `proceed`）**
+
+- 新增 `pipeline.md` §3.3（lane 模式）。bmad-build-auto 停在 `intent gap`、`unclear intent`、`matrix ambiguity`，或在 Auto Run Result 里列出待回答的问题时，worker 按 answer-policy 从候选读法里挑一个，写成 JSON 交给新命令 `superh.py reopen <KEY> --decisions-file`。reopen 把答复写进 spec `<intent-contract>` 末尾的 `### Clarifications（…，按推荐项代答，待确认）`，B1 停的改回 `draft`，B3 停的改回 `in-review`，然后 commit。spec 在停下时还没入库的，先把停下时的样子单独 commit 一次，推翻决定时回到这里。B3 阶段的 reopen 会把 `followup-start` 挪到新提交上。bmad-build-auto 在 review 阶段停下时留在 artifacts 目录的 `.patch` / `.diff`（未入库）挪到 `.git/super-harness/patches/<KEY>/`，不删除。worker 随后按 §0.B 续跑，这次重新 dispatch 不计入 §3 的 4 次上限。每条 story 最多代答 2 次，第 3 次 reopen 返回 `STATUS=halt`，worker 回报 `blocked`。
+- 决定记在 `.git/super-harness/decisions.json`（`pending`）。看板新增「待你确认（已按推荐项继续）」一栏，tick 新增 `decisions_pending`，`start-run` 和 `end-run` 输出 `DECISIONS_PENDING=`。新命令：`decisions [--all] [--json]`、`confirm <ID…> | --all [--key K]`、`override <ID> --answer "<新决定>" [--yes]`。
+- `override`：这一路还没合入时，把 lane worktree 回退到决定之前的提交，`built` / `followup` 这类之后才打的 tag 删掉（B3 的决定保留 `followup-start`，挪到回退点），之后做的决定标成 `superseded`，同一批的其他答复保留，换上用户的答复后重新排队。不带 `--yes` 只列出要回退的提交和 tag。已经合入的只记为 `overridden` + `needs_followup`，输出 `NEXT=manual`。worker 正在跑时返回 `STATUS=busy`。合流时已经 rebase 过的 lane（回退点不在现在的分支上）、回退点上没有 spec 的，在动 worktree 之前就拒绝。还没有 spec 时做的决定，回退后答复改写进 notes.json，不经过 spec。
+- `answer-policy.md` 新增「必须人工确认的事」：对外发布（push、发版、对外提 issue / PR）、破坏性操作、硬闸门口径、钱 / 凭据 / 许可。这几类不代答，仍然停下。
+- 调度者自己遇到的拍板题（`run` §−1）：有推荐项就选推荐项，`superh.py decide <KEY|-> --question … --chosen …` 记进收件箱，继续，不用 AskUserQuestion。`run` §5 retro 之后、§7 停滞、§9 完成时把收件箱交给用户；新增 §6.5 说明 confirm / override 怎么执行（override 先不带 `--yes` 给用户看）。
+- `decision_mode: ask` 关掉代答，reopen 的决定模式会拒绝。
+
+**正式的续跑命令：`superh.py resume <KEY> --note "<决定>"`**
+
+- 对受阻、失败、进程丢失、配额耗尽的 lane，把每条 `--note` 写进 spec 的 Clarifications，spec 是 `blocked` 时改回能续跑的状态（B1 → `draft`，B3 → `in-review`，可用 `--status` 指定），commit，挪 `followup-start`，lane 重新排队。调度者不用再进 lane 手工提交 spec、删 tag 重打。
+- 还没有 spec 的（bmad-build-auto 在建 spec 前就停了）：删掉 `bmad-build-auto-result-*.md`，答复存进 `lanes/<KEY>.notes.json`，下一次 worker prompt 的「调度者转交的答复」一节带上，worker 把它加进 B1 首次 intent。
+- `harness-state.py`：B3 阶段 spec 变成 `blocked` 时返回 `blocked`，以前会返回 `followup`，让 worker 对一个 blocked spec 再派一次 B3（bmad-build-auto 收到后只会再停一次）。`followup-start` 已打、spec 还没 done 的 B3 不再依赖 `followup_review_recommended` 判断，避免标志变了以后误判成 `sync`。
+- `pipeline.md` §3.2 和 `run` §7：调度模式的续跑命令改为 `resume`。§3.1、§3.2 原来一律让 spec 改回 `draft`，B3 阶段停下的这样做会整条重新规划，改为 `in-review`（inline 模式同样适用）。
+
+**机械故障自愈**
+
+- `build-verify`：`## Auto Run Result` 写成了别的标题层级（`###` 等）时照样认，输出 `AUTO_FIXED=auto-run-result-heading level=hN`，不再报 `AUTO_RUN_RESULT_MISSING`。spec 不改。新增 `harness_spec.section_any_level()`。
+- `harness-commit.py 3`：工作区里除了 codex 报告还有 B2.3 已经开始的修复时，只要这些路径 stage 4 都收（项目代码、spec、deferred-work.md），就只提交报告，其余留在工作区（已暂存的先 unstage），输出 `AUTO_SPLIT=left-for-stage-4 <路径>`。有 stage 4 也收不了的路径时照旧 halt。`pipeline.md` §0.B 对应那一行改了。
+- 验证命令超时：lane 模式下 bmad-build-auto 停在 `implementation verification failed` / `patch verification failed`、原因是命令超时时，worker 用 `reopen --kind transient --status in-progress|in-review` 重跑一次（每条 story 一次）。合流时 `verify_command` 超时自动重跑 `verify_timeout_retries` 次（默认 1），输出 `SELF_HEAL=verify-timeout-retry`；命令失败（exit 非 0）不重跑。
+- 前置环境：`parallel.yaml` 新增 `env_check_command` / `env_up_command` / `env_down_command` / `env_timeout_sec`。launch 启动 worker 前（检查期间这一路在看板上显示为准备中，不会被再派一次）、integrate 跑 `verify_command` 前先检查，没就绪就执行一次 `env_up_command` 再检查，输出 `SELF_HEAL=env-up`；还不行，launch 把这一路记为 held（`HOLD_KIND=env`，worker 不启动，环境好了 `retry`），integrate 记为 held（`verify-env`，环境好了重跑 integrate）。`end-run --finished`（`run` §9）执行 `env_down_command`。多路同时检查环境时串行执行。
+
+**一路停住不拖垮整个 epic（`blocked_policy`，默认 `wait`）**
+
+- `blocked_policy: continue` 时，处在受阻、失败、held、合流冲突的 lane 不再挡串行顺序（`no_deps_policy: serial`）、epic 屏障和 retro 屏障，tick 新增 `stuck_released` 列出它们。`depends_on` / `story_dependencies` 写明依赖它的 story 仍然等，它所在 epic 的 retro 也等它处理完。默认 `wait` 和 0.3.x 一样。
+
+**worker 实际用的模型**
+
+- launch 从 stream 的 init 事件读出模型，记进 proc.json，输出 `WORKER_MODEL=<模型>（配置：…）`，看板「执行中」一行带上模型。`worker_model` 留空时，`start-run` 输出一行 `WARN=`，说明它跟随全机共享的 `~/.claude/settings.json`，建议写死；init 收尾提示里也加了这一句。`parallel.yaml` 模板的注释同步。
+
+**测试**
+
+- `superh_test.sh` 新增 D17 一组 32 项和 D17b 一组 5 项（同一批两次 override、没有 spec 时的 override、B3 跑完后 resume 不挪 `followup-start`、CRLF spec 的 status 改写、检查环境期间不会重复 launch）。D17：reopen 的位置检查、保存的尝试 patch 被挪走、答复写在 `<intent-contract>` 内、停下时的 spec 单独 commit、harness-state 回到 B1、看板和 tick 列出待确认、`decision_mode: ask`、代答上限、confirm、override 的确认与回退、调度者决定的 override、B3 blocked 路由、resume 挪 `followup-start` 后 harness-state 回到 `followup`、没有 spec 时答复进 worker prompt、stage 3 拆分与不拆分、标题层级容错、环境自愈与 held、`blocked_policy` 两种取值、`worker_model` 提示、`end-run --finished`。M2 组加 1 项（verify 超时重跑一次）。fake worker 的 init 事件带上 model。
+
+已经在跑的项目需要先 `/super-harness:update`，worker prompt、手册和 answer-policy 才会更新。`parallel.yaml` 不会被覆盖，新键不写就是默认值：代答默认打开，`blocked_policy` 默认 `wait`；想要这些新行为，照模板把 `worker_model`、`blocked_policy`、`env_*` 加进去。
+
+---
+
 ## v0.3.5 — 2026-11-06 — 不按输出文件判断子 agent 卡住；提示孤儿容器（#16 补充）
 
 #16 同一批次的另一路（2-6）也拿到了后台启动的结果。它没有退出，而是用 Monitor 盯着 build 子 agent 的输出文件。build 子 agent 当时在同步等它派出的实现子 agent，自己没有输出；实现子 agent 在调 aarch64 / musl 交叉编译，每次构建要十分钟左右。worker 盯了一个多小时，看到输出文件和 spec 都没变，就判断卡住、报了 `blocked` 并结束本轮。`claude -p` 退出，实现子 agent 被打断，它起的交叉编译容器没人管了，只能手工停。0.3.4 的 worker prompt 恰好写着「用 Monitor 或 Bash 盯着它的输出文件」，会引向同样的判断。
