@@ -25,13 +25,13 @@
 
 ```mermaid
 flowchart LR
-  S["sprint-status.yaml<br/>depends_on / deps_overrides"] --> R{"就绪判定<br/>且有空 slot"}
+  S["依赖：deps_overrides<br/>story_dependencies / depends_on"] --> R{"就绪判定<br/>且有空 slot"}
   R -->|prepare + launch| W1["lane worktree：story/A<br/>claude -p worker 跑 B0–B3"]
   R -->|prepare + launch| W2["lane worktree：story/B<br/>claude -p worker 跑 B0–B3"]
   W1 -->|report ready| I["合流（串行）<br/>rebase → 搬 tag → build-verify → verify_command → ff"]
   W2 -->|report ready| I
   I --> C["收口（串行）<br/>build-sync → done tag"]
-  C -->|epic 全部完成| T["epic retro ⑥ / ⑥.5"]
+  C -->|epic 全部完成（挂起的不算）| T["epic retro ⑥ / ⑥.5"]
   C -.->|下游依赖满足| R
 ```
 
@@ -46,14 +46,14 @@ sequenceDiagram
   participant W as worker（claude -p）
   D->>S: tick
   S-->>D: next_action = launch
-  D->>S: prepare KEY，再后台 launch KEY
+  D->>S: 后台 prepare KEY，再后台 launch KEY
   S->>W: 启动，cwd = lane worktree
   Note over D: 没事可做，结束本轮回复
   W->>S: report KEY --status ready
   W-->>D: 进程退出，唤醒调度者
   D->>S: tick
   S-->>D: next_action = integrate
-  D->>S: integrate KEY（rebase + 验证 + ff）
+  D->>S: 后台 integrate KEY（rebase + 验证 + ff）
   loop 直到 NEXT=finish
     D->>S: postmerge KEY
     S-->>D: NEXT = sync / tag / finish
@@ -69,7 +69,7 @@ stateDiagram-v2
   state "blocked · failed · quota · crashed" as trouble
   [*] --> preparing
   preparing --> prepared: 完成
-  preparing --> held: prepare 失败
+  preparing --> held: prepare 失败或被打断超过 2 次
   prepared --> working: launch
   working --> ready: report ready
   working --> trouble: worker 出问题
@@ -77,15 +77,14 @@ stateDiagram-v2
   ready --> integrating: integrate
   integrating --> conflict: 代码冲突
   conflict --> integrating: 子 agent 或你解决后
-  integrating --> held: build-verify 或 verify_command 不通过
-  held --> prepared: 修好后 retry
-  held --> integrating: 验证失败修好后重跑 integrate
+  integrating --> held: build-verify / verify_command 不通过、lane 不干净、被打断超过 2 次等
+  held --> integrating: 在 lane 里修好后重跑 integrate
   integrating --> merged: ff 合并
   merged --> done: postmerge 收口完成
   done --> [*]
 ```
 
-trouble、conflict、held 是需要你处理的状态，`/super-harness:board` 会把它们排在最前面。
+trouble、conflict、held 是需要你处理的状态，`/super-harness:board` 会把它们排在最前面。held 都带一个 `hold_kind` 说明原因，看板按它给出接手命令；prepare 阶段 held 的 lane 修好原因后用 `abandon --yes` 放弃，story 回到 backlog 重新排队。
 
 ## 测试分工
 
@@ -163,6 +162,28 @@ plugin 升级后执行 `/super-harness:update`，它只刷新资产，不动两�
 | `/super-harness:upgrade-deferred-work` | 复测 `deferred-work.md` 的 schema v1 符合度，在 advisory 和 strict 之间切换 | 按需 |
 | `/super-harness:report-issue` | 自动收集版本、sprint 状态、halt 现场，用 `gh` 给 `Niutie/my-cc-plugin` 提 issue | halt 或想反馈时 |
 
+## 跑的过程中看什么
+
+`run-inline` 在当前会话里执行，计划、每个阶段的子 agent 和脚本输出、每条 story 结束时的进度都直接显示；每条 story 对应一个 `Sprint: <key>` 任务。`run` 的状态用 `/super-harness:board` 看。另开终端可以跑下面这些只读命令，不影响运行：
+
+```bash
+python3 .claude/harness/scripts/sprint-status.py count             # backlog 剩几条 / 总数
+python3 .claude/harness/scripts/superh.py plan                     # 每条 story 的状态和在等什么（两种模式都能用）
+python3 .claude/harness/scripts/harness-state.py <KEY> --plain     # 某条 story 走到哪一步、下一步做什么
+python3 .claude/harness/scripts/harness-state.py --in-flight       # 开了头还没做完的 story
+```
+
+跑的过程中发现的问题按要不要你马上处理分四处：
+
+| 在哪看 | 内容 |
+|---|---|
+| 会话里的 halt 框（并行模式是看板的「需要你处理」） | 流水线处理不了、停下来等你的问题，附处理选项。处理完用 `--continue` 接着跑 |
+| `deferred-work.md` | review 和 codex 发现、决定推迟的问题（`FU-` 条目）。`grep_deferred_buckets.sh --list` 按归属汇总，`grep_deferred_status.sh <KEY>` 看某条 story 相关的。目标是后面某条 story 的，会在那条 story 开工时自动带给 bmad-build-auto |
+| spec 末尾 | `## Auto Run Result`：做了什么、怎么验证、遗留风险；`### Codex Review Handling (Stage 3)`：每条 codex finding 是修了、不修还是推迟 |
+| retro 文档和 `retro_action_items` | 行动项、Open questions、Assumptions。`category: dev` 的行动项在下一个 epic 开工前兑现，`grep_pending_dev_retro_items.sh` 列出还没兑现的 |
+
+codex 因为额度、登录或超时被跳过时会留下 `<KEY>.codex-skipped.json`，收尾提醒会列出来，codex 恢复后用 `/super-harness:codex-catchup` 补跑。
+
 ## 让 story 能并行
 
 `/super-harness:run` 只并行它确认互不依赖的 story。依赖信息按优先级从高到低有三个来源：
@@ -213,14 +234,16 @@ parked_statuses: [mainline-pending, spec-pending]
 | `/super-harness:run --slots 3` | 本次改用 3 路 |
 | `/super-harness:board` | 看状态：先列需要你处理的 lane |
 
-调度者在没事可做时会结束当前回复，某一路 worker 跑完时自动醒来继续。跑的过程中不要关掉这个 Claude Code 会话，否则在跑的 worker 会一起结束（下次运行时会自动续作一次）。
+调度者在没事可做时会结束当前回复，某一路 worker 跑完时自动醒来继续。prepare 和合流也在后台执行，`prepare_command`、`verify_command` 跑多久都不会被 Bash 工具的超时打断。跑的过程中不要关掉这个 Claude Code 会话，否则在跑的 worker 会一起结束（下次运行时会自动续作一次）。
+
+同一个仓库同一时间只能有一个会话执行 `/super-harness:run`。第二个会话会收到 `STATUS=locked` 并停下；确认原来的会话已经不再调度时，可以让新会话用 `superh.py start-run --take-over` 接手。
 
 某一路出问题时只停这一路，其他照常推进。看板会给出接手方式：
 
 ```
 cd <worktree> && claude --resume <session>                     # 进入那一路的会话
 python3 .claude/harness/scripts/superh.py retry <KEY>          # 修好后让 worker 续作
-python3 .claude/harness/scripts/superh.py integrate <KEY>      # 合流验证失败、在 lane 里修好并 commit 后重新合流
+python3 .claude/harness/scripts/superh.py integrate <KEY>      # 合流时 held（验证失败、lane 不干净等），在 lane 里修好并 commit 后重新合流
 python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 ```
 
