@@ -71,6 +71,7 @@ python3 .claude/harness/scripts/superh.py tick
 | `post-merge` | 对 `post_merge` 里的第一条执行 §4（上次运行中途停下、已经合入但还没收口的 lane） |
 | `integrate` | 对 `integrate` 里的第一条执行 §3，接着执行 §4 |
 | `retro` | 对 `retro_due` 里的第一个 epic 执行 §5 |
+| `post-epic` | 对 `post_epic` 里的每个 epic 按「后台命令」的方式执行 `SH post-epic <N>`（见 §5 第 5 步） |
 | `launch` | 执行 §2 |
 | `wait` | 执行 §6 |
 | `stalled` | 执行 §7 |
@@ -110,7 +111,10 @@ python3 .claude/harness/scripts/superh.py tick
    - 有 `ORPHAN_CONTAINER=` 行时，把容器 id 和名字转告用户：worker 退出后还挂载着这一路 worktree 的容器，多半是子 agent 起的、没人管了。不要自己停，由用户确认。
    - 第一行是 `STATUS=halt` 且有 `HOLD_KIND=env`：`parallel.yaml` 配了 `env_check_command`，环境没就绪，`env_up_command` 也没能把它起来，worker 没有启动。这一路记为 held，把 `REASON=` 和 `ENV_OUTPUT<<` 段转告用户，环境好了之后 `SH retry <KEY>`。
    - `SELF_HEAL=` 行是脚本自己修好的机械问题（例如环境没起，已经执行 `env_up_command` 起好），给用户一行进度即可。
-   - `WORKER_MODEL=` 是 worker 实际用的模型。本次运行第一次 launch 时告诉用户一行，和用户预期的不一样时提醒检查 `parallel.yaml` 的 `worker_model`。
+   - `WORKER_MODEL=` 是 worker 实际用的模型。本次运行第一次 launch 时告诉用户一行，和用户预期的不一样时提醒检查 `parallel.yaml` 的 `worker_model`。配了 `worker_model` 而实际模型对不上时脚本会多一行 `WARN=`，原样转告。
+   - 第一行是 `STATUS=halt` 且有 `HOLD_KIND=resource`：`parallel.yaml` 给这条 story 声明的资源，`resource_acquire` 命令失败了，worker 没有启动。把 `REASON=` 和 `RESOURCE_OUTPUT<<` 段转告用户，资源好了之后 `SH retry <KEY>`。`RESOURCE_ACQUIRED=` 是信息行。
+   - `PROMPT_SUFFIX_MISSING=`：worker 派 B1 / B2.3 / B3 时 prompt 里没带 harness 后缀（P§−1 (b)），子 agent 拿不到代答政策。脚本已经把它记进收件箱（`DECISION_IDS=`），这一路照常合流。告诉用户一行：哪一路、哪一步、收件箱编号。
+   - `SPEC_DECISIONS_IMPORTED=`：worker 在 spec `### 待用户确认` 段（或旧写法的待确认段落）里列的取舍，已导入收件箱。和 `decisions_pending` 一样用一行告诉用户。
 4. 回到 §1。
 
 ## 3. 合流
@@ -125,7 +129,7 @@ python3 .claude/harness/scripts/superh.py integrate <KEY> 2>&1; echo "SUPERH_EXI
 
 输出里有 `NOTE=上次 integrate 在运行中被打断` 时，说明上一次合流被杀掉了（会话结束等），这次从断点继续，不用处理。同一路被打断超过 2 次，脚本会把它挂起（`HOLD_KIND=interrupted`），不会无限重跑。
 
-- 退出码 0：记下输出里的 `CODEX_SKIP_REASON=`、`FOLLOWUP_NOTE=`，以及 `BUILD_VERIFY<<` 段里的 `BASELINE_REVISION=`，进入 §4。输出里有 `RECOVERED=already-merged` 时，说明上一次合流已经 ff 成功、只是没记下来，照样进入 §4；有 `WARN=` 行时把它转告用户。
+- 退出码 0：记下输出里的 `CODEX_SKIP_REASON=`、`FOLLOWUP_NOTE=`，以及 `BUILD_VERIFY<<` 段里的 `BASELINE_REVISION=`（有 `BASELINE_REVISION_REBASED=` 时改用它），进入 §4。这一路被 rebase 过时会有 `REWRITTEN=<旧 hash> → <新 hash>` 行和 `REWRITE_RECORDED=`：脚本已经把新旧 hash 的对应表追加到 spec 末尾，并在 codex 报告 frontmatter 加了 `head_rebased:`，原文不改，不用处理。`SPEC_DECISIONS_IMPORTED=` 同 §2。输出里有 `RECOVERED=already-merged` 时，说明上一次合流已经 ff 成功、只是没记下来，照样进入 §4；有 `WARN=` 行时把它转告用户。
 - 退出码 3（`STATUS=conflict`）：派一个合流冲突子 agent。
   1. Read `.claude/harness/prompts/merge-fix.md`，替换占位符：`{{KEY}}`；`{{WORKTREE}}` 取输出的 `WORKTREE=`；`{{CONFLICT_FILES}}` 取所有 `CONFLICT_FILE=` 行，用顿号连接；`{{SPEC}}` 取 `cd <WORKTREE> && python3 .claude/harness/scripts/harness-state.py <KEY> --story-md` 的输出，失败就留空。
   2. 用前台 Agent 运行（`subagent_type: "general-purpose"`，`description: "Resolve merge conflict <KEY>"`，显式传 `run_in_background: false`，不传可能会放到后台）。
@@ -164,9 +168,9 @@ python3 .claude/harness/scripts/superh.py postmerge <KEY>
 
 | NEXT | 做什么 |
 |---|---|
-| `sync` | 1. `MARKER=write` 时，按 P§1 B2.1 a) 的格式写 `<KEY>.codex-skipped.json`：reason 取 `CODEX_SKIP_REASON=`，`BASE` 取 integrate 输出的 `BASELINE_REVISION`，没有就取 `git rev-parse harness/<KEY>/start`。`MARKER=present` 或 `none` 时不要写，也不要重写已有的 marker。<br>2. 按 P§1 B4 执行 `harness-commit.py build-sync <KEY>`：STATUS=ok 时 commit，然后立刻 `git tag harness/<KEY>/done`；STATUS=skip 时不 commit，但同样立刻打这个 tag（否则 `postmerge` 会一直停在 `sync`）。然后输出 deferred-work 趋势。`STATUS=halt` 时全局 halt（§8）：这时主 worktree 可能有已 stage 的改动，继续合流只会把问题叠上去。 |
+| `sync` | 1. `MARKER=write` 时，按 P§1 B2.1 a) 的格式写 `<KEY>.codex-skipped.json`：reason 取 `CODEX_SKIP_REASON=`，`BASE` 取 integrate 输出的 `BASELINE_REVISION_REBASED`，没有就取 `BASELINE_REVISION`，都没有就取 `git rev-parse harness/<KEY>/start`。`MARKER=present` 或 `none` 时不要写，也不要重写已有的 marker。<br>2. 按 P§1 B4 执行 `harness-commit.py build-sync <KEY>`：STATUS=ok 时 commit，然后立刻 `git tag harness/<KEY>/done`；STATUS=skip 时不 commit，但同样立刻打这个 tag（否则 `postmerge` 会一直停在 `sync`）。然后输出 deferred-work 趋势。`STATUS=halt` 时全局 halt（§8）：这时主 worktree 可能有已 stage 的改动，继续合流只会把问题叠上去。 |
 | `tag` | build-sync 已经 commit，只差 tag：`git tag harness/<KEY>/done` |
-| `finish` | `SH mark <KEY> --phase done`，然后 `SH cleanup <KEY>`。给用户一行进度：`<KEY> 已完成（M/N），在跑 <running 数> 路`；`FOLLOWUP_NOTE=` 非空时作为第二行附上 |
+| `finish` | `SH mark <KEY> --phase done`，然后 `SH cleanup <KEY>`（配了 `lane_cleanup_command` 时它在删 worktree 前执行，可能要跑一会儿，用后台方式运行）。输出里的 `RESOURCE_RELEASED=`、`HOOK=... ok` 是信息行；`WARN=`（资源没释放掉、清理命令失败）转告用户，不 halt。给用户一行进度：`<KEY> 已完成（M/N），在跑 <running 数> 路`；`FOLLOWUP_NOTE=` 非空时作为第二行附上 |
 | `halt` | 全局 halt（§8），贴出 `REASON=` 和 `HARNESS_STATE_RAW=` |
 
 不要在 `postmerge` 之外自己判断「这一步做过了没有」，也不要对已经存在的 tag 再执行 `git tag`。
@@ -180,10 +184,10 @@ epic retro 不在这里执行。epic 的最后一条 story 收口之后，下一
 1. 先在主 worktree 跑 `git status --porcelain`，确认干净。
 2. 按 P§1 阶段 ⑥ 的「retro 用的 `KEY`」规则取 `KEY`（该 epic 按 yaml 顺序最后一条 status=done 的 story），然后执行 P§1 阶段 ⑥、⑥.5 和 verdict 门。
 3. verdict 是 `rejected` 并且 `EPIC_WONT_DO=none`、`EPIC_PARKED=none`：停止派发新 lane，等在跑的 lane 结束、合流、收口之后，按 P§1「verdict 门」的文案 halt。
+4. retro commit 之后，执行 `SH decisions`，把这个 epic 的 story 上还没确认的决定和这个 epic 里仍然停住的 lane 一起交给用户（每条一行），提示用户有空时批量确认。不等回复。
+5. 按「后台命令」的方式执行 `SH post-epic <N>`（`parallel.yaml` 的 `post_epic_command`，例如清理共享构建缓存）。`STATUS=skip`（没配，或已执行过）直接回到 §1。`STATUS=ok` 时 `POST_EPIC=failed` 要转告用户，不 halt。`STATUS=deferred`：还有别的 lane 在跑，脚本记下了这一项，在它执行之前 tick 不再派发新 worker；等那些 lane 结束，tick 会给出 `post-epic`，那时再执行一次。回到 §1。
 
 retro 期间其他 lane 照常在各自的 worktree 里运行，不受影响。
-
-retro commit 之后，执行 `SH decisions`，把这个 epic 的 story 上还没确认的决定和这个 epic 里仍然停住的 lane 一起交给用户（每条一行），提示用户有空时批量确认。不等回复，回到 §1。
 
 ## 6. 等待
 
@@ -205,7 +209,7 @@ worker 按推荐项代答的决定、你用 `SH decide` 记下的决定，都在
 
 1. 先不带 `--yes` 执行一次。输出 `STATUS=confirm` 时，把 `REASON=`、`DROP_TAG=`、`SUPERSEDE=`、`DISCARD=` 原样给用户，等用户明确同意。
 2. 同意后加 `--yes` 再执行。没合入的 lane 会退回到这个决定之前的提交，答复换成用户的，重新排队，下一轮 tick 会把它 launch 出来。
-3. `STATUS=halt` 说这一路合流时 rebase 过、或回退点上没有 spec：worktree 没有被动过，把 `REASON=` 转告用户，按看板「接手」处理。`NEXT=manual`：这一路已经合入 sprint 分支，回退不了。告诉用户需要按新决定开一条修正 story 或手工改。`NEXT=dispatcher`：这是你自己记的决定，按新答复调整你接下来的做法。
+3. `STATUS=halt` 说这一路合流时 rebase 过、或回退点上没有 spec：worktree 没有被动过，把 `REASON=` 转告用户，按看板「接手」处理。`NEXT=manual`：这一路已经合入 sprint 分支回退不了，或者这条决定本来就没有回退点（worker 写在 spec `### 待用户确认` 段的取舍、漏了 harness 后缀的记录）。把 `REASON=` 转告用户，需要按新决定开一条修正 chore / story 或手工改。`NEXT=dispatcher`：这是你自己记的决定，按新答复调整你接下来的做法。
 4. `STATUS=busy`：这一路还在跑，等它停下（看板上变成待合流、受阻或失败）再执行。
 
 ## 7. 停滞
@@ -245,7 +249,7 @@ halt 时先执行一次 `SH board`，把输出贴在 halt 说明前面，让用�
 
 1. 执行 `SH board`，贴出结果。
 2. 执行 P§2 收尾提醒（codex-skipped 通知框 + report-issue 提示）。
-3. 执行 `SH end-run --finished` 释放调度锁。`parallel.yaml` 配了 `env_down_command` 时它会接着把环境停掉，输出 `ENV_DOWN=failed` 时转告用户。
+3. 执行 `SH end-run --finished` 释放调度锁。`parallel.yaml` 配了 `env_down_command` 时它会接着把环境停掉，输出 `ENV_DOWN=failed` 时转告用户。还占着的资源也在这时执行 `resource_release`，`RESOURCE_RELEASE_FAILED=` 同样转告。
 4. 一行总结：完成的 story 数、跑过 retro 的 epic、收件箱里还有几条待确认（`DECISIONS_PENDING=`，有的话附上 `SH decisions` 的输出）。
 
 ## 参数

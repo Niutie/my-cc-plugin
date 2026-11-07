@@ -16,8 +16,11 @@ worktree 看到的是同一份。每个文件只有一个写入者：
     lanes/<KEY>.watch.json   watch 进程写：pid
     lanes/<KEY>.reopen.json  worker 写（经 `reopen`）：本 story 自己重开 spec 的次数
     lanes/<KEY>.notes.json   reopen / resume / override 写：还没有 spec 时的答复，下一次 worker prompt 带上
-    decisions.json           决策收件箱（worker 的 reopen、调度者的 decide / resume、用户的
-                             confirm / override 都会写，经 flock 串行）
+    decisions.json           决策收件箱（worker 的 reopen、调度者的 decide / resume、launch /
+                             integrate 导入的漏后缀记录和 spec 待确认项、用户的 confirm /
+                             override 都会写，经 flock 串行）
+    resources.json           已执行 resource_acquire、还没 release 的资源（经 flock）
+    post_epic.json           post_epic_command 推迟中 / 已执行的 epic
     dispatcher.lock          start-run 写：持有调度权的会话（pid + 启动时间）
 
 子命令（都在项目根目录或任一 worktree 内运行）：
@@ -46,7 +49,9 @@ worktree 看到的是同一份。每个文件只有一个写入者：
     decisions [--all]       列出决策收件箱
     confirm <ID...>|--all   确认决定
     override <ID> --answer  推翻一条决定：没合入的 lane 回退到决定之前，按新答复重跑
-    cleanup <KEY>           done 之后删 worktree 与分支
+    spec-decisions <KEY>    把 spec `### 待用户确认` 段（及旧写法）的条目导入收件箱
+    post-epic <N>           epic retro 之后执行 post_epic_command（有 lane 在跑时推迟）
+    cleanup <KEY>           done 之后删 worktree 与分支（先跑 lane_cleanup_command）
     abandon <KEY> --yes     放弃本路：删 worktree / 分支 / 未 done 的 harness tag
 
 退出码：0 成功；1 halt / 参数错误；3 integrate 遇到需要处理的代码冲突；
@@ -67,6 +72,8 @@ sys.dont_write_bytecode = True
 
 import argparse  # noqa: E402
 import datetime  # noqa: E402
+import fnmatch  # noqa: E402
+import hashlib  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
@@ -135,6 +142,12 @@ DEFAULT_CONFIG = {
     "claude_bin": "claude",
     "keep_worktrees": False,
     "deps_overrides": {},
+    "resources": {},                     # story key / glob → [资源名]：同一资源同一时间只给一路（issue #22）
+    "resource_acquire": {},              # 资源名 → 第一条要用它的 story 启动前执行的命令
+    "resource_release": {},              # 资源名 → 最后一条要用它的 story 完成后执行的命令
+    "lane_cleanup_command": "",          # cleanup / abandon 删 worktree 之前执行（issue #26）
+    "post_epic_command": "",             # epic retro 之后、没有 lane 在跑时执行（post-epic）
+    "hook_timeout_sec": 1800,            # 上面两个钩子和 resource_* 命令的超时
 }
 
 # Env vars a parent Claude Code session leaks into child processes. A worker is
@@ -749,6 +762,13 @@ def load_config(path: Path) -> dict:
             cfg[k] = []
     if not isinstance(cfg.get("deps_overrides"), dict):
         cfg["deps_overrides"] = {}
+    for k in ("resources", "resource_acquire", "resource_release"):
+        v = cfg.get(k)
+        cfg[k] = {str(kk).strip().strip("'\""): vv for kk, vv in v.items()} if isinstance(v, dict) else {}
+    try:
+        cfg["hook_timeout_sec"] = max(1, int(cfg.get("hook_timeout_sec") or 1800))
+    except (TypeError, ValueError):
+        cfg["hook_timeout_sec"] = 1800
     return cfg
 
 
@@ -908,6 +928,138 @@ def harness_tags(ctx) -> dict:
     return out
 
 
+# --------------------------------------------------------------------- resources
+#
+# issue #22: some stories need a machine-wide singleton (an integration
+# environment, pinned benchmark cores). `deps_overrides` could only serialize
+# them in a fixed order; `resources` says what each story occupies and tick never
+# hands the same resource to two lanes at once. A lane holds its resources from
+# prepare until it is merged (or abandoned); one that stopped and waits for a
+# person keeps them, so a retry can't end up next to another user.
+# `resource_acquire` runs before the first worker that needs the resource
+# starts, `resource_release` once no unfinished story needs it any more.
+
+RESOURCES_FILE = "resources.json"
+
+
+def story_resources(cfg, key: str) -> set:
+    out = set()
+    for pat, names in (cfg.get("resources") or {}).items():
+        if key == pat or fnmatch.fnmatchcase(key, str(pat)):
+            if isinstance(names, str):
+                names = [names]
+            out |= {str(n).strip() for n in (names or []) if str(n).strip()}
+    return out
+
+
+def resource_holders(ctx, lanes) -> dict:
+    """{resource: lane key} for lanes that still hold what they declared."""
+    out = {}
+    for k, l in sorted(lanes.items()):
+        if l.get("phase") in ("done", "abandoned", "merged"):
+            continue
+        for r in story_resources(ctx.config, k):
+            out.setdefault(r, k)
+    return out
+
+
+def _acquired(ctx) -> dict:
+    d = read_json(ctx.state / RESOURCES_FILE)
+    return d if isinstance(d, dict) else {}
+
+
+def _acquire_resources(ctx, lane) -> dict:
+    """Run resource_acquire for the lane's resources that are not up yet.
+    {"ok": bool, "detail": str, "output": str}."""
+    cmds = ctx.config.get("resource_acquire") or {}
+    need = [r for r in sorted(story_resources(ctx.config, lane["key"])) if str(cmds.get(r) or "").strip()]
+    if not need:
+        return {"ok": True, "detail": "", "output": ""}
+    timeout = int(ctx.config.get("hook_timeout_sec") or 1800)
+    with _guard(ctx, ".resources.guard"):
+        held = _acquired(ctx)
+        for r in need:
+            if r in held:
+                continue
+            res = _env_run(ctx, str(cmds[r]), lane, timeout)
+            if res["timed_out"] or res["rc"] != 0:
+                return {"ok": False, "output": (res["out"] + res["err"])[-3000:],
+                        "detail": f"资源 {r} 的 resource_acquire 失败（{'超时' if res['timed_out'] else 'exit=' + str(res['rc'])}）"}
+            held[r] = {"since": now_iso(), "by": lane["key"]}
+            write_json(ctx.state / RESOURCES_FILE, held)
+            print(f"RESOURCE_ACQUIRED={r}")
+            lane.setdefault("notes", []).append(f"resource acquired: {r}")
+    return {"ok": True, "detail": "", "output": ""}
+
+
+def _release_resources(ctx, all_of_them: bool = False):
+    """Release acquired resources nothing unfinished needs any more (or all of
+    them at the end of the run)."""
+    cmds = ctx.config.get("resource_release") or {}
+    with _guard(ctx, ".resources.guard"):
+        held = _acquired(ctx)
+        if not held:
+            return
+        busy = set()
+        if not all_of_them:
+            stories, _ = parse_sprint(ctx.sprint_file())
+            settled = set(ctx.terminal()) | set(ctx.parked())
+            for st in stories:
+                if st["status"] not in settled:
+                    busy |= story_resources(ctx.config, st["key"])
+            busy |= set(resource_holders(ctx, ctx.all_lanes()))
+        for r in sorted(held):
+            if r in busy:
+                continue
+            cmd = str(cmds.get(r) or "").strip()
+            if cmd:
+                res = _env_run(ctx, cmd, None, int(ctx.config.get("hook_timeout_sec") or 1800))
+                if res["timed_out"] or res["rc"] != 0:
+                    print(f"RESOURCE_RELEASE_FAILED={r}")
+                    print(f"WARN=资源 {r} 的 resource_release 没有成功，它可能还占着："
+                          f"{(res['out'] + res['err']).strip()[-300:]}")
+                    continue
+            held.pop(r, None)
+            write_json(ctx.state / RESOURCES_FILE, held)
+            print(f"RESOURCE_RELEASED={r}")
+
+
+# ------------------------------------------------------------------ hooks (#26)
+
+def _run_hook(ctx, name: str, cmd: str, lane=None, extra_env=None) -> bool:
+    env = dict(os.environ, SUPERH_MAIN_ROOT=str(ctx.root), **(extra_env or {}))
+    if lane:
+        env.update(SUPERH_KEY=lane["key"], SUPERH_WORKTREE=str(lane.get("worktree", "")),
+                   SUPERH_BRANCH=str(lane.get("branch", "")))
+    timeout = int(ctx.config.get("hook_timeout_sec") or 1800)
+    r = run_group(["sh", "-c", cmd], cwd=ctx.root, env=env, timeout=timeout,
+                  on_start=_record_child(ctx, lane) if lane else None)
+    if r["timed_out"] or r["rc"] != 0:
+        print(f"HOOK={name} failed（{'超时 ' + str(timeout) + 's' if r['timed_out'] else 'exit=' + str(r['rc'])}）")
+        print(f"WARN={name} 没有成功：{(r['out'] + r['err']).strip()[-300:]}")
+        return False
+    print(f"HOOK={name} ok")
+    return True
+
+
+def _lane_cleanup_hook(ctx, lane):
+    cmd = str(ctx.config.get("lane_cleanup_command") or "").strip()
+    if cmd and lane.get("worktree") and not lane.get("foreign"):
+        _run_hook(ctx, "lane_cleanup_command", cmd, lane)
+
+
+POST_EPIC_FILE = "post_epic.json"
+
+
+def _post_epic_state(ctx) -> dict:
+    d = read_json(ctx.state / POST_EPIC_FILE)
+    if not isinstance(d, dict):
+        d = {}
+    d.setdefault("pending", [])
+    d.setdefault("done", [])
+    return d
+
+
 # ----------------------------------------------------------------------- analysis
 
 def lane_stage(ctx, lane) -> tuple[str, str]:
@@ -993,6 +1145,7 @@ HOLD_HINTS = {
     "error": "合流时脚本出错，按 hold_reason 处理" + _REINTEGRATE,
     "env": ("worker 启动前环境没就绪（env_check_command / env_up_command），按 hold_reason 把环境起好，"
             "然后执行 " + SH_CMD + " retry {key}"),
+    "resource": ("worker 启动前 resource_acquire 失败，按 hold_reason 把资源准备好，然后执行 " + SH_CMD + " retry {key}"),
     "verify-env": ("合流验证前环境没就绪（env_check_command / env_up_command），按 hold_reason 把环境起好"
                    + _REINTEGRATE),
     "prepare": ("prepare 没完成，按 hold_reason 修好原因后执行 " + SH_CMD +
@@ -1037,6 +1190,8 @@ def analyze(ctx):
 
     def _order_ok(t):
         return t["status"] in settled or t["key"] in stuck
+
+    holders = resource_holders(ctx, lanes)
 
     rows = []
     for idx, s in enumerate(stories):
@@ -1093,6 +1248,9 @@ def analyze(ctx):
                     for dk in ks:
                         if dk != k and status.get(dk) not in terminal:
                             reasons.append(f"等待依赖 {dk}")
+            for res in sorted(story_resources(cfg, k)):
+                if holders.get(res) not in (None, k):
+                    reasons.append(f"等待资源 {res}（{holders[res]} 正在用）")
             row["state"] = "waiting" if reasons else "ready"
         rows.append(row)
 
@@ -1180,8 +1338,21 @@ def cmd_tick(ctx, _a):
     busy = len(running) + len(queued) + len(reprepare) + len(live_prepare)
     free = max(0, ctx.config["max_slots"] - busy)
     ready = [r["key"] for r in rows if r["state"] == "ready"]
+    # two ready stories that declare the same resource never start together
+    taken = set().union(*(story_resources(ctx.config, k) for k in reprepare)) if reprepare else set()
+    picked = []
+    for k in ready:
+        if len(picked) >= free:
+            break
+        rs = story_resources(ctx.config, k)
+        if rs & taken:
+            continue
+        picked.append(k)
+        taken |= rs
+    # post_epic_command must not run under a working lane: no new workers until it ran
+    post_epic = [] if not str(ctx.config.get("post_epic_command") or "").strip() else _post_epic_state(ctx)["pending"]
     # an interrupted prepare already holds its slot; prepare rolls it back and redoes it
-    launch = [] if quota_hold else reprepare + ready[:free]
+    launch = [] if quota_hold or post_epic else reprepare + picked
     # a live integrate owns the main worktree until it exits: nothing else that
     # writes there (another integrate, close-out, retro) is handed out meanwhile
     main_busy = bool(live_integrate)
@@ -1198,9 +1369,11 @@ def cmd_tick(ctx, _a):
         nxt = "integrate"
     elif retro_due and not main_busy:
         nxt = "retro"
-    elif (launch or queued) and not quota_hold:
+    elif post_epic and not (running or live_prepare or live_integrate):
+        nxt = "post-epic"
+    elif (launch or queued) and not quota_hold and not post_epic:
         nxt = "launch"
-    elif running or live_prepare or live_integrate or merged or integrate or retro_due:
+    elif running or live_prepare or live_integrate or merged or integrate or retro_due or post_epic:
         nxt = "wait"
     elif not pending and not retro_due:
         nxt = "finished"
@@ -1214,7 +1387,8 @@ def cmd_tick(ctx, _a):
         "post_merge": merged,
         "integrate": integrate,
         "launch": launch,
-        "queued": queued if not quota_hold else [],
+        "queued": queued if not quota_hold and not post_epic else [],
+        "post_epic": post_epic,
         "epic_start": epic_start,
         "retro_due": retro_due,
         "running": running,
@@ -1596,6 +1770,63 @@ def _bg_launch_kind(evt):
     return None
 
 
+# issue #21: the worker appends `harness-prompt-suffix.py <stage> --file` output
+# (a short reference ending in `[harness-suffix <stage> <sha8>]`) to every
+# dispatch that runs bmad-build-auto or the codex fix round. Pasting the full
+# suffix by hand went wrong three times: the subagent got a placeholder instead
+# of the answer policy and the project context, and nothing noticed. launch now
+# reads the worker's own Agent calls from the stream and reports a dispatch that
+# carries neither the reference (with its file present) nor the inline suffix.
+SUFFIX_MARKER_RE = re.compile(r"\[harness-suffix ([\w-]+) ([0-9a-f]{8})\]")
+SUFFIX_NEEDED_HINTS = ("bmad-build-auto", "## Build intent", "codex-review.md", "Codex Review Handling")
+
+
+def _suffix_audit(ctx, evt):
+    """[{description, stage, length, tail}] for the worker's own Agent / Task calls
+    in this stream event whose prompt should carry the harness suffix but doesn't."""
+    if evt.get("type") != "assistant" or evt.get("parent_tool_use_id"):
+        return []
+    content = (evt.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return []
+    out = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use" or block.get("name") not in ("Agent", "Task"):
+            continue
+        inp = block.get("input") or {}
+        prompt = str(inp.get("prompt") or "")
+        if not any(h in prompt for h in SUFFIX_NEEDED_HINTS):
+            continue
+        ok = any((ctx.state / "suffix" / f"{m.group(1)}-{m.group(2)}.md").is_file()
+                 for m in SUFFIX_MARKER_RE.finditer(prompt))
+        ok = ok or ("代答政策" in prompt and "项目语境" in prompt)
+        if ok:
+            continue
+        if "follow-up review" in prompt or "follow-up" in str(inp.get("description") or "").lower():
+            stage = "B3"
+        elif "Codex Review Handling" in prompt or "codex-review.md" in prompt:
+            stage = "B2.3"
+        else:
+            stage = "B1"
+        out.append({"description": str(inp.get("description") or "")[:120], "stage": stage,
+                    "length": len(prompt), "tail": prompt.strip()[-60:].replace("\n", " ")})
+    return out
+
+
+_MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
+
+
+def _model_mismatch(configured: str, actual: str) -> bool:
+    """worker_model set but the worker's init event names another model (issue #18)."""
+    c = re.sub(r"\[.*?\]$", "", (configured or "").strip().lower())
+    a = (actual or "").strip().lower()
+    if not c or not a or c in ("default", "opusplan"):
+        return False
+    if c in _MODEL_ALIASES:
+        return c not in a
+    return not (a.startswith(c) or c.startswith(a))
+
+
 def _orphan_containers(wt: Path) -> list:
     """Running docker containers with a mount at or under the lane worktree. Once
     the worker has exited nothing in that lane should still be running: a build
@@ -1671,6 +1902,7 @@ def cmd_launch(ctx, a):
         ctx.save_lane(lane)
     try:
         env_state = _ensure_env(ctx, lane)
+        res_state = _acquire_resources(ctx, lane) if env_state["ok"] else {"ok": True}
     finally:
         lane.pop("op", None)
     if not env_state["ok"]:
@@ -1679,6 +1911,9 @@ def cmd_launch(ctx, a):
     if env_state["healed"]:
         print(f"SELF_HEAL=env-up {env_state['detail']}")
         lane.setdefault("notes", []).append(f"self-heal before launch: {env_state['detail']}")
+    if not res_state["ok"]:
+        _hold(ctx, lane, "resource", f"worker 没有启动：{res_state['detail']}", f"WORKTREE={wt}",
+              "RESOURCE_OUTPUT<<", res_state["output"], ">>")
     attempt = int(lane.get("attempts") or 0) + 1
     prompt = render_worker_prompt(ctx, lane, attempt)
     ctx.logs.mkdir(parents=True, exist_ok=True)
@@ -1727,6 +1962,10 @@ def cmd_launch(ctx, a):
                 write_json(ctx.lane_path(key, "proc"), proc_rec)
             if evt.get("type") == "result":
                 result_evt = evt
+            miss = _suffix_audit(ctx, evt)
+            if miss:
+                proc_rec.setdefault("suffix_missing", []).extend(miss)
+                write_json(ctx.lane_path(key, "proc"), proc_rec)
             kind = _bg_launch_kind(evt)
             if kind:
                 bg = proc_rec.setdefault("bg_launches", {})
@@ -1748,6 +1987,14 @@ def cmd_launch(ctx, a):
     print(f"DETAIL={detail}")
     print(f"SESSION={proc_rec.get('session_id')}")
     print(f"WORKER_MODEL={proc_rec.get('model') or '?'}（配置：{proc_rec['model_config']}）")
+    if _model_mismatch(configured, proc_rec.get("model") or ""):
+        print(f"WARN=worker 实际用的模型 {proc_rec.get('model')} 和 parallel.yaml 的 worker_model {configured} 对不上，"
+              "检查 claude 版本是否认得这个模型名，或者 ANTHROPIC_MODEL 之类的环境变量是否改掉了它")
+    for m in proc_rec.get("suffix_missing") or []:
+        print(f"PROMPT_SUFFIX_MISSING={m['stage']} {m['description']}（prompt {m['length']} 字，结尾：{m['tail']}）")
+    if proc_rec.get("suffix_missing"):
+        _audit_suffix_decisions(ctx, key, proc_rec["suffix_missing"], attempt)
+    _import_spec_decisions_lane(ctx, ctx.lane(key) or lane)
     _print_orphans(wt)
     return 0
 
@@ -1902,6 +2149,94 @@ def _emit_conflict(ctx, lane, wt, remaining) -> int:
     return 3
 
 
+# issue #25: integrate rebases a lane whose base fell behind the sprint branch,
+# and every lane commit gets a new hash. The spec (follow-up / codex handling
+# notes) and the codex report frontmatter (`head:`) still cite the lane-side
+# hashes, which end up on no branch. The commits are matched by author, author
+# date and subject (a rebase keeps all three; patch-id does not survive a replay
+# onto a moved base), the pairs are kept on the lane, appended to the spec as a
+# table and added to the codex report as `head_rebased:`. The original text is
+# not rewritten.
+
+def _commit_keys(ctx, rng: str) -> list:
+    r = git(["log", "--reverse", "--format=%H%x1f%an%x1f%ae%x1f%at%x1f%s", rng], cwd=ctx.root)
+    out = []
+    for ln in r.stdout.splitlines():
+        parts = ln.split("\x1f")
+        if len(parts) == 5:
+            out.append((parts[0], tuple(parts[1:]), parts[4]))
+    return out
+
+
+def _rewritten(lane, sha: str):
+    sha = (sha or "").strip().lower()
+    if len(sha) < 7:
+        return None
+    for p in lane.get("rewrites") or []:
+        if p["old"].startswith(sha) or sha.startswith(p["old"]):
+            return p["new"]
+    return None
+
+
+def _record_rewrites(ctx, lane, wt: Path):
+    key, branch = lane["key"], lane["branch"]
+    old = _commit_keys(ctx, f"{lane['base']}..{lane['orig_head']}")
+    new = {k: sha for sha, k, _ in _commit_keys(ctx, f"{lane['onto']}..{branch}")}
+    pairs = [{"old": sha, "new": new[k], "subject": subj} for sha, k, subj in old if k in new and new[k] != sha]
+    lane["rewrites"] = pairs
+    ctx.save_lane(lane)
+    if not pairs:
+        return
+    onto12 = lane["onto"][:12]
+    title = f"合流 rebase 后的提交对应（sprint 分支 {onto12}）"
+    rel = _lane_spec(ctx, key, wt)
+    touched = []
+    if rel and (wt / rel).is_file():
+        text = (wt / rel).read_text(encoding="utf-8")
+        # a table for an earlier onto (sprint branch moved, rebased again) is stale
+        text_wo = re.sub(r"(?ms)^### 合流 rebase 后的提交对应（(?!sprint 分支 " + re.escape(onto12) + r"）).*?(?=^#{1,3} |\Z)",
+                         "", text).rstrip("\n") + "\n"
+        if title not in text:
+            text = text_wo
+            rows = [f"### {title}", "",
+                    f"合流时这一路被 rebase 到 sprint 分支的 {onto12} 上，下面这些提交换了 hash。"
+                    "本文和 codex 报告里引用的旧 hash 按这张表找 sprint 分支上的提交（原文不改）。", "",
+                    "| lane 内的旧 hash | sprint 分支上的新 hash | 提交说明 |", "|---|---|---|"]
+            for p in pairs:
+                rows.append(f"| {p['old'][:12]} | {p['new'][:12]} | {p['subject'].replace('|', '/')[:120]} |")
+            (wt / rel).write_text(_with_block(text, "\n".join(rows), inside_contract=False), encoding="utf-8")
+            touched.append(rel)
+    rep = f"{ctx.artifacts_rel().rstrip('/')}/{key}.codex-review.md"
+    if (wt / rep).is_file():
+        text = (wt / rep).read_text(encoding="utf-8")
+        fm = re.match(r"^---\r?\n(.*?\r?\n)---\r?\n", text, re.S)
+        hm = re.search(r"(?m)^head:[ \t]*['\"]?([0-9a-fA-F]{7,40})['\"]?[ \t]*(\r?)$", fm.group(1)) if fm else None
+        moved = _rewritten(lane, hm.group(1)) if hm else None
+        if moved and not re.search(r"(?m)^head_rebased:", fm.group(1)):
+            at = fm.start(1) + hm.end()
+            text = text[:at] + f"\nhead_rebased: {moved}" + (hm.group(2) or "") + text[at:]
+            (wt / rep).write_text(text, encoding="utf-8")
+            touched.append(rep)
+    for p in pairs:
+        print(f"REWRITTEN={p['old'][:12]} → {p['new'][:12]} {p['subject'][:80]}")
+    if touched:
+        r = git(["add", "--", *touched], cwd=wt)
+        if r.returncode == 0:
+            r = git(["commit", "-q", "-m", f"docs({key}): record commit hashes rewritten by the integrate rebase"], cwd=wt)
+        if r.returncode != 0:
+            # a record of the rewrite is not worth holding the merge for
+            git(["reset", "-q", "--", *touched], cwd=wt)
+            git(["checkout", "-q", "--", *touched], cwd=wt)
+            print(f"WARN=没能把提交对应表写进 {', '.join(touched)}（{(r.stderr or r.stdout).strip()[-200:]}），"
+                  "对应关系只记在 lane 状态的 rewrites 里")
+            return
+        head = git(["rev-parse", "HEAD"], cwd=wt).stdout.strip()
+        if head:
+            lane.setdefault("notes", []).append(f"rewrites recorded in {', '.join(touched)} ({head[:12]})")
+            ctx.save_lane(lane)
+            print(f"REWRITE_RECORDED={head[:12]} {' '.join(touched)}")
+
+
 def _build_verify(ctx, lane, wt: Path):
     bv = run_group(["python3", ".claude/harness/scripts/harness-commit.py", "build-verify", lane["key"]],
                    cwd=wt, on_start=_record_child(ctx, lane))
@@ -1955,6 +2290,12 @@ def _print_merged(ctx, lane, bv_out, recovered=False, verify=""):
         print(f"VERIFY={verify}")
     print(f"MERGED_HEAD={lane['merged_head']}")
     print(f"START={start}")
+    m = re.search(r"(?m)^BASELINE_REVISION=(\S+)", bv_out or "")
+    if m:
+        moved = _rewritten(lane, m.group(1))
+        if moved:
+            # B4's codex-skipped marker records the review base: the old hash is off-branch
+            print(f"BASELINE_REVISION_REBASED={moved}")
     print(f"CODEX_SKIP_REASON={res.get('codex_skip_reason', '')}")
     print(f"FOLLOWUP_NOTE={res.get('followup_note', '')}")
     for n in lane.get("notes", []):
@@ -2095,6 +2436,9 @@ def _integrate(ctx, lane):
             lane["phase"] = "integrating"
             lane["onto"] = sprint_head
             lane["rebased"] = True
+            # the lane's own commits as the worker left them: spec / codex report
+            # cite these hashes, _record_rewrites maps them after the rebase (issue #25)
+            lane.setdefault("orig_head", lane_head)
             tags = harness_tags(ctx).get(key, set())
             temps = []
             for t in CARRY_TAGS:
@@ -2160,6 +2504,7 @@ def _integrate(ctx, lane):
         print(bv_out)
         print(">>")
         return 1
+    _import_spec_decisions_lane(ctx, lane)
     verify = _run_verify(ctx, lane, wt)
     if verify["status"] == "env-failed":
         _hold(ctx, lane, "verify-env", verify["detail"] + "；sprint 分支未改动", f"WORKTREE={wt}",
@@ -2181,6 +2526,10 @@ def _integrate(ctx, lane):
         return 1
     lane.pop("hold_kind", None)
     lane.pop("hold_reason", None)
+    if lane.get("rebased") and lane.get("orig_head"):
+        # last step before the ff: a held / retried integrate never leaves a
+        # table behind that a later rebase would make stale
+        _record_rewrites(ctx, lane, wt)
     mr = git(["merge", "--ff-only", branch], cwd=ctx.root)
     if mr.returncode != 0:
         # integrating stays routable: the next tick sends it back here and the
@@ -2271,6 +2620,118 @@ def _read_decision_items(path: str) -> list:
         if it.get("options") is not None and not isinstance(it["options"], list):
             die(f"decisions 文件第 {i} 项的 options 要是列表")
     return data
+
+
+def _audit_suffix_decisions(ctx, key, misses, attempt):
+    """issue #21: a dispatch without the harness suffix goes to the inbox instead of
+    holding the lane. Its result passed build-verify; what can be wrong is a choice
+    the subagent made (or a question it stopped on) without the answer policy."""
+    have = {(r.get("attempt"), r.get("question")) for r in load_decisions(ctx)["items"]
+            if r["key"] == key and r.get("kind") == "audit"}
+    items = []
+    for m in misses:
+        q = (f"{m['stage']} 的子 agent（{m['description'] or '无描述'}）派发时没带 harness 后缀，拿不到代答政策和项目语境"
+             f"（prompt {m['length']} 字，结尾「{m['tail']}」）。它遇到拍板题可能停下，也可能自己定了却没记下来。要不要补跑这一步？")
+        if (attempt, q) in have:
+            continue
+        where = {"B3": "spec 的 follow-up review 记录", "B2.3": "spec 的 Codex Review Handling 段"}.get(m["stage"], "spec 的 Auto Run Result")
+        items.append({"question": q, "options": ["不补跑，照常合入", "补跑这一步"],
+                      "chosen": f"不补跑，照常合入。请看{where}，有没有该问没问、或者自己定了没写理由的地方",
+                      "why": "build-verify 只核对产物，查不出子 agent 有没有拿到代答政策"})
+    recs = _new_decisions(ctx, key, items, "audit", stage=misses[0]["stage"], attempt=attempt) if items else []
+    if recs:
+        print(f"DECISION_IDS={','.join(r['id'] for r in recs)}")
+    return recs
+
+
+def _confirm_ref(it) -> str:
+    if it.get("ref"):
+        return it["ref"]
+    norm = re.sub(r"\s+", " ", it.get("text") or "").strip()
+    return "h:" + hashlib.sha1(norm.encode("utf-8")).hexdigest()[:10]
+
+
+def _import_spec_decisions(ctx, key, spec_path: Path, spec_rel: str = "") -> tuple[list, int]:
+    """issue #24: trade-offs the worker settled itself and listed in the spec for
+    the user to confirm go into the inbox (kind `spec`). Idempotent: an item is
+    recognized by its `[C-n]` id, or by its text when it has none. Returns
+    (new records, number of items in the spec)."""
+    try:
+        items = _harness_spec_mod().spec_confirm_items(str(spec_path))
+    except (ImportError, AttributeError):
+        return [], 0
+    if not items:
+        return [], 0
+    new = []
+    with _decisions_txn(ctx) as d:
+        known = {r.get("spec_ref"): r["id"] for r in d["items"] if r["key"] == key and r.get("kind") == "spec"}
+        for it in items:
+            ref = _confirm_ref(it)
+            if ref in known:
+                continue
+            merged = it.get("merged_into")
+            if merged and merged.startswith("C-"):
+                merged = known.get(merged, merged)
+            rec = {"id": f"D{d['next_id']}", "key": key, "kind": "spec", "status": "pending",
+                   "question": it["question"] or it["text"],
+                   "options": [],
+                   "chosen": it["chosen"] or "按 spec 里写的做法（worker 已按它实现）",
+                   "why": it["why"], "spec_ref": ref, "spec": spec_rel or str(spec_path),
+                   "section": it.get("section", ""), "stage": "spec", "created_at": now_iso()}
+            if merged:
+                rec["merged_into"] = merged
+            d["next_id"] += 1
+            d["items"].append(rec)
+            known[ref] = rec["id"]
+            new.append(rec)
+    return new, len(items)
+
+
+def _import_spec_decisions_lane(ctx, lane):
+    if not lane or not lane.get("worktree"):
+        return []
+    wt = Path(lane["worktree"])
+    rel = _lane_spec(ctx, lane["key"], wt) if wt.is_dir() else None
+    if not rel:
+        return []
+    new, n = _import_spec_decisions(ctx, lane["key"], wt / rel, rel)
+    if new:
+        print(f"SPEC_DECISIONS_IMPORTED={','.join(r['id'] for r in new)}")
+    if n:
+        print(f"SPEC_DECISIONS={n}")
+    return new
+
+
+def cmd_spec_decisions(ctx, a):
+    """Import a spec's 待用户确认 items into the inbox (inline mode B4, or by hand)."""
+    if a.spec:
+        path = Path(a.spec).resolve()
+    else:
+        top = git(["rev-parse", "--show-toplevel"]).stdout.strip() or str(ctx.root)
+        art = Path(top) / ctx.artifacts_rel()
+        try:
+            name = _harness_spec_mod().resolve_story_md(a.key, str(art))
+        except (ImportError, AttributeError):
+            name = None
+        if not name:
+            die(f"没找到 {a.key} 的 spec（{art}），用 --spec 指定")
+        path = art / name
+    if not path.is_file():
+        die(f"spec 不存在：{path}")
+    try:
+        rel = str(path.relative_to(ctx.root))
+    except ValueError:
+        rel = str(path)
+    new, n = _import_spec_decisions(ctx, a.key, path, rel)
+    total = [r for r in load_decisions(ctx)["items"] if r["key"] == a.key and r.get("kind") == "spec"]
+    print("STATUS=ok")
+    print(f"IMPORTED={','.join(r['id'] for r in new)}")
+    print(f"SPEC_ITEMS={n}")
+    print(f"INBOX_ITEMS={len(total)}")
+    if n != len(total):
+        print(f"WARN=spec 里列了 {n} 条待确认，收件箱里这条 story 有 {len(total)} 条：spec 改过条目文字，"
+              "或者删掉了条目；用 superh.py decisions --all 核对")
+    return 0
 
 
 # ---------------------------------------------------------------- spec reopen
@@ -2622,6 +3083,11 @@ def cmd_decisions(ctx, a):
         if r.get("options"):
             print(f"    选项：{' / '.join(r['options'])}")
         print(f"    采用：{r['chosen']}" + (f"（{r['why']}）" if r.get("why") else ""))
+        if r.get("kind") == "spec":
+            print(f"    来源：spec {r.get('spec', '')}「{r.get('section', '')}」"
+                  + (f" {r['spec_ref']}" if str(r.get("spec_ref", "")).startswith("C-") else ""))
+        if r.get("merged_into"):
+            print(f"    并入：{r['merged_into']}（同一件事，确认 / 推翻时一起看）")
         if r.get("commit"):
             print(f"    提交：{r['commit'][:12]}")
         if r.get("answer"):
@@ -2672,6 +3138,21 @@ def cmd_override(ctx, a):
         print("STATUS=ok")
         print("NEXT=dispatcher")
         print("REASON=这是调度者自己做的决定，没有对应的 lane 提交；调度者下一轮读 decisions 按新决定处理")
+        return 0
+    if d.get("kind") in ("audit", "spec"):
+        # nothing to reset to: the worker made this choice (or skipped the suffix)
+        # without stopping, the code that follows from it is already in the lane
+        _update_decisions(ctx, {a.id}, needs_followup=True, **mark)
+        print("STATUS=ok")
+        print("NEXT=manual")
+        if d.get("kind") == "spec":
+            print(f"REASON={a.id} 是 worker 自己定下、写在 spec 里的取舍，没有可回退的提交；"
+                  "按新决定开一条修正 chore 或 story（这一路还没合入时也可以 abandon 后让它重跑）")
+        else:
+            print(f"REASON={a.id} 记的是 {d.get('stage', '')} 派发时漏了 harness 后缀；要补跑就在这一路合入后"
+                  "按 spec 手工复核，或开一条复审 chore")
+        if d.get("spec"):
+            print(f"SPEC={d['spec']}")
         return 0
     if not lane or lane.get("phase") in ("merged", "done", "abandoned"):
         _update_decisions(ctx, {a.id}, needs_followup=True, **mark)
@@ -2913,6 +3394,8 @@ def cmd_mark(ctx, a):
         lane.setdefault("notes", []).append(f"{a.phase}: {a.reason}")
     ctx.save_lane(lane)
     print("STATUS=ok")
+    if a.phase == "done":
+        _release_resources(ctx)
     return 0
 
 
@@ -3005,6 +3488,7 @@ def cmd_cleanup(ctx, a):
         print("STATUS=skip")
         print("REASON=keep_worktrees=true")
         return 0
+    _lane_cleanup_hook(ctx, lane)
     _remove_worktree(ctx, lane, force_branch=False)
     lane["cleaned_at"] = now_iso()
     ctx.save_lane(lane)
@@ -3038,6 +3522,8 @@ def cmd_abandon(ctx, a):
         git(["rebase", "--abort"], cwd=wt)
     for _t, tb in lane.get("carry", []):
         git(["branch", "-D", tb], cwd=ctx.root)
+    if wt.exists():
+        _lane_cleanup_hook(ctx, lane)
     _remove_worktree(ctx, lane, force_branch=True)
     tags = harness_tags(ctx).get(a.key, set())
     if "done" not in tags:
@@ -3048,6 +3534,44 @@ def cmd_abandon(ctx, a):
     lane["abandoned_at"] = now_iso()
     ctx.save_lane(lane)
     print("STATUS=ok")
+    _release_resources(ctx)
+    return 0
+
+
+def cmd_post_epic(ctx, a):
+    """Run parallel.yaml `post_epic_command` once for epic N, after its retro and
+    while no lane is working (issue #26: e.g. clearing a shared build cache that
+    a running lane would still be using). With lanes still running it is queued:
+    tick stops handing out new workers and returns next_action=post-epic once
+    they are gone."""
+    cmd = str(ctx.config.get("post_epic_command") or "").strip()
+    epic = str(a.epic)
+    st = _post_epic_state(ctx)
+    if not cmd:
+        print("STATUS=skip")
+        print("REASON=parallel.yaml 没有配 post_epic_command")
+        return 0
+    if epic in st["done"]:
+        print("STATUS=skip")
+        print(f"REASON=epic {epic} 的 post_epic_command 已经执行过")
+        return 0
+    lanes = ctx.all_lanes()
+    busy = sorted(k for k, l in lanes.items() if lane_stage(ctx, l)[0] == "working" or op_live(l.get("op")))
+    if busy:
+        if epic not in st["pending"]:
+            st["pending"].append(epic)
+            write_json(ctx.state / POST_EPIC_FILE, st)
+        print("STATUS=deferred")
+        print(f"REASON=还有 {len(busy)} 路在跑（{', '.join(busy)}），等它们结束再执行；在这之前不再启动新的 worker")
+        return 0
+    ok = _run_hook(ctx, "post_epic_command", cmd, None, {"SUPERH_EPIC": epic})
+    st = _post_epic_state(ctx)
+    st["pending"] = [e for e in st["pending"] if e != epic]
+    st["done"].append(epic)
+    st.setdefault("results", {})[epic] = {"ok": ok, "at": now_iso()}
+    write_json(ctx.state / POST_EPIC_FILE, st)
+    print("STATUS=ok")
+    print(f"POST_EPIC={'ok' if ok else 'failed'}")
     return 0
 
 
@@ -3139,6 +3663,8 @@ def cmd_end_run(ctx, _a):
             print(f"WARN=env_down_command 没有成功，环境可能还开着：{(r['out'] + r['err']).strip()[-300:]}")
         else:
             print("ENV_DOWN=ok")
+    if getattr(_a, "finished", False):
+        _release_resources(ctx, all_of_them=True)
     n = len(_pending(ctx))
     if n:
         print(f"DECISIONS_PENDING={n}")
@@ -3214,7 +3740,8 @@ def cmd_start_run(ctx, a):
 # holds the dispatcher lock (`report` is the worker's and stays open)
 # (`report` and `reopen` are the worker's and stay open; `decide` / `confirm` only
 # touch the decisions inbox, which has its own flock)
-MUTATING = ("prepare", "launch", "integrate", "retry", "resume", "override", "mark", "cleanup", "abandon")
+MUTATING = ("prepare", "launch", "integrate", "retry", "resume", "override", "mark", "cleanup", "abandon",
+            "post-epic")
 
 
 def main(argv=None) -> int:
@@ -3268,6 +3795,11 @@ def main(argv=None) -> int:
     p.add_argument("--option", action="append", default=[])
     p.add_argument("--why", default="")
     p = sub.add_parser("decisions"); p.add_argument("--json", action="store_true"); p.add_argument("--all", action="store_true")
+    p = sub.add_parser("post-epic", help="epic retro 之后执行 parallel.yaml 的 post_epic_command")
+    p.add_argument("epic")
+    p = sub.add_parser("spec-decisions", help="把 spec 里列为待用户确认的取舍导入收件箱")
+    p.add_argument("key")
+    p.add_argument("--spec", default="")
     p = sub.add_parser("confirm")
     p.add_argument("ids", nargs="*")
     p.add_argument("--all", action="store_true")
@@ -3292,6 +3824,7 @@ def main(argv=None) -> int:
         "mark": cmd_mark, "retry": cmd_retry, "cleanup": cmd_cleanup, "abandon": cmd_abandon,
         "end-run": cmd_end_run, "watch": cmd_watch, "reopen": cmd_reopen, "resume": cmd_resume,
         "decide": cmd_decide, "decisions": cmd_decisions, "confirm": cmd_confirm, "override": cmd_override,
+        "spec-decisions": cmd_spec_decisions, "post-epic": cmd_post_epic,
     }[a.cmd]
     try:
         return fn(ctx, a)

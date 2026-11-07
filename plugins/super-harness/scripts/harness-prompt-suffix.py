@@ -3,7 +3,7 @@
 harness-prompt-suffix.py — emit standardized subagent prompt suffix.
 
 Usage:
-    python3 .claude/harness/scripts/harness-prompt-suffix.py <stage>
+    python3 .claude/harness/scripts/harness-prompt-suffix.py <stage> [--file]
 
 stage ∈ {build, implement, chore, 3, 4, 6}   (build pipeline, v0.2.0+;
                                              chore = §0.A.0 retro-fulfill)
@@ -44,12 +44,27 @@ The main agent uses this to avoid hand-pasting these blocks into every
 Agent({prompt: ...}) call. A miss in any one prompt causes the subagent to
 ask for confirmation, which violates the non-interactive contract.
 
+`--file` (issue #21, 0.5.0; what pipeline.md uses): write the suffix to
+`<git-common-dir>/super-harness/suffix/<stage>-<sha8>.md` and print only a
+two-line reference that tells the subagent to Read that file first. Workers
+pasting ~5000 characters of suffix by hand replaced it with a placeholder
+three times (`BUILD_SUFFIX_PLACEHOLDER`, `FILLER_SUFFIX`, `$(SUFFIX)`); a
+short reference survives copying. The reference ends in the marker
+`[harness-suffix <stage> <sha8>]`, which `superh.py launch` looks for in the
+worker's dispatch prompts (a dispatch without it, and without the inline
+answer-policy block, is reported as PROMPT_SUFFIX_MISSING=). The file name is
+the content hash, so lanes sharing one common dir never overwrite each
+other's suffix with different content.
+
 Exit code:
     0 — printed; caller appends to its prompt
     2 — usage / unknown stage
 """
 
 import argparse
+import hashlib
+import os
+import subprocess
 import sys
 # Never drop __pycache__/ next to the deployed scripts: an untracked dir there
 # makes the worktree dirty, and bmad-build-auto refuses to start on a dirty tree.
@@ -242,7 +257,7 @@ DEFERRED_SCAN_BLOCK = f"""**Deferred-work 扫描约定**（schema v1 — 2026-05
 BUILD_CONTRACT_BLOCK = f"""**bmad-build-auto 调度契约（harness 强制）**：
 
 1. 用 Skill 工具调用 `bmad-build-auto`，把上面的「Build intent」作为它的调用意图。一直跑到它按自身 HALT 协议给出终态（`done` / `blocked` / `ready-for-dev`）为止，中途不要停下来汇报。
-2. 它要求的子 agent 一律**同步阻塞**调用，禁止 `run_in_background`（bmad-build-auto 无人值守，后台子 agent 永远不会把控制权交回来）。
+2. 它要求的子 agent 一律**同步阻塞**调用，显式传 `run_in_background: false`（bmad-build-auto 无人值守，后台子 agent 永远不会把控制权交回来）。工具结果仍然显示子 agent 在后台运行（`Async agent launched`）时，不要结束本轮，等它的完成通知。嵌套子 agent 的完成通知有时会送到上一层而不是你这里（issue #20）：通知迟迟不来，而那个子 agent 负责的产物已经落地（spec 的 status 或 Tasks 勾选推进了、它该写的文件已经出现）时，按产物继续下一步，并在返回报告里写一行「<子 agent 描述> 的完成通知没有送到，按产物继续」。产物没落地时继续等，不要因为没有输出就判它卡住。
 3. 进入 step-02 写 spec **之前**，先 Read `.claude/harness/prompt-suffixes/bmad-build-auto-suffix.md`，按其中要求写 spec：slug = story key 原文、frontmatter `context:` 挂实现清单、cross_story_artifacts / planning_artifacts 声明、epic 第一个 story 的继承段、deferred 注入项处理。
 4. git：只允许 bmad-build-auto Finalize 步骤自己创建的本地 commit。禁止 push、建 / 切分支、打 tag、amend、rebase、reset、stash、checkout 别的文件。harness 会在你返回后审计 `harness/<KEY>/start..HEAD` 区间。
 5. 不要改 `{_ARTIFACTS_REL}/sprint-status.yaml`（harness build-sync 统一推进）；新的延后项走 spec frontmatter `deferred:`，不要直接写 `{_DEFERRED_WORK_REL}`（spec Tasks 要求翻转既有 FU 状态的除外）。
@@ -318,28 +333,51 @@ GIT_STATUS_STAGES = {"1", "2", "3", "4", "5", "6", "chore"}
 VALID_STAGES = {"build", "implement", "chore", "1", "2", "3", "4", "5", "6"}
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Emit standardized subagent prompt suffix")
-    parser.add_argument("stage", help="build / implement / chore / 3 / 4 / 6 (legacy: 1 / 2 / 5)")
-    args = parser.parse_args()
-    stage = args.stage.strip()
+SUFFIX_MARKER_PREFIX = "[harness-suffix "
 
-    if stage not in VALID_STAGES:
-        print(f"unknown stage: {stage!r}; expected one of {sorted(VALID_STAGES)}", file=sys.stderr)
-        sys.exit(2)
 
+def _suffix_dir() -> Path:
+    """`<git-common-dir>/super-harness/suffix`: outside every worktree (writing
+    there never dirties the tree bmad-build-auto needs clean), shared by the
+    main worktree and all lanes, and where superh.py looks for it."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=30)
+        common = r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        common = ""
+    if common:
+        return Path(common) / "super-harness" / "suffix"
+    import tempfile
+    return Path(tempfile.gettempdir()) / "harness-suffix"
+
+
+def write_suffix_file(stage: str, text: str) -> str:
+    """Write the suffix under its content hash; return the two-line reference."""
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+    d = _suffix_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{stage}-{digest}.md"
+    if not path.exists() or path.read_text(encoding="utf-8") != text:
+        tmp = d / f".{stage}-{digest}.{os.getpid()}.tmp"
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    return (f"**调度契约、代答政策和项目语境**：在 `{path}`。开始任何工作之前，先用 Read 读完这个文件，"
+            f"按其中的要求执行，它和本 prompt 正文同样有效。\n"
+            f"{SUFFIX_MARKER_PREFIX}{stage} {digest}]")
+
+
+def build_suffix(stage: str) -> str:
     blocks = []
     if stage == "build":
         blocks = [BUILD_CONTRACT_BLOCK, BUILD_DEFERRED_NOTICE_BLOCK, _verification_block(),
                   TASK_TOOLS_BAN_BLOCK, BUILD_SELF_REPORT_BLOCK, BUILD_ANSWER_POLICY_NOTE,
                   ANSWER_POLICY_BLOCK]
-        print("\n\n---\n\n".join(blocks))
-        return
+        return "\n\n---\n\n".join(blocks)
     if stage == "implement":
         blocks = [Q6_FULLSTACK_REVIEW_BLOCK, IMPLEMENT_MARKER_BLOCK, TASK_TOOLS_BAN_BLOCK,
                   ANSWER_POLICY_BLOCK]
-        print("\n\n---\n\n".join(blocks))
-        return
+        return "\n\n---\n\n".join(blocks)
     if stage in RESUME_STAGES:
         blocks.append(resume_block(stage))
     if stage in DEFERRED_SCAN_STAGES:
@@ -361,7 +399,24 @@ def main():
     blocks.append(ANSWER_POLICY_BLOCK)
 
     # Two newlines + horizontal rule between blocks for clean rendering when pasted into a prompt.
-    print("\n\n---\n\n".join(blocks))
+    return "\n\n---\n\n".join(blocks)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Emit standardized subagent prompt suffix")
+    parser.add_argument("stage", help="build / implement / chore / 3 / 4 / 6 (legacy: 1 / 2 / 5)")
+    parser.add_argument("--file", action="store_true",
+                        help="write the suffix to <git-common-dir>/super-harness/suffix/ and print a short "
+                             "reference to append instead (issue #21)")
+    args = parser.parse_args()
+    stage = args.stage.strip()
+
+    if stage not in VALID_STAGES:
+        print(f"unknown stage: {stage!r}; expected one of {sorted(VALID_STAGES)}", file=sys.stderr)
+        sys.exit(2)
+
+    text = build_suffix(stage)
+    print(write_suffix_file(stage, text) if args.file else text)
 
 
 if __name__ == "__main__":

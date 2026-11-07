@@ -2551,6 +2551,43 @@ def _range_paths(base, head="HEAD"):
     return out, None
 
 
+def _build_commit_lines(base, spec_path):
+    """Info lines about the commits in base..HEAD (issue #19). bmad-build-auto
+    keeps commits a sub-agent made during its run ("Keep commits already created
+    during this run"), so an extra commit is not a violation, but nobody saw it
+    either: list them. A commit that changed project code BEFORE the spec's
+    baseline_revision is outside the diff bmad-build-auto reviewed, so it gets a
+    WARN. Never a halt."""
+    out = []
+    r = run(["git", "log", "--reverse", "--format=%H%x09%s", f"{base}..HEAD"])
+    commits = [ln.split("\t", 1) for ln in r.stdout.splitlines() if "\t" in ln] if r.returncode == 0 else []
+    out.append(f"COMMITS={len(commits)}")
+    for sha, subj in commits[:30]:
+        out.append(f"COMMIT={sha[:12]} {subj[:160]}")
+    if not os.path.exists(spec_path):
+        return out
+    bl = str(harness_spec.parse_frontmatter(spec_path).get("baseline_revision") or "").strip()
+    if not bl:
+        return out
+    full = run(["git", "rev-parse", "--verify", "--quiet", f"{bl}^{{commit}}"]).stdout.strip()
+    if not full or full == base or run(["git", "merge-base", "--is-ancestor", base, full]).returncode != 0 \
+            or run(["git", "merge-base", "--is-ancestor", full, "HEAD"]).returncode != 0:
+        return out
+    pre = []
+    for sha, subj in commits:
+        if run(["git", "merge-base", "--is-ancestor", sha, full]).returncode != 0:
+            continue
+        files = run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", sha]).stdout.split()
+        if any(not f.startswith(ARTIFACTS_DIR) for f in files):
+            pre.append(f"PRE_BASELINE_COMMIT={sha[:12]} {subj[:160]}")
+    if pre:
+        out.extend(pre)
+        out.append(f"WARN=有 {len(pre)} 个改了项目代码的提交早于 spec 的 baseline_revision {full[:12]}，"
+                   "不在 bmad-build-auto 这一轮 review 的 diff 里；确认它们已经被 review 过（例如上一轮 build），"
+                   "否则把 baseline_revision 改回更早的提交再跑一轮 review")
+    return out
+
+
 def run_build_verify(key, base=None):
     """Post-hoc audit of a bmad-build-auto run (no staging, no commit).
 
@@ -2650,6 +2687,8 @@ def run_build_verify(key, base=None):
         except OSError:
             pass
 
+    infos.extend(_build_commit_lines(base, spec_path))
+
     planning_allowlist = read_planning_artifacts_allowlist(key, None, "build-verify")
     cross_allowlist = read_cross_story_allowlist(key)
     for st, p in changed:
@@ -2680,6 +2719,31 @@ def run_build_verify(key, base=None):
         emit(ln)
     emit(f"RANGE={base}..{run(['git', 'rev-parse', 'HEAD']).stdout.strip()}")
     return 1 if halts else 0
+
+
+_CODEX_FINDING_BULLET = re.compile(r"^- \[(critical|high|medium|low)\] ")
+
+
+def check_codex_handling(key):
+    """Stage 4 gate (issue #19): the spec's `### Codex Review Handling (Stage 3)`
+    rows are the resume progress of the fix round. Rows in another format were
+    counted as 0 and somebody had to rewrite them by hand after the fact. Stop
+    before the commit instead, naming each line. Returns the halt lines ([] = ok).
+    Only applies when the codex report is present (it is committed by stage 3)."""
+    report = f"{ARTIFACTS_DIR}{key}.codex-review.md"
+    spec_path = harness_spec.story_md_path(key, ARTIFACTS_DIR)
+    if not os.path.exists(report) or not os.path.exists(spec_path):
+        return []
+    try:
+        with open(report, "r", encoding="utf-8") as f:
+            findings = sum(1 for ln in f if _CODEX_FINDING_BULLET.match(ln))
+    except OSError:
+        return []
+    rows = harness_spec.codex_handling_rows(spec_path)
+    out = [f"HANDLING_ROW_MALFORMED={spec_path}:{no}: {text[:200]}" for no, text in rows["malformed"]]
+    if findings and len(rows["ids"]) < findings:
+        out.append(f"HANDLING_ROWS={len(rows['ids'])}/{findings} (well-formed rows / codex findings)")
+    return out
 
 
 def main():
@@ -2724,6 +2788,17 @@ def main():
             sys.exit(1)
         _run_seed_simulation(epic)
         sys.exit(0)
+
+    if args.stage == "4":
+        bad = check_codex_handling(key)
+        if bad:
+            emit("STATUS=halt")
+            emit("REASON=spec 的 `### Codex Review Handling (Stage 3)` 段不合格：每条 codex finding 要有一行 "
+                 "`- [F-<n> <严重度>] <短描述> — fixed|wontfix|deferred: <说明>`。格式不对的行按原意改写成这个格式"
+                 "（只改格式，不改内容），缺的 finding 补上处理记录，然后重跑 harness-commit.py 4（pipeline.md §1 B2.3 验收）")
+            for ln in bad:
+                emit(ln)
+            sys.exit(1)
 
     if args.stage in ("6", "6-5", "6-done", "retro-fulfill") and not epic:
         emit("STATUS=halt")

@@ -180,7 +180,7 @@ python3 .claude/harness/scripts/harness-state.py --in-flight       # 开了头�
 | 会话里的 halt 框（并行模式是看板的「需要你处理」） | 流水线处理不了、停下来等你的问题，附处理选项。处理完用 `--continue` 接着跑 |
 | 看板的「待你确认」（只有并行模式） | worker 和调度者按推荐项做了、没有停下来问你的决定。有空时批量确认，或推翻其中一条，见「不用一直守着」 |
 | `deferred-work.md` | review 和 codex 发现、决定推迟的问题（`FU-` 条目）。`grep_deferred_buckets.sh --list` 按归属汇总，`grep_deferred_status.sh <KEY>` 看某条 story 相关的。目标是后面某条 story 的，会在那条 story 开工时自动带给 bmad-build-auto；build-sync 导入的延后项目标是所在 epic，同 epic 后面的 story 开工时也会带上，epic retro 再把剩下的逐条分到具体去处 |
-| spec 末尾 | `## Auto Run Result`：做了什么、怎么验证、遗留风险；`### Codex Review Handling (Stage 3)`：每条 codex finding 是修了、不修还是推迟 |
+| spec 末尾 | `## Auto Run Result`：做了什么、怎么验证、遗留风险；`### Codex Review Handling (Stage 3)`：每条 codex finding 是修了、不修还是推迟；`### 待用户确认`：bmad-build-auto 自己定下、等你确认的取舍（并行模式自动进收件箱，inline 模式由 `superh.py spec-decisions <KEY>` 导入）；被 rebase 过的还有一张合流前后的提交对应表 |
 | retro 文档和 `retro_action_items` | 行动项、Open questions、Assumptions。`category: dev` 的行动项在下一个 epic 开工前兑现，`grep_pending_dev_retro_items.sh` 列出还没兑现的 |
 
 codex 因为额度、登录或超时被跳过时会留下 `<KEY>.codex-skipped.json`，收尾提醒会列出来，codex 恢复后用 `/super-harness:codex-catchup` 补跑。
@@ -215,6 +215,8 @@ codex 因为额度、登录或超时被跳过时会留下 `<KEY>.codex-skipped.j
 依赖要等上游 story 合入并 build-sync 为 done 才算满足，所以下游 story 开工时一定能看到上游代码。`/super-harness:run-inline` 也按同样的依赖挑 story：按文件顺序取第一条依赖已满足的 backlog。
 
 **外部条件**：依赖里以 `ext-` 开头的项（例如 `ext-finance-signoff`）表示 sprint 之外的条件，比如等另一条主线的契约定稿。它永远不会自动满足，story 一直等待，`board` 单独列出。条件满足后把这一项从依赖里删掉。
+
+**独占资源**：集成环境、压测要独占的 CPU 核这类全机只有一份的东西，在 `parallel.yaml` 的 `resources` 里按 story key 或 glob 声明（例如 `2-4-*: [integration-env, bench-cores]`），调度时同一资源同一时间只给一路，谁先谁后不限。可以给资源配 `resource_acquire` / `resource_release` 命令，第一条要用它的 story 启动前起、最后一条用完后停。以前用 `deps_overrides` 把这类 story 串起来的，可以改成这种写法。
 
 **挂起的 story**：占位 story、等规格补齐的 story 不该被派发，也不该挡住后面的 epic。在 `harness-project-config.yaml` 里声明挂起状态：
 
@@ -258,6 +260,8 @@ python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 - 收件箱怎么处理：`superh.py confirm --all` 全部确认，`superh.py decisions` 看完整内容，`superh.py override D3 --answer "<新决定>"` 推翻一条。推翻时这一路还没合入的，会退回到这个决定之前的提交，换上你的答复重跑（先不加 `--yes` 看要回退什么）；已经合入的只做记录，按新决定另开 story。
 - 机械故障自己修：`## Auto Run Result` 写错标题层级时照样认；B2.3 的修复早于 codex 报告提交时，`harness-commit.py 3` 只提交报告、把修复留给 stage 4；`verify_command` 超时自动重跑一次；配了 `env_check_command` / `env_up_command` 的，worker 启动前和合流验证前会检查环境，没起就先拉起来。每次都在输出里留一行 `SELF_HEAL=` 或 `AUTO_FIXED=` / `AUTO_SPLIT=`。
 - 一路停住不拖整个 epic：设 `blocked_policy: continue` 后，停住的那一路不再挡串行顺序、epic 屏障和 retro 屏障，不依赖它的 story 照常派发。
+- 0.5.0 起收件箱还会收两类条目：worker 写在 spec `### 待用户确认` 段里的取舍（以前只有停下来的 intent gap 才进收件箱），以及 worker 派子 agent 时漏了代答政策后缀的记录。这两类推翻时没有回退点，按新决定另开 chore 或 story。
+- 共享构建缓存这类会越积越大的东西，用 `lane_cleanup_command`（每一路删 worktree 前）和 `post_epic_command`（epic retro 之后、没有 lane 在跑时）清理，默认留空。
 
 ## 并行配置
 
@@ -320,6 +324,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.0 | 2026-11-07 | #18～#26 一起处理。子 agent 的 prompt 后缀改成写进文件、prompt 里只放两行引用，launch 检查 worker 的每次派发有没有带上；spec 里列的待确认取舍自动进收件箱；合流 rebase 后在 spec 末尾补一张新旧提交对应表；retro 行动项两本账一起翻，retro 前自动对账；`parallel.yaml` 新增独占资源和两个清理钩子；Codex 处理记录格式不对时 stage 4 提交前就拦下；build-verify 列出区间里的每个提交；配了 `worker_model` 而实际模型对不上时告警。详见 changelog。 |
 | 0.4.0 | 2026-11-07 | #17：托管模式少打断。intent gap 这类有推荐项的问题按推荐项接着跑，决定进收件箱，看板上批量确认或推翻（推翻会把没合入的那一路退回重跑）；新增 `superh.py resume` 把你的答复写进 spec 后续跑；几种机械故障自动修（标题层级、stage 3/4 顺序、验证超时、环境没起）；可选 `blocked_policy: continue` 让停住的一路不挡后面的 story；launch 和看板显示 worker 实际用的模型。详见 changelog。 |
 | 0.3.5 | 2026-11-06 | #16 的第二个现场：worker 盯着后台子 agent 的输出文件，看它一个多小时没增长就判断卡住、报 blocked 退出，打断了正在跑交叉编译的实现子 agent，还留下没人管的容器。worker prompt 改为只认完成通知；launch 和 retry 会列出 worker 退出后仍挂载着这一路 worktree 的容器。详见 changelog。 |
 | 0.3.4 | 2026-11-06 | 并行模式下 worker 派 build 子 agent 时没写 `run_in_background: false`，有的环境默认放到后台，worker 随即结束本轮，子 agent 被一起结束，这一路记为失败（#16）。现在 worker prompt 和流水线手册每次派子 agent 都显式传这个参数；launch 遇到这种退出会在 DETAIL 里说明；retry 发现 worktree 留着没提交的半成品时会提示用 `--reset` 清掉。详见 changelog。 |

@@ -64,6 +64,23 @@
           harness `retro_action_items` 的同时用它同步原生账（id 约定
           `epic-<N>-retro-<CODE>`，见 bmad-retrospective-suffix.md）。
 
+    python3 .claude/harness/scripts/sprint-status.py retro-item-done <EPIC> <CODE>
+        → 兑现一条 retro 行动项，两本账一起翻（issue #23）：先翻原生 `action_items` 里
+          `epic-<EPIC>-retro-<CODE>`（有 uv 和上游 bmad-retrospective 的 sprint_status.py
+          时走上游 `update --set-action-status`，BMad 规定的改法；没有就只改那一行
+          status），再把 `retro_action_items.epic-<EPIC>-retro.<CODE>` 翻成 done。
+          输出 `NATIVE=done|already-done|missing|failed`、`NATIVE_VIA=upstream|fallback`、
+          `HARNESS=<旧值>->done`。上游脚本返回失败时 harness 账不动，退出码 1。
+          兑现循环、手工兑现、harness 类行动项（提 issue、升级 plugin）都用它。
+
+    python3 .claude/harness/scripts/sprint-status.py action-sync [--fix]
+        → 对账：列出 `retro_action_items` 已 done、原生 `action_items` 还没 done 的条目，
+          每条一行 `MISMATCH=<id> harness=done native=<status>`，末尾 `MISMATCH_COUNT=<n>`；
+          原生先 done 而 harness 没 done 的只报 `NATIVE_AHEAD=<id>`，不改。
+          无 `--fix`：0 = 一致，3 = 有不一致。`--fix`：按 epic 一次调用上游脚本翻成 done
+          （同 retro-item-done 的退路），全部成功退出码 0，有失败 1。retro 之前跑一次
+          （pipeline.md ⑥），follow-through 段就不用手工数。
+
     python3 .claude/harness/scripts/sprint-status.py flatten-deps [--check]
         → 把 development_status 里的多行块（key + 嵌套 status / depends_on）改写成单行
           `key: status`，depends_on 挪到顶层 story_dependencies（已有的条目不覆盖）。
@@ -253,6 +270,180 @@ def cmd_action_status(item_id: str, new_status: str | None) -> int:
     text_lines[idx] = f"{m.group(1)}{m.group(2)}{new_status}{m.group(4)}{m.group(5) or ''}{m.group(6) or ''}"
     _atomic_write(SPRINT_FILE, "".join(text_lines))
     return 0
+
+
+# --- retro action items: harness ledger + BMad native ledger (issue #23) ------
+
+_RAI_EPIC_RE = re.compile(r"^(\s+)epic-(\d+)-retro:\s*(#.*)?$")
+_RAI_CODE_NESTED_RE = re.compile(r"^(\s+)([A-Z][A-Za-z0-9-]*):\s*(#.*)?$")
+_RAI_CODE_SCALAR_RE = re.compile(r"^(\s+)([A-Z][A-Za-z0-9-]*):[ \t]+['\"]?([A-Za-z-]+)['\"]?[ \t]*(#.*)?$")
+_RAI_STATUS_RE = re.compile(r"^(\s+status:[ \t]*)(['\"]?)([A-Za-z-]*)(['\"]?)([ \t]*#.*)?$")
+
+
+def _retro_items(lines: list[str]) -> list[dict]:
+    """[{epic, code, status, idx, scalar}] for every item under retro_action_items.
+    idx is the line holding the status (the `status:` child, or the scalar line)."""
+    out = []
+    in_rai, epic, epic_indent, cur = False, None, None, None
+    for i, raw in enumerate(lines):
+        line = raw.rstrip("\r\n")
+        if not in_rai:
+            if re.match(r"^retro_action_items:\s*(#.*)?$", line):
+                in_rai = True
+            continue
+        if line and not line[0].isspace() and not line.lstrip().startswith("#"):
+            break
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        m = _RAI_EPIC_RE.match(line)
+        if m:
+            epic, epic_indent, cur = m.group(2), len(m.group(1)), None
+            continue
+        if epic is None or len(line) - len(line.lstrip()) <= epic_indent:
+            continue
+        m = _RAI_CODE_SCALAR_RE.match(line)
+        if m and m.group(2) != "status" and (cur is None or len(m.group(1)) <= cur["indent"]):
+            cur = {"epic": epic, "code": m.group(2), "status": m.group(3), "idx": i, "scalar": True,
+                   "indent": len(m.group(1))}
+            out.append(cur)
+            continue
+        m = _RAI_CODE_NESTED_RE.match(line)
+        if m and (cur is None or len(m.group(1)) <= cur["indent"]):
+            cur = {"epic": epic, "code": m.group(2), "status": None, "idx": None, "scalar": False,
+                   "indent": len(m.group(1))}
+            out.append(cur)
+            continue
+        if cur is not None and not cur["scalar"] and cur["idx"] is None:
+            m = _RAI_STATUS_RE.match(line)
+            if m and len(line) - len(line.lstrip()) > cur["indent"]:
+                cur["status"], cur["idx"] = m.group(3), i
+    return out
+
+
+def _upstream_set_action_status(epic: str, ids: list[str]):
+    """Flip native action items via BMad's own script. None = unavailable (no uv
+    or no script); otherwise (ok, detail)."""
+    import json
+    import shutil
+    import subprocess
+    script = PROJECT_ROOT / ".claude" / "skills" / "bmad-retrospective" / "scripts" / "sprint_status.py"
+    uv = shutil.which("uv")
+    if os.environ.get("HARNESS_NO_UPSTREAM") or not uv or not script.is_file():
+        return None
+    payload = json.dumps([{"id": i, "status": "done"} for i in ids])
+    try:
+        r = subprocess.run([uv, "run", "--no-cache", str(script), "update", "--file", str(SPRINT_FILE),
+                            "--epic", str(epic), "--set-action-status", payload],
+                           capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as e:
+        return (False, str(e))
+    try:
+        ok = bool(json.loads(r.stdout or "{}").get("ok")) and r.returncode == 0
+    except ValueError:
+        ok = False
+    return (ok, (r.stdout + r.stderr).strip()[-600:])
+
+
+def _native_status(item_id: str) -> str | None:
+    lines = SPRINT_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
+    idx = _find_action_item_status_line(lines, item_id)
+    if idx is None:
+        return None
+    m = re.match(r"^\s*(?:-\s+)?status:\s*[\"']?([^\"'#\s]*)", lines[idx])
+    return m.group(1) if m else None
+
+
+def _flip_native(epic: str, ids: list[str]) -> tuple[bool, str, str]:
+    """(ok, via, detail) — upstream when available, else one-line fallback."""
+    up = _upstream_set_action_status(epic, ids)
+    if up is not None:
+        return (up[0], "upstream", up[1])
+    for i in ids:
+        cmd_action_status(i, "done")
+    return (True, "fallback", "")
+
+
+def _set_harness_done(epic: str, code: str) -> str | None:
+    lines = SPRINT_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
+    item = next((it for it in _retro_items(lines) if it["epic"] == epic and it["code"] == code), None)
+    if item is None or item["idx"] is None:
+        return None
+    old = item["status"]
+    if old == "done":
+        return old
+    line = lines[item["idx"]]
+    if item["scalar"]:
+        lines[item["idx"]] = re.sub(r"^(\s+[A-Z][A-Za-z0-9-]*:[ \t]+['\"]?)[A-Za-z-]+", r"\g<1>done", line, count=1)
+    else:
+        lines[item["idx"]] = re.sub(r"^(\s+status:[ \t]*['\"]?)[A-Za-z-]*", r"\g<1>done", line, count=1)
+    _atomic_write(SPRINT_FILE, "".join(lines))
+    return old
+
+
+def cmd_retro_item_done(epic: str, code: str) -> int:
+    if not SPRINT_FILE.exists():
+        sys.exit(f"missing {SPRINT_FILE}")
+    epic = epic.strip()
+    lines = SPRINT_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
+    if not any(it["epic"] == epic and it["code"] == code for it in _retro_items(lines)):
+        print(f"REASON=retro_action_items 里没有 epic-{epic}-retro.{code}", file=sys.stderr)
+        return 1
+    item_id = f"epic-{epic}-retro-{code}"
+    native = _native_status(item_id)
+    if native is None:
+        print("NATIVE=missing")
+    elif native == "done":
+        print("NATIVE=already-done")
+    else:
+        ok, via, detail = _flip_native(epic, [item_id])
+        print(f"NATIVE_VIA={via}")
+        if not ok:
+            print("NATIVE=failed")
+            print(f"UPSTREAM_OUTPUT={detail}")
+            print("REASON=上游 sprint_status.py 没能翻原生条目；harness 账没有动，把输出交给用户", file=sys.stderr)
+            return 1
+        print("NATIVE=done")
+    old = _set_harness_done(epic, code)
+    print(f"HARNESS={old}->done")
+    return 0
+
+
+def cmd_action_sync(fix: bool) -> int:
+    if not SPRINT_FILE.exists():
+        sys.exit(f"missing {SPRINT_FILE}")
+    lines = SPRINT_FILE.read_text(encoding="utf-8").splitlines(keepends=True)
+    mism, ahead = [], []
+    for it in _retro_items(lines):
+        item_id = f"epic-{it['epic']}-retro-{it['code']}"
+        idx = _find_action_item_status_line(lines, item_id)
+        if idx is None:
+            continue
+        m = re.match(r"^\s*(?:-\s+)?status:\s*[\"']?([^\"'#\s]*)", lines[idx])
+        native = m.group(1) if m else ""
+        if it["status"] == "done" and native != "done":
+            mism.append((it["epic"], item_id, native))
+        elif native == "done" and it["status"] not in ("done", "wont-do", "cancelled"):
+            ahead.append(item_id)
+    for _e, i, n in mism:
+        print(f"MISMATCH={i} harness=done native={n}")
+    for i in ahead:
+        print(f"NATIVE_AHEAD={i}")
+    print(f"MISMATCH_COUNT={len(mism)}")
+    if not mism:
+        return 0
+    if not fix:
+        return 3
+    failed = 0
+    for epic in sorted({e for e, _i, _n in mism}, key=lambda x: int(x)):
+        ids = [i for e, i, _n in mism if e == epic]
+        ok, via, detail = _flip_native(epic, ids)
+        if ok:
+            print(f"FIXED={','.join(ids)} via={via}")
+        else:
+            failed += len(ids)
+            print(f"FIX_FAILED={','.join(ids)}")
+            print(f"UPSTREAM_OUTPUT={detail}")
+    return 1 if failed else 0
 
 
 def _unmet_deps() -> dict[str, list[str]]:
@@ -676,6 +867,12 @@ def main(argv: list[str]) -> int:
         return cmd_open_epics()
     if cmd == "epic-stories" and len(argv) == 3:
         return cmd_epic_stories(argv[2])
+    if cmd == "retro-item-done" and len(argv) == 4:
+        return cmd_retro_item_done(argv[2], argv[3])
+    if cmd == "action-sync" and len(argv) in (2, 3):
+        if len(argv) == 3 and argv[2] != "--fix":
+            sys.exit("usage: sprint-status.py action-sync [--fix]")
+        return cmd_action_sync(len(argv) == 3)
     if cmd == "action-status" and len(argv) in (3, 4):
         return cmd_action_status(argv[2], argv[3] if len(argv) == 4 else None)
     sys.exit(__doc__)

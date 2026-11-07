@@ -21,7 +21,7 @@
       "name": "super-harness",
       "source": "./plugins/super-harness",
       "description": "BMad-based sprint orchestration (harness-zh merged in): run stories one at a time in-session (/super-harness:run-inline) or in parallel with one worktree + headless claude worker per story and a serial merge queue (/super-harness:run). Requires BMad >= 6.11 + uv.",
-      "version": "0.4.0"
+      "version": "0.5.0"
     },
     {
       "name": "ppt-maker",

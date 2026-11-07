@@ -458,6 +458,155 @@ def section_any_level(path: str, title: str) -> tuple[int, str] | None:
     return None if level is None else (level, "\n".join(out))
 
 
+# --- `### Codex Review Handling (Stage 3)` rows (pipeline.md §1 B2.3) -------
+#
+# One row per codex finding: `- [F-1 high] <短描述> — fixed: 改了 <files>`. The
+# rows are the resume progress of the fix round and the B2.3 acceptance count
+# (rows = findings). A fix agent that wrote `- **F-1 high** ... \`fixed\`` or a
+# table instead was counted as 0 rows and the main agent had to rewrite them by
+# hand (issue #19). The strict pattern stays what it was; anything else in the
+# section that names an F-number at the start of a list item, table row or
+# heading is reported as malformed so harness-commit.py 4 can stop on it.
+
+_HANDLING_STRICT_RE = re.compile(r"^\s*-\s*\[F-(\d+)\b")
+_HANDLING_LEAD_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)]|\||#{1,6})\s*(?:\*\*|__|`|\[)*\s*\[?F-(\d+)\b")
+_HANDLING_NONE_RE = re.compile(r"^\s*-\s*\[none\]")
+
+
+def codex_handling_rows(path: str) -> dict:
+    """{"ids": sorted F-numbers on well-formed rows, "rows": well-formed row count,
+    "malformed": [(line_no, text)], "none": has a `- [none]` row,
+    "section": the section exists}. Fenced code blocks are skipped."""
+    out = {"ids": [], "rows": 0, "malformed": [], "none": False, "section": False}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return out
+    in_sec, fence, ids, loose = False, False, set(), []
+    for no, line in enumerate(lines, 1):
+        if re.match(r"^\s*(```|~~~)", line):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        m = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if m and "codex review handling" in m.group(2).lower():
+            in_sec = True
+            out["section"] = True
+            continue
+        if m and in_sec and not re.search(r"\bF-\d+\b", m.group(2)):
+            in_sec = False
+            continue
+        if not in_sec:
+            continue
+        if _HANDLING_NONE_RE.match(line):
+            out["none"] = True
+            continue
+        sm = _HANDLING_STRICT_RE.match(line)
+        if sm:
+            out["rows"] += 1
+            ids.add(int(sm.group(1)))
+            continue
+        lm = _HANDLING_LEAD_RE.match(line)
+        if lm and not re.match(r"^\s*\|\s*:?-{3,}", line):
+            loose.append((no, line.strip(), int(lm.group(1))))
+    out["ids"] = sorted(ids)
+    out["malformed"] = [(no, text) for no, text, n in loose if n not in ids]
+    return out
+
+
+# --- 待用户确认 items in a spec (issue #24) -----------------------------------
+#
+# A lane worker that settles a trade-off itself (answer-policy) and lists it in
+# the spec "for the user to confirm" never stopped, so nothing sent it to the
+# decision inbox. bmad-build-auto-suffix.md §9 fixes the section name
+# (`### 待用户确认`) and the row format (`- [C-1] <问题> — 采用：<做法>（理由：…）`);
+# older specs used free-form headings («残余风险和待用户确认的事», «新增的待用户确认
+# 项»), which are picked up too: any heading or bold-only line that says 待用户确认
+# / 待你确认 / 待确认 / needs user confirmation. Clarifications blocks (answers
+# already in the inbox, their titles say 待确认 too) are skipped.
+
+_CONFIRM_TITLE_RE = re.compile(r"待用户确认|待你确认|待确认|需要用户确认|needs? (?:user )?confirmation|pending confirmation", re.I)
+_CONFIRM_ITEM_RE = re.compile(r"^(\s*)(?:[-*+]|\d+[.)])\s+(.*)$")
+_CONFIRM_ID_RE = re.compile(r"^\[(C-\d+)\]\s*")
+_CONFIRM_MERGE_RE = re.compile(r"(?:并入|同|合并到|merged[_ ]into:?)\s*(C-\d+|D\d+)", re.I)
+_CONFIRM_SPLIT_RE = re.compile(r"\s*(?:—|--|-)?\s*采用[:：]\s*")
+
+
+def spec_confirm_items(path: str) -> list[dict]:
+    """Items listed for the user to confirm, in spec order:
+    [{"ref": "C-3" | None, "text": full item text, "question": str, "chosen": str,
+      "why": str, "merged_into": "C-1" | "D3" | None, "section": heading text}]."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    items, fence, sec, sec_level, base_indent, cur = [], False, None, 0, None, None
+
+    def flush():
+        nonlocal cur
+        if cur is not None:
+            items.append(cur)
+        cur = None
+
+    for line in lines:
+        if re.match(r"^\s*(```|~~~)", line):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        h = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        bold = re.match(r"^\s*(?:\*\*|__)(.+?)(?:\*\*|__)\s*[:：]?\s*$", line)
+        title = h.group(2) if h else (bold.group(1) if bold else None)
+        if title is not None:
+            level = len(h.group(1)) if h else 7
+            if sec is not None and (bold or level <= sec_level or _CONFIRM_TITLE_RE.search(title)):
+                flush()
+                sec = None
+            if sec is None and _CONFIRM_TITLE_RE.search(title) and "clarification" not in title.lower():
+                sec, sec_level, base_indent = title.strip(), level, None
+            continue
+        if sec is None:
+            continue
+        if re.match(r"^\s*</?intent-contract>", line):
+            flush()
+            sec = None
+            continue
+        m = _CONFIRM_ITEM_RE.match(line)
+        if m and (base_indent is None or len(m.group(1)) <= base_indent):
+            flush()
+            base_indent = len(m.group(1)) if base_indent is None else base_indent
+            cur = {"text": m.group(2).strip(), "section": sec}
+            continue
+        if cur is not None and line.strip() and (line.startswith((" ", "\t")) or m):
+            cur["text"] += " " + line.strip()
+            continue
+        if cur is not None and not line.strip():
+            continue
+        if line.strip():
+            # prose after the list ends the section
+            flush()
+            sec = None
+    flush()
+    for it in items:
+        t = it["text"]
+        mid = _CONFIRM_ID_RE.match(t)
+        it["ref"] = mid.group(1) if mid else None
+        body = t[mid.end():] if mid else t
+        mm = _CONFIRM_MERGE_RE.search(body)
+        it["merged_into"] = mm.group(1) if mm else None
+        parts = _CONFIRM_SPLIT_RE.split(body, maxsplit=1)
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+            q, rest = parts[0].strip(), parts[1].strip()
+            w = re.search(r"[（(]\s*理由[:：]\s*(.+?)[)）]\s*$", rest)
+            it["question"], it["chosen"], it["why"] = q, (rest[:w.start()].strip() if w else rest), (w.group(1).strip() if w else "")
+        else:
+            it["question"], it["chosen"], it["why"] = body.strip(), "", ""
+    return items
+
+
 def latest_review_pass(path: str) -> str | None:
     """Last `### ... Review pass` entry inside `## Review Triage Log`."""
     body = section_text(path, "Review Triage Log")

@@ -27,7 +27,7 @@ allowed-tools: Bash, Read, Edit, Write, Task, AskUserQuestion
 
 **共享行为契约**（与 init / update / run 一致）：
 
-- 代答政策：stage 4 修复 subagent 的 prompt 末尾必须含 `harness-prompt-suffix.py 4` 输出（stage 3 codex review 由主 agent 直接跑 `run_codex_review.sh`，不起子 agent）
+- 代答政策：stage 4 修复 subagent 的 prompt 末尾原样接上 `harness-prompt-suffix.py 4 --file` 输出的两行文件引用。stage 3 codex review 由主 agent 直接跑 `run_codex_review.sh`，不起子 agent
 - TaskCreate 任务 `Codex Catchup: <count> stories`（§1 启动 in_progress；§5 完成 completed）
 - Commit：每条 story 跑 `harness-commit.py 3 <KEY>` 与 `4 <KEY>`，与主流水线同 stage 命名空间
 - 不允许 `git add -A`；不动 sprint-status 的 dev_status 字段（catchup 不改 review/done state）
@@ -218,7 +218,7 @@ echo "HEAD_NOW=$HEAD_NOW"
 - `CODEX_FINDINGS=0`（codex 报告 `No material findings.`）→ 不 spawn，按 `pipeline.md §1 B2.3` 的 0 条分支
   在 spec 末尾写那条 `- [none]` 处理记录，直接验收
 - 否则 spawn fresh general-purpose subagent，prompt = `harness-state.py <KEY> --resume-prompt --stage 4`
-  输出 + pipeline.md §1 B2.3 同款指令 + `harness-prompt-suffix.py 4`，等返回
+  输出 + pipeline.md §1 B2.3 同款指令 + `harness-prompt-suffix.py 4 --file` 的输出，等返回
 - 按 `pipeline.md §1 B2.3` 的"验收"核对（`harness-state.py <KEY>` 的 `codex_handling_rows` /
   `codex_handling_none` 对 `codex_findings`）
 - 注意：若 §4.3 走了降级口径（`CATCHUP_WT_ACTIVE=0` 且窗口未锚定成功），review 报告可能混入

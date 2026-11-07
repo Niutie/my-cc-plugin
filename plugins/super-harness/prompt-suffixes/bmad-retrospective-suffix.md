@@ -267,8 +267,12 @@ harness 的 `retro_action_items.epic-N-retro` 块由 stage ⑥ commit 从 retro 
    `python3 .claude/harness/scripts/sprint-status.py action-status <id>` 逐个查，
    退出码 0（已存在，典型是 retro 重跑）的那些从 JSON 里去掉，只追加缺的。
 2. 无人值守（`-H`）下**不要**传 `--set-action-status`（上游规则：前序 epic 条目的
-   状态迁移只记进文档的 Previous-retro follow-through 段）。harness 在 retro-fulfill
-   兑现 dev 项时会同步把对应原生条目翻 `done`。
+   状态迁移只记进文档的 Previous-retro follow-through 段）。harness 那边每次把
+   `retro_action_items` 翻成 done 都走 `sprint-status.py retro-item-done`，两本账一起翻；
+   dispatch 你之前，主 agent 还跑过一次 `sprint-status.py action-sync --fix`，把以前只翻了
+   一本账的条目补齐（issue #23）。所以 follow-through 段直接按原生账写，不用逐条手数；
+   想核对就跑 `python3 .claude/harness/scripts/sprint-status.py action-sync`（只读，
+   `MISMATCH_COUNT=0` 即两边一致）。
 3. `uv` 不可用导致 `sprint_status.py` 跑不起来时：照上游规则**不要手改**
    sprint-status.yaml，在返回报告里写明；harness stage ⑥ commit 会把
    `epic-N-retrospective` 翻 done 并 seed `retro_action_items`，原生 `action_items`

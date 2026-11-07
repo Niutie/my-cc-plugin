@@ -102,6 +102,14 @@ t = re.sub(r"last_updated: .*", "last_updated: build-of-%s" % key, t)
 open(p, "w", encoding="utf-8").write(t)
 PY
 printf -- '- FU-%s.A1 from build of %s\n' "$KEY" "$KEY" >> "$ART/deferred-work.md"
+# issue #21: the worker's own dispatch, with the prompt the test put in .fake-agent-<KEY>
+if [ -f "$SUPERH_MAIN_ROOT/.fake-agent-$KEY" ]; then
+python3 - "$SUPERH_MAIN_ROOT/.fake-agent-$KEY" <<'PY2'
+import json, sys
+print(json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "tuA", "name": "Agent",
+      "input": {"description": "Follow-up review X", "prompt": open(sys.argv[1], encoding="utf-8").read()}}]}}))
+PY2
+fi
 printf 'epic context compiled while building %s\n' "$KEY" > "$ART/epic-${KEY%%-*}-context.md"
 cat > "$ART/spec-$KEY.md" <<SPEC
 ---
@@ -115,6 +123,7 @@ followup_review_recommended: false
 
 Status: done
 SPEC
+[ -f "$SUPERH_MAIN_ROOT/.fake-spec-extra-$KEY" ] && cat "$SUPERH_MAIN_ROOT/.fake-spec-extra-$KEY" >> "$ART/spec-$KEY.md"
 git add -A
 git commit -qm "feat($KEY): implement"
 git tag "harness/$KEY/built"
@@ -167,7 +176,7 @@ id = "codex-cross-model"
 instruction = "run /codex:adversarial-review on the diff"
 EOF
 printf 'base\n' > src/shared.txt
-printf '.claude/\n.fake-mode-*\n.bv-*\n' > .gitignore
+printf '.claude/\n.fake-mode-*\n.fake-agent-*\n.fake-spec-extra-*\n.bv-*\n' > .gitignore
 git add -A
 git commit -qm "init"
 
@@ -276,8 +285,13 @@ grep -q 'FU-1-1-alpha.A1' "$ART/deferred-work.md" && grep -q 'FU-1-2-beta.A1' "$
 NEW_BUILT_BETA="$(git rev-parse harness/1-2-beta/built)"
 [ "$NEW_BUILT_BETA" != "$OLD_BUILT_BETA" ] && git merge-base --is-ancestor "$NEW_BUILT_BETA" HEAD \
     && ok "I10 built tag carried onto rebased commit" || bad "I10"
-[ "$(git rev-parse harness/1-2-beta/start)" = "$(git rev-parse 'story/1-2-beta~2')" ] \
+# implement + fix + the rebase hash-map record (issue #25) on top of the new base
+[ "$(git rev-parse harness/1-2-beta/start)" = "$(git rev-parse 'story/1-2-beta~3')" ] \
     && ok "I11 start tag moved to rebase base" || bad "I11"
+echo "$OUT" | grep -q "^REWRITTEN=${OLD_BUILT_BETA:0:12} → ${NEW_BUILT_BETA:0:12} feat(1-2-beta): implement" \
+    && grep -q "| ${OLD_BUILT_BETA:0:12} | ${NEW_BUILT_BETA:0:12} | feat(1-2-beta): implement |" "$ART/spec-1-2-beta.md" \
+    && [ "$(git log --format=%s 'story/1-2-beta~3..story/1-2-beta' | grep -c '^docs(1-2-beta): record commit hashes rewritten')" = "1" ] \
+    && ok "I11b rebase: old → new hash map printed, appended to the spec, committed (issue #25)" || { bad "I11b"; echo "$OUT"; tail -8 "$ART/spec-1-2-beta.md"; }
 [ -z "$(git branch --list 'super-harness-tmp/*')" ] && ok "I12 temp branches removed" || bad "I12"
 grep -A1 '1-1-alpha:' "$ART/sprint-status.yaml" | grep -q 'status: done' && ok "I13 sprint branch ledger kept alpha=done" || bad "I13"
 echo "$OUT" | grep -q '^STATUS=ok' && echo "$OUT" | sed -n '/BUILD_VERIFY<</,/>>/p' | grep -q 'STATUS=ok' \
@@ -1049,6 +1063,191 @@ $SH start-run >/dev/null
 OUT="$($SH end-run)"
 echo "$OUT" | grep -q '^STATUS=ok' && [ ! -f "$(git rev-parse --git-common-dir)/super-harness/dispatcher.lock" ] \
     && ok "E1 end-run releases the lock" || { bad "E1"; echo "$OUT"; }
+
+echo "== D18: 0.5.0 — suffix audit, spec decisions, resources, hooks, handling rows (issues #18-#26)"
+# --- #21: a worker dispatch without the harness suffix → PROMPT_SUFFIX_MISSING + inbox
+K=9-50-nosuffix
+printf '## Build intent\n\nfollow-up review of spec X via bmad-build-auto\n\n---\n\nBUILD_SUFFIX_PLACEHOLDER\n' > ".fake-agent-$K"
+$SH prepare $K >/dev/null
+OUT="$($SH launch $K)"
+echo "$OUT" | grep -q '^PROMPT_SUFFIX_MISSING=B3 Follow-up review X（prompt .* 字，结尾：.*BUILD_SUFFIX_PLACEHOLDER）' \
+    && echo "$OUT" | grep -q '^DECISION_IDS=D' \
+    && $SH decisions --json | jget "[r['kind'] for r in d if r['key']=='$K']" | grep -qx "\['audit'\]" \
+    && [ "$(stage_of $K)" = "ready" ] \
+    && ok "S1 dispatch without the suffix: reported, sent to the inbox, the lane still goes on (issue #21)" || { bad "S1"; echo "$OUT"; }
+AID="$($SH decisions --json | jget "[r['id'] for r in d if r['key']=='$K'][0]")"
+OUT="$($SH override $AID --answer "补跑 B3")"; RC=$?
+[ $RC -eq 0 ] && echo "$OUT" | grep -qx 'NEXT=manual' && ok "S2 overriding an audit entry is record-only (NEXT=manual)" || { bad "S2 rc=$RC"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+K=9-51-suffix
+REF="$(cd "$TMP/wt/1-1-alpha" 2>/dev/null || cd "$PROJ"; python3 "$SCRIPTS/harness-prompt-suffix.py" build --file 2>/dev/null)"
+printf '## Build intent\n\nrun bmad-build-auto on spec X\n\n---\n\n%s\n' "$REF" > ".fake-agent-$K"
+F="$(echo "$REF" | sed -n 's/.*在 `\(.*\)`。.*/\1/p')"
+echo "$REF" | tail -1 | grep -Eq '^\[harness-suffix build [0-9a-f]{8}\]$' && [ -f "$F" ] && grep -q '代答政策' "$F" \
+    && [ "$(dirname "$F")" = "$(git rev-parse --path-format=absolute --git-common-dir)/super-harness/suffix" ] \
+    && ok "S3 harness-prompt-suffix --file: suffix in the common git dir, two-line reference with marker" || { bad "S3"; echo "$REF"; }
+$SH prepare $K >/dev/null
+OUT="$($SH launch $K)"
+! echo "$OUT" | grep -q '^PROMPT_SUFFIX_MISSING=' && ok "S4 a dispatch carrying the reference passes the audit" || { bad "S4"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+rm -f .fake-agent-9-5*
+
+# --- #18: worker_model set, the worker runs on another model
+cfg_set worker_model opus
+K=9-52-model
+$SH prepare $K >/dev/null
+OUT="$($SH launch $K)"
+echo "$OUT" | grep -q '^WARN=worker 实际用的模型 fake-model 和 parallel.yaml 的 worker_model opus 对不上' \
+    && ok "S5 configured worker_model vs the init event's model: WARN on mismatch (issue #18)" || { bad "S5"; echo "$OUT"; }
+cfg_set worker_model "''"
+$SH abandon $K --yes >/dev/null
+python3 - "$SCRIPTS" <<'PY2' && ok "S6 model check: alias match, full id match, mismatch" || bad "S6"
+import sys
+sys.path.insert(0, sys.argv[1])
+import superh
+m = superh._model_mismatch
+assert not m("opus", "claude-opus-5-5") and not m("opus[1m]", "claude-opus-5-5")
+assert m("opus", "claude-haiku-5-5") and not m("claude-sonnet-5-5", "claude-sonnet-5-5") and not m("", "x")
+PY2
+
+# --- #24: spec items listed for the user to confirm → inbox, idempotent
+K=9-53-confirm
+cat > ".fake-spec-extra-$K" <<'SPEC'
+
+**残余风险和待用户确认的事**
+
+1. fixture 的 id 没和控制面的实际输出交叉核对
+2. 组合挂载时标记落在 route 上
+
+### 待用户确认
+
+- [C-1] 停用 service 怎么标 — 采用：标 disabled（理由：和控制面一致）
+- [C-2] 两个残余差异 — 采用：记录不修（并入 C-1）
+SPEC
+$SH prepare $K >/dev/null
+OUT="$($SH launch $K)"
+IDS="$(echo "$OUT" | sed -n 's/^SPEC_DECISIONS_IMPORTED=//p')"
+J="$($SH decisions --json)"
+[ "$(echo "$IDS" | tr ',' '\n' | grep -c .)" = "4" ] && echo "$OUT" | grep -qx 'SPEC_DECISIONS=4' \
+    && echo "$J" | jget "[r['chosen'] for r in d if r['key']=='$K' and r.get('spec_ref')=='C-1'][0]" | grep -qx '标 disabled' \
+    && C1="$(echo "$J" | jget "[r['id'] for r in d if r['key']=='$K' and r.get('spec_ref')=='C-1'][0]")" \
+    && echo "$J" | jget "[r.get('merged_into') for r in d if r['key']=='$K' and r.get('spec_ref')=='C-2'][0]" | grep -qx "$C1" \
+    && ok "S7 launch imports the spec's 待确认 items (both formats), C-2 merged into C-1's id (issue #24)" || { bad "S7"; echo "$OUT"; echo "$J"; }
+OUT="$(cd "$TMP/wt/$K" && $SH spec-decisions $K)"
+echo "$OUT" | grep -qx 'IMPORTED=' && echo "$OUT" | grep -qx 'SPEC_ITEMS=4' && echo "$OUT" | grep -qx 'INBOX_ITEMS=4' \
+    && ok "S8 spec-decisions is idempotent and the counts match" || { bad "S8"; echo "$OUT"; }
+OUT="$($SH override "$C1" --answer "标 removed")"; RC=$?
+[ $RC -eq 0 ] && echo "$OUT" | grep -qx 'NEXT=manual' && echo "$OUT" | grep -q "^SPEC=.*spec-$K.md" \
+    && ok "S9 overriding a spec item: no reset point, NEXT=manual with the spec path" || { bad "S9 rc=$RC"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+rm -f ".fake-spec-extra-$K"
+python3 - "$SCRIPTS" <<'PY2' && ok "S10 Clarifications blocks (already in the inbox) are not re-imported" || bad "S10"
+import sys, tempfile, os
+sys.path.insert(0, sys.argv[1])
+import harness_spec
+p = os.path.join(tempfile.mkdtemp(), "s.md")
+open(p, "w", encoding="utf-8").write("<intent-contract>\n### Clarifications（2026-11-07，按推荐项代答，待确认）\n\n- Q: a\n  A: b（D1）\n</intent-contract>\n")
+assert harness_spec.spec_confirm_items(p) == []
+PY2
+
+# --- #19: codex handling rows in another format
+K=9-54-rows; WT="$TMP/wt/$K"
+$SH prepare $K >/dev/null
+git -C "$WT" tag "harness/$K/start"
+printf -- '---\nstatus: done\n---\n\n## Auto Run Result\n\nStatus: done\n' > "$WT/$ART/spec-$K.md"
+echo v1 > "$WT/src/$K.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "feat($K): implement"
+printf -- '---\nstory: %s\nfindings: 2\n---\n- [high] a\n- [medium] b\n' "$K" > "$WT/$ART/$K.codex-review.md"
+git -C "$WT" add -A; git -C "$WT" commit -qm "story($K): codex adversarial review report"
+echo v2 > "$WT/src/$K.txt"
+printf '\n### Codex Review Handling (Stage 3)\n\n- [F-1 high] a — fixed: src\n- **F-2 medium** b — `fixed`\n' >> "$WT/$ART/spec-$K.md"
+OUT="$(cd "$WT" && python3 .claude/harness/scripts/harness-commit.py 4 $K)"; RC=$?
+ST="$(cd "$WT" && python3 .claude/harness/scripts/harness-state.py $K --json)"
+[ $RC -eq 1 ] && echo "$OUT" | grep -q 'HANDLING_ROW_MALFORMED=.*\*\*F-2 medium\*\*' && echo "$OUT" | grep -qx 'HANDLING_ROWS=1/2 (well-formed rows / codex findings)' \
+    && [ "$(echo "$ST" | jget 'd["codex_handling_rows"]')" = "1" ] && [ "$(echo "$ST" | jget 'd["codex_handling_malformed"]')" = "1" ] \
+    && ok "S11 stage 4 stops on a malformed handling row; harness-state counts it apart (issue #19)" || { bad "S11 rc=$RC"; echo "$OUT"; }
+sed -i 's/^- \*\*F-2 medium\*\* b — `fixed`$/- [F-2 medium] b — fixed: src/' "$WT/$ART/spec-$K.md"
+OUT="$(cd "$WT" && python3 .claude/harness/scripts/harness-commit.py 4 $K)"; RC=$?
+[ $RC -eq 0 ] && ok "S12 rewritten rows pass" || { bad "S12 rc=$RC"; echo "$OUT"; }
+git -C "$WT" reset -q --hard HEAD
+# a code commit before baseline_revision is outside the reviewed diff
+echo pre > "$WT/src/$K.pre"; git -C "$WT" add -A; git -C "$WT" commit -qm "feat($K): sneaked in"
+BL="$(git -C "$WT" rev-parse HEAD)"
+printf -- '---\nstatus: done\nbaseline_revision: %s\n---\n\n## Auto Run Result\n\nStatus: done\n' "$BL" > "$WT/$ART/spec-$K.md"
+echo v3 > "$WT/src/$K.txt"; git -C "$WT" commit -qam "feat($K): reviewed part"
+OUT="$(cd "$WT" && python3 .claude/harness/scripts/harness-commit.py build-verify $K)"; RC=$?
+[ $RC -eq 0 ] && echo "$OUT" | grep -qx 'COMMITS=4' && echo "$OUT" | grep -q "^PRE_BASELINE_COMMIT=.* feat($K): sneaked in" \
+    && ! echo "$OUT" | grep -q "^PRE_BASELINE_COMMIT=.*reviewed part" && echo "$OUT" | grep -q '^WARN=有 2 个改了项目代码的提交早于' \
+    && ok "S13 build-verify lists the range's commits and warns on code commits before baseline_revision" || { bad "S13 rc=$RC"; echo "$OUT"; }
+$SH abandon $K --yes >/dev/null
+
+# --- #22: resources — never two lanes on one resource; acquire before launch, release when nobody needs it
+python3 - "$ART/sprint-status.yaml" <<'PY2'
+import sys, re
+p = sys.argv[1]
+t = open(p, encoding="utf-8").read()
+t = t.replace("development_status:\n", "development_status:\n  9-60-res-a: backlog\n  9-61-res-b: backlog\n  9-62-res-c: backlog\n", 1)
+t += "\nstory_dependencies:\n  9-60-res-a: []\n  9-61-res-b: []\n  9-62-res-c: []\n"
+open(p, "w", encoding="utf-8").write(t)
+PY2
+git add -A >/dev/null; git commit -qm "fixture: resource stories"
+cfg_set epic_barrier false
+cfg_set max_slots 3
+cat >> .claude/harness/parallel.yaml <<EOF2
+resources:
+  9-60-*: [itenv]
+  '9-61-*': [itenv, cores]
+resource_acquire:
+  itenv: 'echo up >> $TMP/itenv.log'
+resource_release:
+  itenv: 'echo down >> $TMP/itenv.log'
+EOF2
+L="$($SH tick | jget 'd["launch"]')"
+echo "$L" | grep -q '9-60-res-a' && ! echo "$L" | grep -q '9-61-res-b' && echo "$L" | grep -q '9-62-res-c' \
+    && ok "S14 two ready stories on one resource: only the first is handed out (issue #22)" || bad "S14 launch=$L"
+$SH prepare 9-60-res-a >/dev/null
+$SH plan --json | jget '[s for s in d["stories"] if s["key"]=="9-61-res-b"][0]["reasons"]' | grep -q '等待资源 itenv（9-60-res-a 正在用）' \
+    && ok "S15 plan says which lane holds the resource" || { bad "S15"; $SH plan; }
+OUT="$($SH launch 9-60-res-a)"
+echo "$OUT" | grep -qx 'RESOURCE_ACQUIRED=itenv' && [ "$(cat "$TMP/itenv.log")" = "up" ] \
+    && ok "S16 resource_acquire runs before the first worker that needs it" || { bad "S16"; echo "$OUT"; }
+lane_edit 9-60-res-a 'd["phase"] = "merged"'
+$SH tick | jget 'd["launch"]' | grep -q '9-61-res-b' && ok "S17 a merged lane frees its resources" || bad "S17"
+lane_edit 9-60-res-a 'd["phase"] = "abandoned"'
+# the story-done path (mark done / abandon) releases only what no unfinished story needs
+OUT="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import superh; superh._release_resources(superh.Ctx())' "$SCRIPTS")"
+[ -z "$OUT" ] && [ "$(cat "$TMP/itenv.log")" = "up" ] && ok "S18 not released while an unfinished story (9-61) still needs it" || bad "S18 $OUT"
+OUT="$($SH end-run --finished)"
+echo "$OUT" | grep -qx 'RESOURCE_RELEASED=itenv' && [ "$(tail -1 "$TMP/itenv.log")" = "down" ] \
+    && ok "S19 end-run --finished releases what is still acquired" || { bad "S19"; echo "$OUT"; }
+
+# --- #26: lane cleanup hook and post-epic
+cfg_set lane_cleanup_command "'echo \"\$SUPERH_KEY \$SUPERH_WORKTREE\" >> $TMP/cleanup.log'"
+K=9-63-hook
+$SH prepare $K >/dev/null
+OUT="$($SH abandon $K --yes)"
+echo "$OUT" | grep -qx 'HOOK=lane_cleanup_command ok' && grep -qx "$K $TMP/wt/$K" "$TMP/cleanup.log" \
+    && ok "S20 lane_cleanup_command runs before the worktree is removed, with key and path (issue #26)" || { bad "S20"; echo "$OUT"; }
+cfg_set post_epic_command "'echo \"\$SUPERH_EPIC\" >> $TMP/post.log'"
+K=9-64-busy
+$SH prepare $K >/dev/null
+sleep 300 & SP=$!
+python3 - "$LANES/$K.proc.json" "$SP" "$(pstart $SP)" <<'PY2'
+import json, sys
+json.dump({"key": "9-64-busy", "attempt": 1, "pid": int(sys.argv[2]), "pid_start": sys.argv[3], "exit_code": None}, open(sys.argv[1], "w"))
+PY2
+lane_edit $K 'd["phase"] = "launched"; d["attempts"] = 1'
+OUT="$($SH post-epic 7)"
+T="$($SH tick)"
+echo "$OUT" | grep -qx 'STATUS=deferred' && [ ! -f "$TMP/post.log" ] && [ "$(echo "$T" | jget 'd["launch"]')" = "[]" ] \
+    && [ "$(echo "$T" | jget 'd["post_epic"]')" = "['7']" ] && [ "$(echo "$T" | jget 'd["next_action"]')" = "wait" ] \
+    && ok "S21 post-epic waits for running lanes; no new workers meanwhile" || { bad "S21"; echo "$OUT"; echo "$T" | head -5; }
+kill $SP; wait $SP 2>/dev/null
+lane_edit $K 'd["phase"] = "abandoned"'
+[ "$($SH tick | jget 'd["next_action"]')" = "post-epic" ] && OUT="$($SH post-epic 7)" \
+    && echo "$OUT" | grep -qx 'POST_EPIC=ok' && [ "$(cat "$TMP/post.log")" = "7" ] \
+    && [ "$($SH tick | jget 'd["post_epic"]')" = "[]" ] && echo "$($SH post-epic 7)" | grep -qx 'STATUS=skip' \
+    && ok "S22 then tick says post-epic, it runs once, launches resume" || { bad "S22"; echo "$OUT"; }
+cfg_set lane_cleanup_command "''"; cfg_set post_epic_command "''"
 
 echo
 echo "superh_test: PASS=$PASS FAIL=$FAIL"

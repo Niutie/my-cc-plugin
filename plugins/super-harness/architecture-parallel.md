@@ -78,12 +78,15 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 | `run.json` | 调度者（`start-run`） | 本次运行固定的 sprint 分支、`--slots` 覆盖值 |
 | `dispatcher.lock` | 调度者（`start-run` 取得，`end-run` 释放） | 持有调度权的会话：pid 和进程启动时间。见 §4.3 |
 | `lanes/<KEY>.json` | 调度者（prepare / integrate / mark / retry / cleanup / abandon） | phase、分支、worktree、rebase 的 onto、要搬的 tag、自动消解记录；prepare / integrate 进行中的标记（pid、启动时间、子进程组）和被打断的次数；held 时的 `hold_kind` / `hold_reason` |
-| `lanes/<KEY>.proc.json` | `launch` 包装进程 | pid、session id、attempt、退出码、最后的 result 文本、花费、worker 实际用的模型（stream 的 init 事件） |
+| `lanes/<KEY>.proc.json` | `launch` 包装进程 | pid、session id、attempt、退出码、最后的 result 文本、花费、worker 实际用的模型（stream 的 init 事件）、没带 harness 后缀的派发（`suffix_missing`） |
 | `lanes/<KEY>.result.json` | worker（`superh report`） | status、summary、codex 跳过原因、follow-up 提示、halt 原文 |
 | `logs/<KEY>.attempt-N.*` | `launch` | 渲染后的 prompt、stream-json 全量日志、stderr |
 | `lanes/<KEY>.reopen.json` | worker（`superh reopen`） | 本 story 自己重开 spec 的次数（按推荐项代答最多 2 次，验证超时重跑 1 次） |
 | `lanes/<KEY>.notes.json` | `reopen` / `resume` / `override` | 还没有 spec 时的答复，下一次渲染 worker prompt 时带进 B1 intent |
-| `decisions.json` | worker（`reopen`）、调度者（`decide`、`resume`）、用户（`confirm`、`override`） | 决策收件箱。这是唯一一个多写入者的文件，所有写入都在同一把 flock 下做完整的读改写 |
+| `decisions.json` | worker（`reopen`）、调度者（`decide`、`resume`）、`launch` / `integrate`（漏后缀的派发、spec 里的待确认项）、用户（`confirm`、`override`） | 决策收件箱。这是唯一一个多写入者的文件，所有写入都在同一把 flock 下做完整的读改写。`kind`：`decision`（reopen 代答）、`dispatcher`、`audit`（漏后缀）、`spec`（worker 写在 spec `### 待用户确认` 段的取舍，带 `spec_ref` 和可选的 `merged_into`） |
+| `resources.json` | `launch`（acquire）、`mark done` / `abandon` / `end-run --finished`（release），经 flock | 已经执行过 `resource_acquire`、还没 release 的资源 |
+| `post_epic.json` | `post-epic` | 等 lane 停下再执行的 epic（`pending`）和已执行过的 epic（`done`） |
+| `suffix/<stage>-<hash>.md` | `harness-prompt-suffix.py --file` | 子 agent prompt 后缀全文，按内容 hash 命名，所有 worktree 共用 |
 
 流水线自己的状态源（`harness/<KEY>/*` tag、spec frontmatter、sprint-status.yaml）保持不变。tag 是仓库级的，任何 worktree 里打的 tag 主 worktree 都能看到。
 
@@ -96,7 +99,7 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 | done / abandoned | phase 为 done / abandoned | |
 | conflict | phase = conflict（rebase 停在代码冲突上） | 是 |
 | preparing / integrating（进行中） | lane 上有 prepare 或 integrate 的进行中标记，且记录的进程还活着（pid 和启动时间都对得上） | |
-| held | phase = held。`hold_kind` 说明原因：`prepare`、`env`（worker 启动前环境没起来）、`verify-env`、`build-verify`、`verify`、`lane-dirty`、`rebase`、`branch-missing`、`worktree-missing`、`foreign`（分支或目录不是 superh 建的）、`interrupted`（prepare / integrate 被杀超过 2 次）、`retry-limit`、`git-error`、`error` | 是 |
+| held | phase = held。`hold_kind` 说明原因：`prepare`、`env`（worker 启动前环境没起来）、`resource`（`resource_acquire` 失败）、`verify-env`、`build-verify`、`verify`、`lane-dirty`、`rebase`、`branch-missing`、`worktree-missing`、`foreign`（分支或目录不是 superh 建的）、`interrupted`（prepare / integrate 被杀超过 2 次）、`retry-limit`、`git-error`、`error` | 是 |
 | integrating | phase 为 integrating / merged | |
 | queued | phase 为 prepared，或 preparing 但进程已不在（prepare 被打断，待重做），或这一次 attempt 还没有 proc 记录 | |
 | working | proc 没有退出码，launch 进程或 claude 子进程有一个还活着（pid 和启动时间都对得上，防止 pid 被复用后误判） | |
@@ -104,7 +107,7 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 | failed | 退出了，但没有本次 attempt 的 result | 是 |
 | ready / blocked / failed / quota | 按 result.status | blocked / failed / quota 需要人 |
 
-`tick` 的 `next_action` 优先级：post-merge（已合入未收口）> integrate > retro > launch > wait > finished / stalled。合流排在启动前面，是为了让依赖它的 story 尽早变成就绪。有 integrate 正在进行时，tick 不再给出别的 integrate、post-merge 或 retro。`quota_hold` 时 launch 和 queued 都不再派发。tick 的 JSON 另有 `preparing`、`integrating`（进行中的 key）和 `orphaned`（launch 进程已退出、claude 子进程还在跑的 key；调度者对它们执行 `superh.py watch <KEY>`，子进程退出时会被唤醒）。
+`tick` 的 `next_action` 优先级：post-merge（已合入未收口）> integrate > retro > post-epic > launch > wait > finished / stalled。有 epic 在等 `post_epic_command`（`post_epic` 非空）时不再派发新 worker，等在跑的 lane 都停下才给出 `post-epic`。合流排在启动前面，是为了让依赖它的 story 尽早变成就绪。有 integrate 正在进行时，tick 不再给出别的 integrate、post-merge 或 retro。`quota_hold` 时 launch 和 queued 都不再派发。tick 的 JSON 另有 `preparing`、`integrating`（进行中的 key）和 `orphaned`（launch 进程已退出、claude 子进程还在跑的 key；调度者对它们执行 `superh.py watch <KEY>`，子进程退出时会被唤醒）。
 
 ### 4.3 调度锁
 
@@ -125,6 +128,8 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
    - 依赖只有在**已经合入并 build-sync 为 done** 之后才算满足，所以下游 story 开 worktree 时一定能看到上游的代码。
 
 `[]` 表示明确声明为独立，在 serial 策略下也能并行。
+
+4. 独占资源（`parallel.yaml` 的 `resources`，0.5.0，issue #22）：story 声明的资源正被另一路占着时等待（plan 写「等待资源 X（KEY 正在用）」）。一路从 prepare 起占着它声明的资源，直到合入 sprint 分支或 abandon，停下等人的也继续占着，免得 retry 之后和别的 lane 撞上。同一轮 tick 里两条就绪 story 声明了同一资源时，只派前一条。`deps_overrides` 只能定死先后顺序，资源互斥不规定谁先谁后。
 
 状态在 `parked_statuses` 里的 story 在 plan 里显示为「挂起」，不派发；tick 的 `parked` 列出它们，`pending_count` 不算它们，只剩挂起 story 时 tick 给出 `finished`。retro 在一个 epic 的 story 全部终态或挂起、并且至少有一条 done 时触发；全是挂起的 epic 不触发。
 
@@ -189,11 +194,17 @@ build-verify 只审计提交区间，不跑测试。两条 lane 各自在 B1 里
 
 inline 模式没有这道门：B1 就在 sprint 分支那棵树上跑，测试已经覆盖。
 
+### 7.6 rebase 之后的 hash 对应
+
+rebase 改写了 lane 的每个提交，spec 里 follow-up、codex 处理记录引用的 hash，以及 codex 报告 frontmatter 的 `head:`，指向的都是 lane 里的旧提交，合流后不在任何分支上（issue #25）。integrate 在第一次 rebase 前记下 lane 的原始 HEAD（`orig_head`），rebase 后按作者、作者时间和提交说明把 `base..orig_head` 的旧提交和 `onto..HEAD` 的新提交配对。rebase 不改这三项；patch-id 在重放到新基线后经常对不上（上下文变了、解过冲突），所以不用它。
+
+配对结果记在 lane 的 `rewrites`，输出 `REWRITTEN=<旧> → <新>`，并在合流验证通过后、ff 之前往 lane 里追加一个提交：spec 末尾加一张对应表（`### 合流 rebase 后的提交对应`），codex 报告 frontmatter 在 `head:` 后面加 `head_rebased:`。原文不改。这个提交被 hook 拒绝时只留 `WARN=`，不挡合流。spec 的 `baseline_revision` 是 lane 内提交时，integrate 另外输出 `BASELINE_REVISION_REBASED=`，B4 写 codex-skipped marker 时用它。
+
 ## 8. 收口
 
 ff 之后，调度者在主 worktree 里按 pipeline.md 的调度模式执行 B4 第 0 步（codex-skipped marker）、B4 build-sync，然后 `mark done` 和 `cleanup`。epic 的最后一条 story 收口后，下一轮 tick 给出 `retro`，按 pipeline.md 的阶段 ⑥ / ⑥.5 / verdict 门执行。
 
-这几步都要写共享账本，所以全部串行。0.3.0 之前这里还有 ⑤.5 测试阶段（已移除），基本测试改由 B1 和 §7.5 的合流验证门负责。
+这几步都要写共享账本，所以全部串行。`parallel.yaml` 配了 `lane_cleanup_command` 时，`cleanup` 和 `abandon` 在删 worktree 之前执行它（环境变量带 `SUPERH_KEY`、`SUPERH_WORKTREE`、`SUPERH_BRANCH`），用来回收这一路在共享缓存里的产物；`post_epic_command` 由调度者在 epic retro 之后用 `superh.py post-epic <N>` 执行，有 lane 在跑时推迟到它们都停下（issue #26）。两者失败都只告警。0.3.0 之前这里还有 ⑤.5 测试阶段（已移除），基本测试改由 B1 和 §7.5 的合流验证门负责。
 
 收口的任何一步都可能被打断，所以调度者不按固定顺序执行，而是每步之前跑一次只读的 `superh.py postmerge <KEY>`，由它根据磁盘上的事实给出下一步：
 
@@ -212,6 +223,8 @@ marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文�
 |---|---|---|
 | bmad-build-auto 停在 intent gap 这类有推荐读法的问题上 | 不停。worker 按 answer-policy 选推荐项，`superh reopen` 写进 spec、commit、续跑，决定进收件箱（`decision_mode: proceed`，默认） | 用户批量 `confirm`；不同意就 `override <ID> --answer`：没合入的 lane 回退到决定之前的提交（`reopen` 会把停下时的 spec 单独 commit 一次，回退点就是它），换上新答复重新排队；已合入的只记录 |
 | worker 报 blocked / failed | 只停这一路。`blocked_policy: continue` 时它不再挡串行顺序、epic 屏障和 retro 屏障 | 要回答问题的用 `superh resume <KEY> --note`（写进 spec、改 status、commit、挪 `followup-start`、重新排队）；其他的接手 session 修好后 `superh retry <KEY>`，worker 按 harness-state 续作 |
+| `resource_acquire` 失败 | 记为 held（`resource`），worker 不启动 | 把资源准备好后 `superh retry <KEY>` |
+| worker 派 B1 / B2.3 / B3 时没带 harness 后缀 | launch 输出 `PROMPT_SUFFIX_MISSING=`，记一条 `audit` 进收件箱，这一路照常合流 | 用户看 spec 里那一步的记录，需要时开复审 chore |
 | 环境没起（配了 `env_check_command`） | launch 前、verify_command 前先执行 `env_up_command`；还不行记为 held（`env` / `verify-env`），worker 不启动、sprint 分支不动 | 把环境起好后 `superh retry <KEY>`（`env`）或 `superh integrate <KEY>`（`verify-env`） |
 | worker 退出但没有回报 | failed | 看 `logs/<KEY>.attempt-N.stream.jsonl`，然后同上 |
 | worker 把子 agent 或命令放到后台后结束了本轮 | failed，DETAIL 写明是后台任务被一起结束；worktree 可能留有没提交的半成品 | `superh retry <KEY>`。lane 没有 commit 也没有 spec、工作区却不干净时，retry 会拒绝并列出 `DIRTY=`，确认不要后用 `retry <KEY> --reset` 恢复到 start tag |

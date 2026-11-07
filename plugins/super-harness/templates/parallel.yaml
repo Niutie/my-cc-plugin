@@ -83,6 +83,33 @@ env_up_command: ''
 env_down_command: ''
 env_timeout_sec: 600
 
+# 独占资源（issue #22）：全机只有一份、不能两路同时用的东西，例如集成环境、压测要独占的 CPU 核。
+# 键是 story key 或 glob，值是资源名列表。tick 保证同一个资源同一时间只派给一路：一路从 prepare
+# 起占着它，直到合入 sprint 分支（或 abandon）；停下来等人的那一路也继续占着。不想规定先后顺序、
+# 只想不同时跑的 story 用这里，不要用 deps_overrides 串起来。
+# resource_acquire：第一条要用这个资源的 story 启动 worker 之前执行一次（sh -c，在主 worktree）；
+# resource_release：没有未完成的 story 还要用它时执行（story 收口 mark done、abandon、end-run --finished）。
+# 留空 = 只做互斥，不起停任何东西。命令超时用 hook_timeout_sec。
+# resources:
+#   2-3-*: [bench-cores]
+#   2-4-*: [integration-env, bench-cores]
+# resource_acquire:
+#   integration-env: 'tools/env up'
+# resource_release:
+#   integration-env: 'tools/env down'
+
+# lane 收尾钩子（issue #26，sh -c，在主 worktree 执行，默认留空）：
+#   lane_cleanup_command  cleanup / abandon 删 lane worktree 之前执行，环境变量多一个 SUPERH_BRANCH。
+#                         例如几路共用一个构建缓存目录时，删掉这一路自己的产物。
+#   post_epic_command     epic retro 之后、没有 lane 在跑的时候执行一次（SUPERH_EPIC=<N>），
+#                         例如整删共享构建缓存。还有 lane 在跑时会等它们结束，期间不派发新 worker。
+# 这两个命令通常会删文件，写之前先确认删的范围。失败只告警，不挡流水线。
+# 共用 cargo target 目录的注意：target/debug/ 顶层的可执行文件（集成测试的 CARGO_BIN_EXE_* 指向
+# 它们）文件名里没有 hash，几路会互相覆盖；同一个 target 目录上的 cargo 构建还会抢同一把文件锁。
+lane_cleanup_command: ''
+post_epic_command: ''
+hook_timeout_sec: 1800
+
 # worker（headless claude -p）的权限模式。无人值守需要 bypassPermissions；
 # 改成更严格的模式时，worker 会在需要授权的地方失败退出。
 worker_permission_mode: bypassPermissions

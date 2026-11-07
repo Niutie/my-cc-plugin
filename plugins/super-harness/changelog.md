@@ -4,6 +4,69 @@
 
 ---
 
+## v0.5.0 — 2026-11-07 — 后缀改成文件引用、待确认取舍进收件箱、合流 hash 对应表、两本账对齐、独占资源、清理钩子（#18～#26）
+
+Epic 1～5 跑下来报的 9 个 issue 一起处理。#18 的大部分和 #21 的续跑命令 0.4.0 已经做了，这一版补齐剩下的部分。
+
+**子 agent 拿不到代答政策（#21）**
+
+- `harness-prompt-suffix.py <stage> --file`：完整后缀（调度契约、代答政策、项目语境）写进 `.git/super-harness/suffix/<stage>-<hash>.md`，stdout 只有两行：一句「先 Read 这个文件」和标记 `[harness-suffix <stage> <hash>]`。文件按内容 hash 命名，所有 worktree 共用，不会弄脏工作区。`pipeline.md`、worker prompt、codex-catchup 的每一处派发都改成接这两行。以前 worker 手贴约 5000 字的后缀，三次写成了占位符（`BUILD_SUFFIX_PLACEHOLDER`、`FILLER_SUFFIX`、`$(SUFFIX)`）。不带 `--file` 时输出和以前一样。
+- `superh.py launch` 读 worker 自己的 Agent 调用：prompt 里提到 bmad-build-auto、Build intent 或 codex 处理，却既没有上面的标记（或标记指向的文件不存在），也没有内联的代答政策段，就输出 `PROMPT_SUFFIX_MISSING=<B1|B2.3|B3> <描述>（prompt N 字，结尾：…）`，并记一条 `kind: audit` 进收件箱（`DECISION_IDS=`）。这一路照常合流，不挂起；推翻这条只做记录（`NEXT=manual`）。
+
+**嵌套子 agent 的完成通知送错对象（#20）**
+
+- 这是 Claude Code 运行时的行为，插件只能兜底。`pipeline.md` §−1 (a) 和 worker prompt：收到不是自己直接派出的子 agent 的完成通知时，用 `SendMessage` 原文转给派它的 build agent，不要自己接着做。
+- `harness-prompt-suffix.py build` 的调度契约第 2 条：子 agent 显式传 `run_in_background: false`；工具结果仍显示在后台时不结束本轮；通知迟迟不来而那个子 agent 的产物已经落地（spec status、Tasks 勾选、该写的文件）时按产物继续，并在返回报告里写一行。产物没落地时继续等，不按「没有输出」判它卡住（0.3.5 的规则不变）。
+- issue 里提的「按产物轮询加超时」没有做成通用超时：一次构建本来就可能十几分钟没有输出，超时会重新引入 #16 的误判。
+
+**spec 里的待确认取舍进收件箱（#24）**
+
+- `bmad-build-auto-suffix.md` 新增 §9：自己定下、需要用户确认的取舍写进 spec 末尾唯一的 `### 待用户确认` 段，一条一行 `- [C-n] <问题> — 采用：<做法>（理由：…）`，follow-up review 接着编号，和已有条目同一件事的写 `（并入 C-3）`。
+- `superh.py launch`（worker 退出后）和 `integrate`（build-verify 通过后）自动导入：`### 待用户确认` 段，以及旧写法（标题或加粗行里带「待用户确认」「待你确认」「待确认」的段落，例如「残余风险和待用户确认的事」）下的列表项。每项一条 `kind: spec`，带 `spec_ref`（`C-n`，没有编号的按文字 hash）和 `merged_into`（`并入 C-3` 换成 C-3 对应的 D 编号）。按 `spec_ref` 去重，重复导入不会多出条目。Clarifications 块（reopen 写的答复，已经在收件箱里）不导入。输出 `SPEC_DECISIONS_IMPORTED=` / `SPEC_DECISIONS=<条数>`。
+- 新命令 `superh.py spec-decisions <KEY> [--spec <路径>]`：inline 模式在 B4 后跑一次；输出 `IMPORTED=`、`SPEC_ITEMS=`、`INBOX_ITEMS=`，两个数对不上时 `WARN=`。
+- `decisions` 列表显示来源段落和「并入」。`override` 一条 `spec` 决定只做记录，输出 `NEXT=manual` 和 `SPEC=`：worker 是按这个取舍写的代码，没有可回退的提交，按新决定另开 chore 或 story。
+
+**合流 rebase 后旧 hash 找不到（#25）**
+
+- `integrate` 第一次 rebase 前记下 lane 的原始 HEAD（`orig_head`），rebase 后按作者、作者时间、提交说明把旧提交和新提交配对，记在 lane 的 `rewrites`，输出 `REWRITTEN=<旧> → <新> <说明>`。patch-id 在重放到新基线后经常对不上（issue 里 9 对只有 3 对一致），所以不用它。
+- 合流验证通过后、ff 之前，在 lane 里追加一个提交（`docs(<KEY>): record commit hashes rewritten by the integrate rebase`）：spec 末尾加 `### 合流 rebase 后的提交对应（sprint 分支 <hash>）` 表，codex 报告 frontmatter 在 `head:` 后面加 `head_rebased:`。原文不改；同一个 onto 只写一次，sprint 分支又动过、再次 rebase 时换掉上一张表。这个提交被 hook 拒绝时只输出 `WARN=`，合流照常。
+- spec 的 `baseline_revision` 指向被改写的 lane 提交时，`integrate` 另输出 `BASELINE_REVISION_REBASED=`。`run` §4 写 codex-skipped marker 时优先用它，以前写进去的是一个不在任何分支上的 hash。
+
+**retro 行动项两本账（#23）**
+
+- `sprint-status.py retro-item-done <EPIC> <CODE>`：先翻原生 `action_items` 的 `epic-<EPIC>-retro-<CODE>`（有 uv 和上游 `bmad-retrospective/scripts/sprint_status.py` 时走上游 `--set-action-status`，没有就只改那一行），再把 `retro_action_items` 那一条翻成 done。嵌套写法和旧标量写法都认。上游拒绝时 harness 账不动，退出码 1。
+- `sprint-status.py action-sync [--fix]`：列出 harness 已 done、原生还没 done 的条目（`MISMATCH=`，退出码 3），`--fix` 按 epic 一次补齐。原生先 done 的只报 `NATIVE_AHEAD=`。
+- `pipeline.md` §0.A.0 兑现循环改用 `retro-item-done`；手工兑现和 harness 类行动项（提 issue、升级 plugin）同样用它。阶段 ⑥ dispatch retro 之前先跑 `action-sync --fix`，改动随 commit row 6 提交，retro 的 follow-through 段不用再逐条手数。`bmad-retrospective-suffix.md` §7 同步。
+
+**阶段顺序和产物格式（#19）**
+
+- 第 1、3 条 0.4.0 已做（`AUTO_SPLIT=`、标题层级容错）。`pipeline.md` B2.3 补一句：dispatch 修复 agent 之前确认 `next_action_code` 是 `codex-fix`。
+- 第 4 条：新增 `harness_spec.codex_handling_rows()`。`harness-state.py` 的 `codex_handling_rows` 改为按 F 编号去重计数，另有 `codex_handling_malformed`（段里提到 F 编号、但不是 `- [F-N ...]` 格式的行，例如 `- **F-1 high** … \`fixed\``、表格行），`--resume-prompt --stage 4` 列出行号。`harness-commit.py 4` 提交前核对，有格式不对的行（`HANDLING_ROW_MALFORMED=`）或处理记录少于 finding 数（`HANDLING_ROWS=n/N`）时 `STATUS=halt`。`pipeline.md` B2.3：用 SendMessage 让修复 agent 改格式，它已结束的由主 agent 只改这几行的格式，再重跑，不算 §3 halt。
+- 第 2 条：bmad-build-auto 自己允许运行中的子 agent 提交（step-04「Keep commits already created during this run」），所以不当作违规。`build-verify` 现在输出 `COMMITS=` 和每个 `COMMIT=<sha> <说明>`；改了项目代码、却早于 spec `baseline_revision` 的提交另列 `PRE_BASELINE_COMMIT=` 并给一行 `WARN=`（这类提交不在这一轮 review 的 diff 里）。不 halt：spec 改回 `in-progress` 重跑时 baseline 会后移，上一轮已经 review 过的提交也会落在这里。
+
+**独占资源（#22）**
+
+- `parallel.yaml` 新增 `resources`（story key 或 glob → 资源名列表）。tick 保证同一资源同一时间只派给一路：一路从 prepare 起占着，直到合入或 abandon，停下等人的也继续占着；同一轮两条就绪 story 声明了同一资源时只派前一条。plan 写「等待资源 X（KEY 正在用）」。
+- `resource_acquire` / `resource_release`（资源名 → 命令）：第一条要用它的 story 启动 worker 前执行 acquire（失败记为 held，`HOLD_KIND=resource`）；`mark done`、`abandon` 之后没有未完成的 story 还要用它时执行 release，`end-run --finished` 释放剩下的。输出 `RESOURCE_ACQUIRED=` / `RESOURCE_RELEASED=`。0.4.0 的 `env_*` 是全局单例，这里按 story 声明。
+
+**共享构建缓存只增不减（#26）**
+
+- `parallel.yaml` 新增 `lane_cleanup_command`（`cleanup` / `abandon` 删 worktree 之前执行，环境变量多 `SUPERH_BRANCH`）和 `post_epic_command`（新命令 `superh.py post-epic <N>`，`run` §5 在 retro 之后执行）。post-epic 遇到还有 lane 在跑时输出 `STATUS=deferred`，tick 停止派发新 worker，等它们停下给出 `next_action: post-epic`。两个命令默认留空，失败只告警。超时 `hook_timeout_sec`（默认 1800）。
+- 插件不识别 cargo 的产物布局，按路径回收某一路的 crate 产物交给项目写在 `lane_cleanup_command` 里。模板注释说明了共用 target 目录的两个坑：`target/debug/` 顶层的可执行文件（集成测试 `CARGO_BIN_EXE_*` 指向的那份）文件名里没有 hash，几路会互相覆盖，这很可能就是 5.10 和 5.9 串产物的原因；同一个 target 目录上的 cargo 构建还会抢同一把文件锁。
+
+**worker 模型（#18）**
+
+- 0.4.0 已经做了 init / start-run 提示和 launch、看板显示实际模型。这一版补上：配了 `worker_model`（别名 opus / sonnet / haiku / fable，或完整 id），而 init 事件里的模型对不上时，launch 输出一行 `WARN=`。
+
+**测试**
+
+- `superh_test.sh` 新增 D18 一组 22 项（S1～S22），I 组加 I11b（rebase 对应表）。fake worker 支持模拟一次 Agent 派发和往 spec 追加内容。
+- 新增 `retro_item_sync_test.sh`（8 项）：两本账一起翻、幂等、旧标量写法、`action-sync` 检查和 `--fix`、上游拒绝时 harness 账不动。
+
+已经在跑的项目先 `/super-harness:update`。`parallel.yaml` 不会被覆盖，新键不写就是默认值（不声明资源、不跑钩子），想用的照模板加。
+
+---
+
 ## v0.4.0 — 2026-11-07 — 托管模式少打断：决策收件箱、机械故障自愈、resume 续跑（#17）
 
 `/super-harness:run` 3 路并行跑一个 6 条 story 的 epic，调度会话打断了用户十来次。其中 6 次是脚本能判断的机械故障，5 次是有推荐项的决定（用户每次都选了推荐项），真正要人拍板的只有 2 到 3 次。这一版按 issue 的四条建议改，外加 `worker_model` 的提示。

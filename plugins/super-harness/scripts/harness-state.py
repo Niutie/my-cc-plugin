@@ -58,7 +58,8 @@ Fields (JSON output):
                                 null when the report does not exist
     codex_no_findings         — bool, the report exists, has 0 finding bullets and the
                                 `No material findings.` line (a clean review)
-    codex_handling_rows       — int, `- [F-N ...]` rows under `### Codex Review Handling` in the spec
+    codex_handling_rows       — int, distinct F-N on `- [F-N ...]` rows under `### Codex Review Handling` in the spec
+    codex_handling_malformed  — int, rows there that name a finding in another format (issue #19)
     codex_handling_none       — bool, that section holds the `- [none] ...` row written for a
                                 clean review (pipeline.md §1 B2.3 zero-finding branch)
     built_tag_exists / followup_tag_exists — build pipeline progress tags
@@ -243,6 +244,7 @@ def compute_state(key, porcelain_result=None):
     state["codex_skipped_marker"] = os.path.exists(marker) or os.path.exists(resolved_marker)
     state["codex_findings"], state["codex_no_findings"] = codex_review_findings(key)
     state["codex_handling_rows"] = count_codex_handling_rows(key)
+    state["codex_handling_malformed"] = len(codex_handling_malformed(key))
     state["codex_handling_none"] = codex_handling_has_none_row(key)
 
     if state["done_tag_exists"]:
@@ -365,7 +367,7 @@ def format_plain(state):
         f"spec_status:             {state.get('spec_status')}",
         f"codex_in_build:          {state.get('codex_in_build')}",
         f"codex_findings:          {state.get('codex_findings')} (no_findings={state.get('codex_no_findings')})",
-        f"codex handling rows:     {state.get('codex_handling_rows')} (none_row={state.get('codex_handling_none')})",
+        f"codex handling rows:     {state.get('codex_handling_rows')} (none_row={state.get('codex_handling_none')}, malformed={state.get('codex_handling_malformed')})",
         f"tag harness/.../built:        {state.get('built_tag_exists')}",
         f"tag harness/.../followup:     {state.get('followup_tag_exists')}",
         f"build-sync committed:    {state.get('sync_committed')}",
@@ -581,25 +583,22 @@ def codex_handling_has_none_row(key):
 
 
 def count_codex_handling_rows(key):
-    """Count `- [F-N <sev>]` rows under `### Codex Review Handling` section in story md."""
+    """Distinct F-numbers on well-formed `- [F-N ...]` rows under `### Codex Review
+    Handling` in the story md (harness_spec.codex_handling_rows; a finding handled
+    twice counts once)."""
     path = _story_md(key)
     if not os.path.exists(path):
         return 0
-    in_section = False
-    rows = 0
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                m = re.match(r"^(#+)\s+(.+?)\s*$", line)
-                if m:
-                    title = m.group(2).lower()
-                    in_section = "codex review handling" in title
-                    continue
-                if in_section and re.match(r"^\s*-\s*\[F-\d+", line):
-                    rows += 1
-    except OSError:
-        pass
-    return rows
+    return len(harness_spec.codex_handling_rows(path)["ids"])
+
+
+def codex_handling_malformed(key):
+    """Rows in the handling section that name a finding but not in the
+    `- [F-N <sev>] ...` form (issue #19): [(line_no, text)]."""
+    path = _story_md(key)
+    if not os.path.exists(path):
+        return []
+    return harness_spec.codex_handling_rows(path)["malformed"]
 
 
 def parse_review_progress(key):
@@ -855,6 +854,12 @@ def emit_resume_prompt(key, stage):
             out.append("- codex 报告是 `No material findings.`：没有要处理的 finding。只需在 spec 末尾 "
                        "`### Codex Review Handling (Stage 3)` 段写一行 `- [none] codex 报告 No material findings.，无需处理`（已有就不重复写），然后停止")
         out.append(f"- story md `### Codex Review Handling (Stage 3)` 段已记录: `{handling_rows}` 条")
+        bad = codex_handling_malformed(key)
+        if bad:
+            out.append(f"- 其中 `{len(bad)}` 行格式不对（不算进上面的条数），先把它们改写成 "
+                       "`- [F-<n> <严重度>] <短描述> — fixed|wontfix|deferred: <说明>`，只改格式不改内容：")
+            for no, text in bad[:10]:
+                out.append(f"  - 第 {no} 行：{text[:160]}")
         out.append(f"- 缺口: 约 `{max(0, total_findings - handling_rows)}` 条 finding 待处理")
         out.append("")
         out.append("**fresh agent 续作动作**（按顺序）：")
