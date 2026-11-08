@@ -83,7 +83,7 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 | `logs/<KEY>.attempt-N.*` | `launch` | 渲染后的 prompt、stream-json 全量日志、stderr |
 | `lanes/<KEY>.reopen.json` | worker（`superh reopen`） | 本 story 自己重开 spec 的次数（按推荐项代答最多 2 次，验证超时重跑 1 次） |
 | `lanes/<KEY>.notes.json` | `reopen` / `resume` / `override` | 还没有 spec 时的答复，下一次渲染 worker prompt 时带进 B1 intent |
-| `decisions.json` | worker（`reopen`）、调度者（`decide`、`resume`）、`launch` / `integrate`（漏后缀的派发、spec 里的待确认项）、用户（`confirm`、`override`） | 决策收件箱。这是唯一一个多写入者的文件，所有写入都在同一把 flock 下做完整的读改写。`kind`：`decision`（reopen 代答）、`dispatcher`、`audit`（漏后缀）、`spec`（worker 写在 spec `### 待用户确认` 段的取舍，带 `spec_ref` 和可选的 `merged_into`） |
+| `decisions.json` | worker（`reopen`）、调度者（`decide`、`resume`）、`launch` / `integrate`（漏后缀的派发、spec 里的待确认项）、用户（`confirm`、`override`） | 决策收件箱。这是唯一一个多写入者的文件，所有写入都在同一把 flock 下做完整的读改写。`kind`：`decision`（reopen 代答）、`dispatcher`、`audit`（漏后缀）、`spec`（worker 写在 spec `### 待用户确认` 段的取舍，带 `spec_ref` 和可选的 `merged_into`；`options` 只放没采用的备选，其他 kind 的 `options` 含采用项） |
 | `resources.json` | `launch`（acquire）、`mark done` / `abandon` / `end-run --finished`（release），经 flock | 已经执行过 `resource_acquire`、还没 release 的资源 |
 | `post_epic.json` | `post-epic` | 等 lane 停下再执行的 epic（`pending`）和已执行过的 epic（`done`） |
 | `suffix/<stage>-<hash>.md` | `harness-prompt-suffix.py --file` | 子 agent prompt 后缀全文，按内容 hash 命名，所有 worktree 共用 |

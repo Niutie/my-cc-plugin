@@ -257,7 +257,7 @@ python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 并行模式按「非必要不找你」设计，0.4.0 起：
 
 - 有推荐项的决定不停下来问。 bmad-build-auto 停在 intent gap（两种读法都说得通）时，worker 按 `answer-policy.md` 选推荐的读法写进 spec 接着跑；调度者自己遇到的拍板题也一样。每个决定进收件箱，看板「待你确认」一栏列出来，epic retro 后和跑完时也会汇总一次。只有 answer-policy「必须人工确认」的几类（push 和其他对外发布、破坏性操作、硬闸门口径、钱和凭据）才真的停下。不想让它代答，把 `parallel.yaml` 的 `decision_mode` 改成 `ask`。
-- 收件箱怎么处理：`superh.py confirm --all` 全部确认，`superh.py decisions` 看完整内容，`superh.py override D3 --answer "<新决定>"` 推翻一条。推翻时这一路还没合入的，会退回到这个决定之前的提交，换上你的答复重跑（先不加 `--yes` 看要回退什么）；已经合入的只做记录，按新决定另开 story。
+- 收件箱怎么处理：`superh.py confirm --all` 全部确认，`superh.py board --full` 或 `superh.py decisions` 看完整内容（spec 来源的条目会列出 worker 没采用的备选），`superh.py override D3 --answer "<新决定>"` 推翻一条。推翻时这一路还没合入的，会退回到这个决定之前的提交，换上你的答复重跑（先不加 `--yes` 看要回退什么）；已经合入的只做记录，按新决定另开 story。
 - 机械故障自己修：`## Auto Run Result` 写错标题层级时照样认；B2.3 的修复早于 codex 报告提交时，`harness-commit.py 3` 只提交报告、把修复留给 stage 4；`verify_command` 超时自动重跑一次；配了 `env_check_command` / `env_up_command` 的，worker 启动前和合流验证前会检查环境，没起就先拉起来。每次都在输出里留一行 `SELF_HEAL=` 或 `AUTO_FIXED=` / `AUTO_SPLIT=`。
 - 一路停住不拖整个 epic：设 `blocked_policy: continue` 后，停住的那一路不再挡串行顺序、epic 屏障和 retro 屏障，不依赖它的 story 照常派发。
 - 0.5.0 起收件箱还会收两类条目：worker 写在 spec `### 待用户确认` 段里的取舍（以前只有停下来的 intent gap 才进收件箱），以及 worker 派子 agent 时漏了代答政策后缀的记录。这两类推翻时没有回退点，按新决定另开 chore 或 story。
@@ -324,6 +324,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.1 | 2026-11-08 | #27：spec「待用户确认」的条目可以写 `备选：A / B`，导入收件箱后看板多一行备选；`board --full` 显示问题、采用、备选、理由的全文。详见 changelog。 |
 | 0.5.0 | 2026-11-07 | #18～#26 一起处理。子 agent 的 prompt 后缀改成写进文件、prompt 里只放两行引用，launch 检查 worker 的每次派发有没有带上；spec 里列的待确认取舍自动进收件箱；合流 rebase 后在 spec 末尾补一张新旧提交对应表；retro 行动项两本账一起翻，retro 前自动对账；`parallel.yaml` 新增独占资源和两个清理钩子；Codex 处理记录格式不对时 stage 4 提交前就拦下；build-verify 列出区间里的每个提交；配了 `worker_model` 而实际模型对不上时告警。详见 changelog。 |
 | 0.4.0 | 2026-11-07 | #17：托管模式少打断。intent gap 这类有推荐项的问题按推荐项接着跑，决定进收件箱，看板上批量确认或推翻（推翻会把没合入的那一路退回重跑）；新增 `superh.py resume` 把你的答复写进 spec 后续跑；几种机械故障自动修（标题层级、stage 3/4 顺序、验证超时、环境没起）；可选 `blocked_policy: continue` 让停住的一路不挡后面的 story；launch 和看板显示 worker 实际用的模型。详见 changelog。 |
 | 0.3.5 | 2026-11-06 | #16 的第二个现场：worker 盯着后台子 agent 的输出文件，看它一个多小时没增长就判断卡住、报 blocked 退出，打断了正在跑交叉编译的实现子 agent，还留下没人管的容器。worker prompt 改为只认完成通知；launch 和 retry 会列出 worker 退出后仍挂载着这一路 worktree 的容器。详见 changelog。 |

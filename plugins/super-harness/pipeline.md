@@ -451,7 +451,7 @@ fi
 
 `git log --oneline harness/$KEY/start..harness/$KEY/done` 即本 story 完整提交序列。inline 模式：用 TaskUpdate 把本 story 的任务标 `completed`。
 
-**待用户确认的取舍进收件箱**（issue #24）：bmad-build-auto 按代答政策自己定下、写进 spec `### 待用户确认` 段的取舍（`bmad-build-auto-suffix.md` §9），也认旧写法（标题或加粗行里带「待用户确认」「待确认」的段落）。调度模式不用做：`superh.py launch` 和 `integrate` 会自动导入，输出 `SPEC_DECISIONS_IMPORTED=`。inline 模式在这里跑一次 `python3 .claude/harness/scripts/superh.py spec-decisions $KEY`，`IMPORTED=` 的编号写进本 story 的回报，提醒用户有空时 `superh.py decisions` 看、`confirm` 或 `override`。`SPEC_ITEMS=` 和 `INBOX_ITEMS=` 对不上时输出 `WARN=`，原样转告。
+**待用户确认的取舍进收件箱**（issue #24）：bmad-build-auto 按代答政策自己定下、写进 spec `### 待用户确认` 段的取舍（`bmad-build-auto-suffix.md` §9），也认旧写法（标题或加粗行里带「待用户确认」「待确认」的段落）。条目里的 `备选：A / B` 导入成收件箱的备选项，`board` 和 `decisions` 都会显示。调度模式不用做：`superh.py launch` 和 `integrate` 会自动导入，输出 `SPEC_DECISIONS_IMPORTED=`。inline 模式在这里跑一次 `python3 .claude/harness/scripts/superh.py spec-decisions $KEY`，`IMPORTED=` 的编号写进本 story 的回报，提醒用户有空时 `superh.py decisions` 看、`confirm` 或 `override`。`SPEC_ITEMS=` 和 `INBOX_ITEMS=` 对不上时输出 `WARN=`，原样转告。
 
 ### 测试由谁负责
 

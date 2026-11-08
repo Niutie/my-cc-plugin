@@ -29,7 +29,7 @@ worktree 看到的是同一份。每个文件只有一个写入者：
     doctor                  只读检查：copy_paths / link_paths 补进 lane 后 lane 是否干净
     plan [--json]           列出每条未完成 story 的就绪情况与等待原因
     tick                    调度者每轮循环读的结构化快照（JSON），含 next_action
-    board [--json]          看板：先列需要人处理的 lane
+    board [--json] [--full] 看板：先列需要人处理的 lane；--full 待确认项不截断
     start-run               取调度锁，固定本次运行的 sprint 分支
     end-run [--finished]    释放调度锁（--finished：再执行 env_down_command）
     prepare <KEY>           开 worktree + 分支，补齐未入库的基建文件，跑 prepare_command
@@ -1435,13 +1435,17 @@ def cmd_board(ctx, a):
         print("没有需要你处理的 lane。")
     if pending:
         print(f"待你确认（已按推荐项继续，{len(pending)} 条）：")
+        def cut(t):
+            return t if a.full or len(t) <= 80 else t[:78] + "…"
         for r in pending:
             where = "调度" if r["key"] == "-" else f"{r['key']} {r.get('stage', '')}".strip()
-            q = r["question"] if len(r["question"]) <= 80 else r["question"][:78] + "…"
-            c = r["chosen"] if len(r["chosen"]) <= 80 else r["chosen"][:78] + "…"
-            print(f"  {r['id']} [{where}] {q}")
-            print(f"      采用：{c}")
-        print(f"  全部确认：{SH_CMD} confirm --all；看详情：{SH_CMD} decisions；"
+            print(f"  {r['id']} [{where}] {cut(r['question'])}")
+            print(f"      采用：{cut(r['chosen'])}")
+            if r.get("options"):
+                print(f"      {_options_label(r)}：{cut(' / '.join(r['options']))}")
+            if a.full and r.get("why"):
+                print(f"      理由：{r['why']}")
+        print(f"  全部确认：{SH_CMD} confirm --all；看全文：{SH_CMD} board --full 或 {SH_CMD} decisions；"
               f"推翻一条：{SH_CMD} override <ID> --answer \"<新决定>\"")
     live = [(k, s, d) for k, (s, d) in items if s in ("ready", "integrating", "working", "preparing", "queued")]
     if live:
@@ -2664,17 +2668,22 @@ def _import_spec_decisions(ctx, key, spec_path: Path, spec_rel: str = "") -> tup
         return [], 0
     new = []
     with _decisions_txn(ctx) as d:
-        known = {r.get("spec_ref"): r["id"] for r in d["items"] if r["key"] == key and r.get("kind") == "spec"}
+        recs = {r.get("spec_ref"): r for r in d["items"] if r["key"] == key and r.get("kind") == "spec"}
+        known = {ref: r["id"] for ref, r in recs.items()}
         for it in items:
             ref = _confirm_ref(it)
             if ref in known:
+                # issue #27: a row imported before it listed 备选 gets them now
+                old = recs.get(ref)
+                if old is not None and not old.get("options") and it.get("options"):
+                    old["options"] = list(it["options"])
                 continue
             merged = it.get("merged_into")
             if merged and merged.startswith("C-"):
                 merged = known.get(merged, merged)
             rec = {"id": f"D{d['next_id']}", "key": key, "kind": "spec", "status": "pending",
                    "question": it["question"] or it["text"],
-                   "options": [],
+                   "options": list(it.get("options") or []),
                    "chosen": it["chosen"] or "按 spec 里写的做法（worker 已按它实现）",
                    "why": it["why"], "spec_ref": ref, "spec": spec_rel or str(spec_path),
                    "section": it.get("section", ""), "stage": "spec", "created_at": now_iso()}
@@ -3062,6 +3071,12 @@ def cmd_decide(ctx, a):
     return 0
 
 
+def _options_label(r) -> str:
+    """spec rows list only the readings the worker did not take (备选); the other
+    kinds list every option, the chosen one included."""
+    return "备选" if r.get("kind") == "spec" else "选项"
+
+
 def _pending(ctx):
     return [r for r in load_decisions(ctx)["items"] if r.get("status") == "pending"]
 
@@ -3081,7 +3096,7 @@ def cmd_decisions(ctx, a):
         print(f"{r['id']} [{r['status']}] {where}")
         print(f"    问题：{r['question']}")
         if r.get("options"):
-            print(f"    选项：{' / '.join(r['options'])}")
+            print(f"    {_options_label(r)}：{' / '.join(r['options'])}")
         print(f"    采用：{r['chosen']}" + (f"（{r['why']}）" if r.get("why") else ""))
         if r.get("kind") == "spec":
             print(f"    来源：spec {r.get('spec', '')}「{r.get('section', '')}」"
@@ -3752,6 +3767,7 @@ def main(argv=None) -> int:
     sub.add_parser("tick")
     sub.add_parser("doctor")
     p = sub.add_parser("board"); p.add_argument("--json", action="store_true")
+    p.add_argument("--full", action="store_true", help="待你确认栏显示问题、采用、备选、理由全文，不截断")
     p = sub.add_parser("start-run")
     p.add_argument("--force", action="store_true")
     p.add_argument("--slots", type=int, default=None, help="本次运行的并发数（覆盖 config.max_slots，写进 run.json）")

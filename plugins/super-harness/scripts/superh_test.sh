@@ -1121,21 +1121,48 @@ cat > ".fake-spec-extra-$K" <<'SPEC'
 
 ### 待用户确认
 
-- [C-1] 停用 service 怎么标 — 采用：标 disabled（理由：和控制面一致）
+- [C-1] 停用 service 怎么标 — 采用：标 disabled — 备选：标 removed / 不标（理由：和控制面一致（见 PRD §3））
 - [C-2] 两个残余差异 — 采用：记录不修（并入 C-1）
+- [C-3] 超长的一条：LONGQ_0123456789_0123456789_0123456789_0123456789_0123456789_0123456789_0123456789_END — 采用：照做 — 备选：LONGALT_0123456789_0123456789_0123456789_0123456789_0123456789_0123456789_END / 不做（理由：LONGWHY）
 SPEC
 $SH prepare $K >/dev/null
 OUT="$($SH launch $K)"
 IDS="$(echo "$OUT" | sed -n 's/^SPEC_DECISIONS_IMPORTED=//p')"
 J="$($SH decisions --json)"
-[ "$(echo "$IDS" | tr ',' '\n' | grep -c .)" = "4" ] && echo "$OUT" | grep -qx 'SPEC_DECISIONS=4' \
+[ "$(echo "$IDS" | tr ',' '\n' | grep -c .)" = "5" ] && echo "$OUT" | grep -qx 'SPEC_DECISIONS=5' \
     && echo "$J" | jget "[r['chosen'] for r in d if r['key']=='$K' and r.get('spec_ref')=='C-1'][0]" | grep -qx '标 disabled' \
+    && echo "$J" | jget "[r['why'] for r in d if r['key']=='$K' and r.get('spec_ref')=='C-1'][0]" | grep -qx '和控制面一致（见 PRD §3）' \
+    && echo "$J" | jget "[r['why'] for r in d if r['key']=='$K' and r.get('spec_ref')=='C-2'][0]" | grep -qx '' \
     && C1="$(echo "$J" | jget "[r['id'] for r in d if r['key']=='$K' and r.get('spec_ref')=='C-1'][0]")" \
     && echo "$J" | jget "[r.get('merged_into') for r in d if r['key']=='$K' and r.get('spec_ref')=='C-2'][0]" | grep -qx "$C1" \
     && ok "S7 launch imports the spec's 待确认 items (both formats), C-2 merged into C-1's id (issue #24)" || { bad "S7"; echo "$OUT"; echo "$J"; }
 OUT="$(cd "$TMP/wt/$K" && $SH spec-decisions $K)"
-echo "$OUT" | grep -qx 'IMPORTED=' && echo "$OUT" | grep -qx 'SPEC_ITEMS=4' && echo "$OUT" | grep -qx 'INBOX_ITEMS=4' \
+echo "$OUT" | grep -qx 'IMPORTED=' && echo "$OUT" | grep -qx 'SPEC_ITEMS=5' && echo "$OUT" | grep -qx 'INBOX_ITEMS=5' \
     && ok "S8 spec-decisions is idempotent and the counts match" || { bad "S8"; echo "$OUT"; }
+# issue #27: 备选 → options; board shows them, --full shows everything uncut
+J="$($SH decisions --json)"
+[ "$(echo "$J" | jget "' | '.join([r['options'] for r in d if r['key']=='$K' and r.get('spec_ref')=='C-1'][0])")" = "标 removed | 不标" ] \
+    && [ "$(echo "$J" | jget "len([r['options'] for r in d if r['key']=='$K' and r.get('spec_ref')=='C-2'][0])")" = "0" ] \
+    && ok "S8a a row's 备选 is imported as the record's options (issue #27)" || { bad "S8a"; echo "$J"; }
+OUT="$($SH board)"
+echo "$OUT" | grep -qx '      备选：标 removed / 不标' && echo "$OUT" | grep -q '      备选：LONGALT_.*…$' \
+    && ! echo "$OUT" | grep -q 'LONGQ_.*_END' && ! echo "$OUT" | grep -q 'LONGWHY' \
+    && ok "S8b board prints a 备选 line for rows that have options, cut at 80 chars" || { bad "S8b"; echo "$OUT"; }
+OUT="$($SH board --full)"
+echo "$OUT" | grep -q 'LONGQ_.*_END$' && echo "$OUT" | grep -qx '      备选：LONGALT_0123456789_0123456789_0123456789_0123456789_0123456789_0123456789_END / 不做' \
+    && echo "$OUT" | grep -qx '      理由：LONGWHY' && echo "$OUT" | grep -qx '      理由：和控制面一致（见 PRD §3）' \
+    && ok "S8c board --full prints question, chosen, 备选 and 理由 uncut" || { bad "S8c"; echo "$OUT"; }
+OUT="$($SH decisions)"
+echo "$OUT" | grep -qx '    备选：标 removed / 不标' && ! echo "$OUT" | grep -q '    选项：标 removed' \
+    && ok "S8d decisions labels a spec row's options 备选" || { bad "S8d"; echo "$OUT"; }
+SPECF="$(ls "$TMP/wt/$K/$ART"/spec-$K.md)"
+sed -i 's/^- \[C-2\] 两个残余差异 — 采用：记录不修（并入 C-1）$/- [C-2] 两个残余差异 — 采用：记录不修 — 备选：现在修（并入 C-1）/' "$SPECF"
+OUT="$(cd "$TMP/wt/$K" && $SH spec-decisions $K)"
+J="$($SH decisions --json)"
+echo "$OUT" | grep -qx 'IMPORTED=' && echo "$OUT" | grep -qx 'INBOX_ITEMS=5' \
+    && [ "$(echo "$J" | jget "' | '.join([r['options'] for r in d if r['key']=='$K' and r.get('spec_ref')=='C-2'][0])")" = "现在修" ] \
+    && ok "S8e re-import fills in 备选 on a row imported without them, adds no row" || { bad "S8e"; echo "$OUT"; echo "$J"; }
+git -C "$TMP/wt/$K" checkout -q -- "$SPECF" 2>/dev/null || true
 OUT="$($SH override "$C1" --answer "标 removed")"; RC=$?
 [ $RC -eq 0 ] && echo "$OUT" | grep -qx 'NEXT=manual' && echo "$OUT" | grep -q "^SPEC=.*spec-$K.md" \
     && ok "S9 overriding a spec item: no reset point, NEXT=manual with the spec path" || { bad "S9 rc=$RC"; echo "$OUT"; }

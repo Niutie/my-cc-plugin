@@ -521,7 +521,9 @@ def codex_handling_rows(path: str) -> dict:
 # A lane worker that settles a trade-off itself (answer-policy) and lists it in
 # the spec "for the user to confirm" never stopped, so nothing sent it to the
 # decision inbox. bmad-build-auto-suffix.md §9 fixes the section name
-# (`### 待用户确认`) and the row format (`- [C-1] <问题> — 采用：<做法>（理由：…）`);
+# (`### 待用户确认`) and the row format
+# (`- [C-1] <问题> — 采用：<做法> — 备选：<读法 B> / <读法 C>（理由：…）`, 备选 optional,
+# issue #27);
 # older specs used free-form headings («残余风险和待用户确认的事», «新增的待用户确认
 # 项»), which are picked up too: any heading or bold-only line that says 待用户确认
 # / 待你确认 / 待确认 / needs user confirmation. Clarifications blocks (answers
@@ -532,12 +534,19 @@ _CONFIRM_ITEM_RE = re.compile(r"^(\s*)(?:[-*+]|\d+[.)])\s+(.*)$")
 _CONFIRM_ID_RE = re.compile(r"^\[(C-\d+)\]\s*")
 _CONFIRM_MERGE_RE = re.compile(r"(?:并入|同|合并到|merged[_ ]into:?)\s*(C-\d+|D\d+)", re.I)
 _CONFIRM_SPLIT_RE = re.compile(r"\s*(?:—|--|-)?\s*采用[:：]\s*")
+# 备选 runs up to the 理由 parens (or a trailing 并入 note, or the end of the row)
+_CONFIRM_ALT_RE = re.compile(
+    r"\s*[；;，,]?\s*(?:—|--)?\s*(?:备选(?:方案|读法)?|候选(?:方案|读法)?|其他读法|没选的读法)[:：]\s*"
+    r"(.+?)(?=\s*[（(]\s*(?:理由[:：]|(?:并入|同|合并到)\s*(?:C-\d+|D\d+)\s*[)）])|\s*$)")
+_CONFIRM_ALT_SPLIT_RE = re.compile(r"\s+/\s+|\s*[／｜|]\s*")
+_CONFIRM_TAIL_MERGE_RE = re.compile(r"\s*[（(]\s*(?:并入|同|合并到)\s*(?:C-\d+|D\d+)\s*[)）]\s*$")
 
 
 def spec_confirm_items(path: str) -> list[dict]:
     """Items listed for the user to confirm, in spec order:
     [{"ref": "C-3" | None, "text": full item text, "question": str, "chosen": str,
-      "why": str, "merged_into": "C-1" | "D3" | None, "section": heading text}]."""
+      "options": [alternatives not chosen], "why": str,
+      "merged_into": "C-1" | "D3" | None, "section": heading text}]."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -597,10 +606,16 @@ def spec_confirm_items(path: str) -> list[dict]:
         body = t[mid.end():] if mid else t
         mm = _CONFIRM_MERGE_RE.search(body)
         it["merged_into"] = mm.group(1) if mm else None
+        it["options"] = []
         parts = _CONFIRM_SPLIT_RE.split(body, maxsplit=1)
         if len(parts) == 2 and parts[0].strip() and parts[1].strip():
             q, rest = parts[0].strip(), parts[1].strip()
-            w = re.search(r"[（(]\s*理由[:：]\s*(.+?)[)）]\s*$", rest)
+            rest = _CONFIRM_TAIL_MERGE_RE.sub("", rest)
+            alt = _CONFIRM_ALT_RE.search(rest)
+            if alt:
+                it["options"] = [o.strip() for o in _CONFIRM_ALT_SPLIT_RE.split(alt.group(1).strip()) if o.strip()]
+                rest = (rest[:alt.start()] + rest[alt.end():]).strip()
+            w = re.search(r"[（(]\s*理由[:：]\s*(.+)[)）]\s*$", rest)
             it["question"], it["chosen"], it["why"] = q, (rest[:w.start()].strip() if w else rest), (w.group(1).strip() if w else "")
         else:
             it["question"], it["chosen"], it["why"] = body.strip(), "", ""
