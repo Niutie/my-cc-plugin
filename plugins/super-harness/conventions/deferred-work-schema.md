@@ -156,7 +156,7 @@ pending ──→ in-progress ──→ partial ──→ resolved
 - `build-of-X.Y`（Story X.Y 的 bmad-build-auto 实现子 agent 直接登记，v0.2.0+）
 - `build-auto-of-X.Y`（bmad-build-auto review 归入 spec frontmatter `deferred:`、由 `harness-commit.py build-sync` 导入的条目；id 形如 `FU-X.Y.B<n>`，bucket 一律 `other`、target `Epic N`，v0.2.0+）。0.3.3 起：同 epic 后续 story 起跑时，这些条目出现在 C11 注入段的 `[epic-backlog]` 部分（产出它的 story 自己除外）；epic retro 用 `grep_pending_deferred_for_story.sh --epic N` 列出剩下的，逐条改成具体 target 或关闭（见 `bmad-retrospective-suffix.md`「deferred-work 分诊」）
 - `bmad-review-of-X.Y`（bmad-code-review 阶段）
-- `codex-review-of-X.Y`（codex review 阶段）
+- `codex-review-of-X.Y`（codex review 阶段）。这条 FU 和本 story spec frontmatter `deferred:` 的第 N 条是同一问题时，「关联」里写 `covers: frontmatter deferred #N`（可写多个：`#2 #3`）。build-sync 导入第 N 条时直接写成 `[status:superseded]`，引用这条 FU（0.5.2 起，issue #28）
 - `epic-N-retro`
 - `chore-<slug>`（chore 实施阶段，如 `chore-test-harness-bootstrap`）
 - `design-discussion-YYYY-MM-DD`

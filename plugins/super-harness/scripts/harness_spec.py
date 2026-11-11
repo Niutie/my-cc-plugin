@@ -713,14 +713,66 @@ def build_auto_codex_layer_ids(repo_root: str | Path) -> list[str]:
 # schema v1 FU bullets. Ids are positional (`FU-<X.Y>.B<n>`, n = 1-based index
 # in the append-only list), so re-running is idempotent and a later follow-up
 # pass that appends more items only imports the new tail.
+#
+# Issue #28: the B2.3 codex fix agent may already have filed the same problem
+# as a codex FU before build-sync runs. It declares that with a fixed marker in
+# the FU body (normally in 关联): `covers: frontmatter deferred #3` (several
+# numbers allowed: `#3 #4`, `#3, #4`). The covered item is still imported under
+# its positional id — so ids stay gap-free and the id-based idempotency check is
+# unchanged — but as `[status:superseded]`, pointing at the covering FU.
 
 def _one_line(text, limit):
     t = re.sub(r"\s+", " ", str(text or "")).strip()
     return t if len(t) <= limit else t[: limit - 1].rstrip() + "…"
 
 
-def build_deferred_fu_entries(key: str, spec_path: str) -> list[tuple[str, str]]:
-    """Return [(fu_id, markdown_bullet)] for every spec `deferred:` item."""
+_FU_HEAD_RE = re.compile(r"^- \*\*(FU-[^*\s]+)\*\*")
+_COVERS_RE = re.compile(r"covers:\s*frontmatter\s+deferred\s+((?:#\d+(?:\s*[,，、/]\s*|\s+)?)+)", re.I)
+
+
+def deferred_covers(key: str, ledger_text: str) -> dict[int, str]:
+    """Map frontmatter `deferred:` position (1-based) → id of the FU in the
+    ledger that declares `covers: frontmatter deferred #<n>` for this story.
+
+    Only bullets whose source tag is `[source:<stage>-of-<short id>]` for this
+    story count, and build-sync's own `build-auto-of-` imports never do. The
+    first declaring bullet wins."""
+    sid = short_id(key) or key
+    src_re = re.compile(r"`\[source:([A-Za-z0-9_-]+)-of-" + re.escape(sid) + r"\]`")
+    covers: dict[int, str] = {}
+    cur_id, cur_lines = None, []
+
+    def flush():
+        if not cur_id:
+            return
+        m = src_re.search(cur_lines[0])
+        if not m or m.group(1) == "build-auto":
+            return
+        for cm in _COVERS_RE.finditer("\n".join(cur_lines)):
+            for n in re.findall(r"#(\d+)", cm.group(1)):
+                covers.setdefault(int(n), cur_id)
+
+    for line in ledger_text.splitlines():
+        m = _FU_HEAD_RE.match(line)
+        if m:
+            flush()
+            cur_id, cur_lines = m.group(1), [line]
+        elif cur_id and (not line.strip() or line[:1] in (" ", "\t")):
+            cur_lines.append(line)
+        else:
+            flush()
+            cur_id, cur_lines = None, []
+    flush()
+    return covers
+
+
+def build_deferred_fu_entries(key: str, spec_path: str, covers: dict[int, str] | None = None,
+                              today: str | None = None) -> list[tuple[str, str]]:
+    """Return [(fu_id, markdown_bullet)] for every spec `deferred:` item.
+
+    `covers` (from deferred_covers) turns the matching positions into
+    `[status:superseded]` bullets that reference the covering FU."""
+    covers = covers or {}
     items = parse_frontmatter(spec_path).get("deferred") or []
     if not isinstance(items, list):
         return []
@@ -742,8 +794,16 @@ def build_deferred_fu_entries(key: str, spec_path: str) -> list[tuple[str, str]]
         if item.get("severity"):
             refs.append("severity:" + _one_line(item.get("severity"), 30).replace(" ", ""))
         fu_id = f"FU-{sid}.B{n}"
-        lines = [f"- **{fu_id}** `[status:pending]` `[bucket:other]` `[target:{target}]` `[source:build-auto-of-{sid}]` — {summary}"]
+        by = covers.get(n)
+        status = "superseded" if by else "pending"
+        if by:
+            refs.insert(0, by)
+        lines = [f"- **{fu_id}** `[status:{status}]` `[bucket:other]` `[target:{target}]` `[source:build-auto-of-{sid}]` — {summary}"]
         lines.append(f"  - **关联**：{' / '.join(refs)}")
+        if by:
+            lines.append("  - **历史**：")
+            lines.append(f"    - {today or '????-??-??'} `pending → superseded` by build-sync — "
+                         f"{by} 声明 `covers: frontmatter deferred #{n}`，同一问题以那条为准")
         out.append((fu_id, "\n".join(lines)))
     return out
 
@@ -755,13 +815,22 @@ def import_spec_deferred(key: str, spec_path: str, deferred_work_path: str, toda
     Returns the FU ids appended (empty when nothing new). Never rewrites
     existing content. Raises RuntimeError when the ledger file is missing
     (the harness-owned ledger is created by /super-harness:init)."""
-    entries = build_deferred_fu_entries(key, spec_path)
-    if not entries:
+    return [fid for fid, _st, _by in import_spec_deferred_detail(
+        key, spec_path, deferred_work_path, today, dry_run=dry_run)]
+
+
+def import_spec_deferred_detail(key: str, spec_path: str, deferred_work_path: str, today: str,
+                                dry_run: bool = False) -> list[tuple[str, str, str | None]]:
+    """Same as import_spec_deferred, returning [(fu_id, status, covered_by)]
+    where status is `pending` or `superseded` (issue #28)."""
+    if not build_deferred_fu_entries(key, spec_path):
         return []
     if not os.path.isfile(deferred_work_path):
         raise RuntimeError(f"deferred ledger not found: {deferred_work_path} (run /super-harness:init)")
     with open(deferred_work_path, "r", encoding="utf-8") as f:
         ledger = f.read()
+    covers = deferred_covers(key, ledger)
+    entries = build_deferred_fu_entries(key, spec_path, covers=covers, today=today)
     new = [(fid, md) for fid, md in entries if f"**{fid}**" not in ledger]
     if not new:
         return []
@@ -791,7 +860,8 @@ def import_spec_deferred(key: str, spec_path: str, deferred_work_path: str, toda
             except OSError:
                 pass
             raise
-    return [fid for fid, _ in new]
+    by_id = {f"FU-{short_id(key) or key}.B{n}": by for n, by in covers.items()}
+    return [(fid, "superseded" if by_id.get(fid) else "pending", by_id.get(fid)) for fid, _ in new]
 
 
 # ---------------------------------------------------------------------------

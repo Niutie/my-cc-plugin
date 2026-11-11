@@ -119,7 +119,7 @@ stdout 每个待兑现 dev 项一行 `ITEM<TAB><epic-N-retro><TAB><CODE><TAB><st
 | `build` | §1 B1（spec 已存在时 intent 指向 spec 文件，bmad-build-auto 按 spec status 自己续跑） |
 | `build-verify` | §1 B1 的"验收"一步 |
 | `codex` / `codex-fix` | §1 B2 对应子步 |
-| `followup` | §1 B3（`followup-start` tag 已存在时不要重打，直接 dispatch，bmad-build-auto 按 spec status 续跑；spec 的 status 是 in-review 之类、还没到 done 时，说明 B3 停下后被 reopen / resume 过，intent 改成「继续 spec `<spec 路径>`，按 status 续跑」） |
+| `followup` | §1 B3（`followup-start` tag 已存在时不要重打，直接 dispatch，bmad-build-auto 按 spec status 续跑；spec 的 status 是 in-review 之类、还没到 done 时，说明 B3 停下后被 reopen / resume 过，intent 改成「继续 spec `<spec 路径>`，按 status 续跑」，后面照样接 §B3 的「follow-up 的 bad_spec 回环」一段） |
 | `followup-verify` | §1 B3 的"验收"一步（follow-up 已经跑完，**不要**再 dispatch B3） |
 | `sync` | §1 B4 |
 | `tag-only` | `git tag harness/<KEY>/done`，进 ⑥ 判断 |
@@ -387,6 +387,8 @@ prompt 核心：
 > - **wontfix**：给出能追溯到 `.claude/harness/answer-policy.md` 项目语境的理由
 > - **deferred**：按 schema v1 在 `deferred-work.md` 立 FU（`[source:codex-review-of-<short id>]`），处理记录里引用 FU id
 >
+> 立 deferred FU 之前看一眼 spec frontmatter 的 `deferred:` 列表。这个 finding 和其中第 N 条（从 1 数）说的是同一个问题时，在 FU 的「关联」里写固定标记 `covers: frontmatter deferred #N`（同时覆盖几条就写 `#2 #3`）。build-sync 导入那一条时会直接标成 superseded 并引用你的 FU，账本里不会再多出一条 pending。只认这个写法，「第 3 条」「第四项」之类的说法不算。
+>
 > 每处理完一条，**立即**在 spec 文件末尾的 `### Codex Review Handling (Stage 3)` 段（没有就新建，放在 `<intent-contract>` 之外）追加一行：`- [F-1 high] <短描述> — fixed: 改了 <files>` / `- [F-2 medium] <...> — deferred: FU-x.y.z`。这是断点续作的 progress 来源。
 >
 > 结束条件：所有 finding 各有一条处理记录。然后停止，不要做任何 git 操作。修源码直接用 Edit。
@@ -410,10 +412,19 @@ dispatch 之前先 `git tag harness/$KEY/followup-start`（续作时据此区分
 Agent({
   subagent_type: "general-purpose",
   description: "Follow-up review <KEY>",
-  prompt: "## Build intent\n\n对已完成的 spec `<spec 路径>`（story `<KEY>`）做一轮 follow-up review：直接把这个 spec 文件路径交给 bmad-build-auto（status done 的 spec 会进入新一轮 review pass，审查 baseline 以来的全部改动，包括 codex 修复）。\n\n---\n\n" + <`harness-prompt-suffix.py build --file` 的 stdout>,
+  prompt: "## Build intent\n\n对已完成的 spec `<spec 路径>`（story `<KEY>`）做一轮 follow-up review：直接把这个 spec 文件路径交给 bmad-build-auto（status done 的 spec 会进入新一轮 review pass，审查 baseline 以来的全部改动，包括 codex 修复）。\n\n" + <下面「follow-up 的 bad_spec 回环」一段原文> + "\n\n---\n\n" + <`harness-prompt-suffix.py build --file` 的 stdout>,
   run_in_background: false
 })
 ```
+
+接在 intent 后面的这一段（issue #29）。B3 开始时代码已经提交，bmad-build-auto 的 bad_spec 分支却要求先回退代码再按 KEEP 重做，而调度契约不许 reset、checkout。不写明的话，worker 要自己在两条规则之间权衡：
+
+> **follow-up 的 bad_spec 回环**：这一轮开始时，本 story 的实现已经提交。review 判出 bad_spec 时，step-04 的 bad_spec 分支按下面的做法走，其余照原文：
+> - 不回退代码。已提交的改动，加上这一轮回环里还没提交的改动，就是 KEEP 的全部。Spec Change Log 照常写触发的 finding、改了什么、避免的坏状态，KEEP 一项写「保留 `<当前 HEAD 短 hash>` 的树和本轮未提交的改动，只按改过的 Tasks 增量修改」。
+> - 回到 step-03 时不重新记 `baseline_revision`，frontmatter 里的值保持不变。下一轮 review 照旧看 baseline 以来的全部改动。实现只做改过或新增的 Tasks。
+> - `review_loop_iteration` 照 step-04 第 5 条：每次回环前加 1，超过 5 就 HALT blocked。它在这一轮开始时由 step-01 清零（bmad-build-auto 对 done spec 的规定，照做），所以数的是 follow-up 这一轮的回环次数。回环了却没加 1，这个上限就不起作用。
+
+0.B 表里 `followup` 一行改写成「继续 spec，按 status 续跑」的 intent，同样接上这一段。
 
 **验收**：再跑 `python3 .claude/harness/scripts/harness-commit.py build-verify $KEY`。STATUS=ok → `git tag harness/$KEY/followup`；halt 处理同 B1。
 
@@ -431,9 +442,9 @@ inline 模式在 B3 之后直接执行。调度模式在 lane 合流进 sprint �
 python3 .claude/harness/scripts/harness-commit.py build-sync $KEY
 ```
 
-脚本内部：把 spec frontmatter `deferred:` 里尚未导入的条目追加进 `deferred-work.md`（schema v1，`FU-<short id>.B<n>`，`[source:build-auto-of-<short id>]`）；`sprint-status.yaml` 里 `$KEY → done`，所属 epic `backlog → in-progress`；连同 `<KEY>.codex-skipped.json`（如有）一起 stage。
+脚本内部：把 spec frontmatter `deferred:` 里尚未导入的条目追加进 `deferred-work.md`（schema v1，`FU-<short id>.B<n>`，`[source:build-auto-of-<short id>]`）。同一 story 已有 FU（通常是 B2.3 立的 codex FU）在正文里写了 `covers: frontmatter deferred #<n>` 的，第 n 条照常按位置编号导入，但直接写成 `[status:superseded]`，「关联」引用那条 FU，「历史」记一行原因（issue #28）；`sprint-status.yaml` 里 `$KEY → done`，所属 epic `backlog → in-progress`；连同 `<KEY>.codex-skipped.json`（如有）一起 stage。
 
-- STATUS=ok → 用 `SUGGEST_COMMIT_MSG` commit，然后 `git tag harness/$KEY/done`（`SUGGEST_TAG`）。`SPRINT_STATUS_AUTO_SYNC=import-deferred key=FU-...` 行是信息。
+- STATUS=ok → 用 `SUGGEST_COMMIT_MSG` commit，然后 `git tag harness/$KEY/done`（`SUGGEST_TAG`）。`SPRINT_STATUS_AUTO_SYNC=import-deferred key=FU-...` 行是信息，被覆盖的条目 value 是 `superseded(covered-by:FU-...)`。
 - STATUS=skip → 不 commit，照样 `git tag harness/$KEY/done`。
 - STATUS=halt → §3。
 

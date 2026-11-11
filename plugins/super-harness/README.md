@@ -324,6 +324,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.2 | 2026-11-10 | #28：codex 修复 agent 立 FU 时写 `covers: frontmatter deferred #N`，build-sync 导入 spec 第 N 条延后项时直接标 superseded，同一问题不再记两条 pending。#29：follow-up review 判 bad_spec 时不回退已提交的代码、不改 `baseline_revision`，回环次数照常累加。详见 changelog。 |
 | 0.5.1 | 2026-11-08 | #27：spec「待用户确认」的条目可以写 `备选：A / B`，导入收件箱后看板多一行备选；`board --full` 显示问题、采用、备选、理由的全文。详见 changelog。 |
 | 0.5.0 | 2026-11-07 | #18～#26 一起处理。子 agent 的 prompt 后缀改成写进文件、prompt 里只放两行引用，launch 检查 worker 的每次派发有没有带上；spec 里列的待确认取舍自动进收件箱；合流 rebase 后在 spec 末尾补一张新旧提交对应表；retro 行动项两本账一起翻，retro 前自动对账；`parallel.yaml` 新增独占资源和两个清理钩子；Codex 处理记录格式不对时 stage 4 提交前就拦下；build-verify 列出区间里的每个提交；配了 `worker_model` 而实际模型对不上时告警。详见 changelog。 |
 | 0.4.0 | 2026-11-07 | #17：托管模式少打断。intent gap 这类有推荐项的问题按推荐项接着跑，决定进收件箱，看板上批量确认或推翻（推翻会把没合入的那一路退回重跑）；新增 `superh.py resume` 把你的答复写进 spec 后续跑；几种机械故障自动修（标题层级、stage 3/4 顺序、验证超时、环境没起）；可选 `blocked_policy: continue` 让停住的一路不挡后面的 story；launch 和看板显示 worker 实际用的模型。详见 changelog。 |

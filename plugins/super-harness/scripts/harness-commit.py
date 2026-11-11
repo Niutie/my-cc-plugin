@@ -2931,12 +2931,12 @@ def main():
             spec_md = harness_spec.story_md_path(key, ARTIFACTS_DIR)
             if os.path.exists(spec_md):
                 try:
-                    imported = harness_spec.import_spec_deferred(
+                    imported = harness_spec.import_spec_deferred_detail(
                         key, spec_md, f"{ARTIFACTS_DIR}deferred-work.md",
                         _today_iso(),
                     )
-                    for fid in imported:
-                        auto_sync_log.append(("import-deferred", fid, "pending"))
+                    for fid, st, by in imported:
+                        auto_sync_log.append(("import-deferred", fid, f"{st}(covered-by:{by})" if by else st))
                 except RuntimeError as e:
                     emit("STATUS=halt")
                     emit(f"REASON=deferred import failed (build-sync): {e}")

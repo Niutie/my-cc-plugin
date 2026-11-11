@@ -4,6 +4,26 @@
 
 ---
 
+## v0.5.2 — 2026-11-10 — 延后项和 codex FU 去重、follow-up 的 bad_spec 回环（#28、#29）
+
+**同一问题在 deferred-work.md 记两条（#28）**
+
+一个项目里出现过两次：B2.3 的 codex 修复 agent 先立了 FU-6.8.C1，「关联」里写明它就是 spec frontmatter `deferred:` 的第 3 条；B4 的 build-sync 照样把第 3 条导入成 FU-6.8.B3（pending）。两次都要等到 epic retro 手工标 superseded。build-sync 判重只看 `FU-<X.Y>.B<n>` 这个 id，不读别的条目写了什么。
+
+- 定了一个固定标记：`covers: frontmatter deferred #N`，写在 codex FU 的「关联」里，同时覆盖几条就写 `#2 #3`。自然语言的写法（「第 3 条」「第四项」）不认。
+- `harness_spec.deferred_covers()` 从账本里找本 story 的 FU（`[source:<阶段>-of-<short id>]`，build-sync 自己导入的 `build-auto-of-` 不算）里的这个标记。`import_spec_deferred` 导入第 N 条时，被覆盖的照常按位置编号成 `FU-<X.Y>.B<N>`，但直接写成 `[status:superseded]`，「关联」最前面是那条 codex FU，「历史」记一行 `pending → superseded by build-sync` 和原因。B 编号不出现空洞，按 id 判重的幂等逻辑不用改。
+- `harness-commit.py build-sync` 的 `SPRINT_STATUS_AUTO_SYNC=import-deferred` 行，被覆盖的条目 value 是 `superseded(covered-by:FU-...)`。
+- `pipeline.md` B2.3 的修复 prompt 要求立 deferred FU 前对一遍 spec 的 `deferred:` 列表，同一问题就写这个标记。schema 文档 §3.4 同步。
+- 已经在账本里的重复条目不会被改，仍按以前的办法在 retro 里处理。
+- 测试：build_pipeline_test.sh 加 S3。
+
+**follow-up review 里的 bad_spec 回环（#29）**
+
+bmad-build-auto 的 bad_spec 分支要求先回退代码、再按 KEEP 重做。B3 开始时代码已经提交，harness 的调度契约又不许 reset、checkout，worker 只能自己权衡。那次的 worker 推出来的做法是对的（不回退，`baseline_revision` 不动），换一个 worker 未必。
+
+- `pipeline.md` §B3 的派发 prompt 在 Build intent 后面接一段「follow-up 的 bad_spec 回环」：不回退，KEEP 就是已提交的改动加上本轮未提交的改动；回到 step-03 时不重新记 `baseline_revision`；只按改过或新增的 Tasks 做增量实现；`review_loop_iteration` 每次回环前加 1，超过 5 就 HALT blocked。0.B 续作表里 `followup` 一行改写的 intent 也接这一段。
+- 计数没有照 issue 的提议改成「接着 B1 的值加、不清零」。bmad-build-auto 的 step-01 对 done spec 明确要求先把 `review_loop_iteration` 清零（`followup_pass` 置 true），harness 再要求不清零，worker 又会碰上两条互相冲突的规则。所以上限仍按一轮 review 算，follow-up 这一轮单独数到 5。issue 现场的 spec 停在 1，也和「清零后回环一次加 1」对得上。
+
 ## v0.5.1 — 2026-11-08 — 收件箱显示备选方案（#27）
 
 一个项目跑到 Epic 6 时，收件箱里 37 条从 spec 导入的决定都没有备选项，看板上也只有问题和采用两行，用户看不出 worker 当初还考虑过哪些读法。

@@ -13,6 +13,8 @@
 #   S1 — build-sync: story → done, epic backlog → in-progress, spec
 #        `deferred:` imported as schema v1 FU bullets, done tag suggested
 #   S2 — build-sync re-run is idempotent: nothing new → STATUS=skip + SUGGEST_TAG
+#   S3 — build-sync imports an item a codex FU declares
+#        `covers: frontmatter deferred #n` for as superseded (issue #28)
 #   H1 — harness-state next_action_code walks not-started → build →
 #        build-verify → sync / codex / followup → tag-only, plus --story-md
 #        and --in-flight
@@ -303,6 +305,48 @@ if [ "$ex" = 2 ] && printf '%s' "$out" | grep -qx "STATUS=skip" \
     pass "S2 build-sync idempotent"
 else
     fail "S2" "exit=$ex n_b1=$n_b1 out=$out"
+fi
+
+# ============================================================================
+# S3 — issue #28: a codex FU that declares `covers: frontmatter deferred #2`
+# makes build-sync import B2 as superseded (still B2, no id gap); a FU of
+# another story with the same marker is ignored
+# ============================================================================
+dir="$(seed_repo)"
+(
+    cd "$dir"
+    write_spec "$dir" done $'deferred:\n  - summary: first item\n  - summary: same as codex\n  - summary: third item' ''
+    cat >> "$ART/deferred-work.md" <<'DW'
+
+---
+
+## Deferred from: codex-review of 9-1-foo (2026-11-01)
+
+- **FU-9.1.C1** `[status:pending]` `[bucket:other]` `[target:Epic 9]` `[source:codex-review-of-9.1]` — codex found it first
+  - **关联**：spec-9-1-foo.md C-2 / covers: frontmatter deferred #2
+
+- **FU-9.11.C1** `[status:pending]` `[bucket:other]` `[target:Epic 9]` `[source:codex-review-of-9.11]` — another story
+  - **关联**：covers: frontmatter deferred #3
+DW
+    echo 'x' >> src/a.py
+    git add -A; git commit -q -m "feat"
+)
+ex=0; out="$(cd "$dir" && python3 "$HC" build-sync 9-1-foo 2>&1)" || ex=$?
+dw="$(cat "$dir/$ART/deferred-work.md")"
+lint_ok=0; bash "$SCRIPT_DIR/lint_deferred_work.sh" "$dir/$ART/deferred-work.md" >/dev/null 2>&1 || lint_ok=$?
+rm -rf "$dir"
+if [ "$ex" = 0 ] \
+   && printf '%s' "$out" | grep -qx "SPRINT_STATUS_AUTO_SYNC=import-deferred key=FU-9.1.B1 value=pending" \
+   && printf '%s' "$out" | grep -qx "SPRINT_STATUS_AUTO_SYNC=import-deferred key=FU-9.1.B2 value=superseded(covered-by:FU-9.1.C1)" \
+   && printf '%s' "$out" | grep -qx "SPRINT_STATUS_AUTO_SYNC=import-deferred key=FU-9.1.B3 value=pending" \
+   && printf '%s' "$dw" | grep -qF -- '- **FU-9.1.B2** `[status:superseded]` `[bucket:other]` `[target:Epic 9]` `[source:build-auto-of-9.1]` — same as codex' \
+   && printf '%s' "$dw" | grep -qF -- '  - **关联**：FU-9.1.C1 / spec-9-1-foo.md' \
+   && printf '%s' "$dw" | grep -qE -- '^    - [0-9]{4}-[0-9]{2}-[0-9]{2} `pending → superseded` by build-sync — FU-9.1.C1 ' \
+   && printf '%s' "$dw" | grep -qF -- '- **FU-9.1.B3** `[status:pending]`' \
+   && [ "$lint_ok" = 0 ]; then
+    pass "S3 build-sync supersedes deferred items covered by a codex FU"
+else
+    fail "S3" "exit=$ex lint=$lint_ok out=$out dw=$dw"
 fi
 
 # ============================================================================
