@@ -21,22 +21,38 @@
 
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_SRC="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 TMPDIR="$(mktemp -d -t harness_clone_test.XXXXXX)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 echo "==> simulate clone to: $TMPDIR"
 
-# ---- step 1: 拷贝完整 harness（含 .claude/ 全 + BMad customization 加载点） ----
-# CLAUDE.md / _bmad/{customize,custom} 只有作者自己的已部署仓库才有；普通项目缺
-# 这些是正常的，缺了就跳过（之前无条件 cp，缺文件时刷 stderr 噪音）。
-[ -f "$REPO_ROOT/CLAUDE.md" ] && cp "$REPO_ROOT/CLAUDE.md" "$TMPDIR/CLAUDE.md"
-cp -R "$REPO_ROOT/.claude" "$TMPDIR/.claude"
-mkdir -p "$TMPDIR/_bmad"
-for _d in customize custom; do
-    [ -d "$REPO_ROOT/_bmad/$_d" ] && cp -R "$REPO_ROOT/_bmad/$_d" "$TMPDIR/_bmad/$_d"
-done
+# ---- step 1: 准备一份完整 harness ----
+# 两种运行位置：
+#   a. 插件源码树（plugins/super-harness/scripts/）：上一级有 .claude-plugin/plugin.json。
+#      这里没有部署好的 .claude/harness/，用 deploy_assets.sh 部署进临时目录，
+#      测的就是真实安装出来的布局。
+#   b. 已部署的项目（.claude/harness/scripts/）：../../.. 是项目根，拷它的 .claude/。
+#      CLAUDE.md / _bmad/{customize,custom} 只有作者自己的已部署仓库才有；普通项目缺
+#      这些是正常的，缺了就跳过。
+if [ -f "$PLUGIN_SRC/.claude-plugin/plugin.json" ]; then
+    echo "    (插件源码树：用 deploy_assets.sh 部署)"
+    if ! DEPLOY_QUIET=1 bash "$SCRIPT_DIR/deploy_assets.sh" "$PLUGIN_SRC" "$TMPDIR" >/dev/null; then
+        echo "FAIL: deploy_assets.sh 部署到临时目录失败" >&2
+        exit 15
+    fi
+    mkdir -p "$TMPDIR/_bmad"
+else
+    REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+    [ -f "$REPO_ROOT/CLAUDE.md" ] && cp "$REPO_ROOT/CLAUDE.md" "$TMPDIR/CLAUDE.md"
+    cp -R "$REPO_ROOT/.claude" "$TMPDIR/.claude"
+    mkdir -p "$TMPDIR/_bmad"
+    for _d in customize custom; do
+        [ -d "$REPO_ROOT/_bmad/$_d" ] && cp -R "$REPO_ROOT/_bmad/$_d" "$TMPDIR/_bmad/$_d"
+    done
+fi
 mkdir -p "$TMPDIR/_bmad-output/implementation-artifacts/test_artifacts"
 
 # ---- step 2: 写最小 harness-project-config.yaml（覆盖原项目 config） ----

@@ -4,6 +4,10 @@
 
 ---
 
+## 未发布
+
+- `simulate_clone_test.sh` 在插件源码树里跑会失败，报 `.claude/harness/scripts/ 不存在`。它从脚本位置往上三级找项目根，在源码树里找到的是插件仓库根，那里没有部署产物。现在测试先看上一级有没有 `.claude-plugin/plugin.json`：有就用 `deploy_assets.sh` 部署到临时目录再检查，没有就照旧拷项目的 `.claude/`。两种位置都跑通过。
+
 ## v0.5.2 — 2026-11-10 — 延后项和 codex FU 去重、follow-up 的 bad_spec 回环（#28、#29）
 
 **同一问题在 deferred-work.md 记两条（#28）**
