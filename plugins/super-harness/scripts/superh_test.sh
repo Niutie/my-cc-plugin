@@ -279,7 +279,7 @@ OUT="$($SH integrate 1-2-beta)"; RC=$?
 [ $RC -eq 0 ] && ok "I6 beta integrates after rebase + fix" || { bad "I6 rc=$RC"; echo "$OUT"; }
 echo "$OUT" | grep -qx 'VERIFY=passed' && ok "V6 verify passes after the fix" || { bad "V6"; echo "$OUT"; }
 echo "$OUT" | grep -q 'NOTE=auto-resolved: .*sprint-status.yaml' && ok "I7 sprint-status conflict auto-resolved" || { bad "I7"; echo "$OUT"; }
-echo "$OUT" | grep -q 'NOTE=auto-resolved: .*deferred-work.md (union' && ok "I8 deferred-work union-merged" || bad "I8"
+echo "$OUT" | grep -q 'NOTE=auto-resolved: .*deferred-work.md (按 FU 合并)' && ok "I8 deferred-work merged per FU" || bad "I8"
 grep -q 'FU-1-1-alpha.A1' "$ART/deferred-work.md" && grep -q 'FU-1-2-beta.A1' "$ART/deferred-work.md" \
     && ok "I9 both ledger entries kept" || bad "I9"
 NEW_BUILT_BETA="$(git rev-parse harness/1-2-beta/built)"

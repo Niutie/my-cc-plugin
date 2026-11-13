@@ -99,7 +99,7 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 | done / abandoned | phase 为 done / abandoned | |
 | conflict | phase = conflict（rebase 停在代码冲突上） | 是 |
 | preparing / integrating（进行中） | lane 上有 prepare 或 integrate 的进行中标记，且记录的进程还活着（pid 和启动时间都对得上） | |
-| held | phase = held。`hold_kind` 说明原因：`prepare`、`env`（worker 启动前环境没起来）、`resource`（`resource_acquire` 失败）、`verify-env`、`build-verify`、`verify`、`lane-dirty`、`rebase`、`branch-missing`、`worktree-missing`、`foreign`（分支或目录不是 superh 建的）、`interrupted`（prepare / integrate 被杀超过 2 次）、`retry-limit`、`git-error`、`error` | 是 |
+| held | phase = held。`hold_kind` 说明原因：`prepare`、`env`（worker 启动前环境没起来）、`resource`（`resource_acquire` 失败）、`verify-env`、`build-verify`、`verify`、`lane-dirty`、`rebase`、`ledger`（rebase 后 deferred-work.md 有 FU 对不上）、`branch-missing`、`worktree-missing`、`foreign`（分支或目录不是 superh 建的）、`interrupted`（prepare / integrate 被杀超过 2 次）、`retry-limit`、`git-error`、`error` | 是 |
 | integrating | phase 为 integrating / merged | |
 | queued | phase 为 prepared，或 preparing 但进程已不在（prepare 被打断，待重做），或这一次 attempt 还没有 proc 记录 | |
 | working | proc 没有退出码，launch 进程或 claude 子进程有一个还活着（pid 和启动时间都对得上，防止 pid 被复用后误判） | |
@@ -167,7 +167,11 @@ rebase 会改写提交，lane 里已经打好的 `built`、`followup-start`、`f
 |---|---|---|
 | `sprint-status.yaml` | 取 sprint 分支版本 | 本 story 的状态由紧接着的 build-sync 写成 done；sprint 分支上别的 story 的 done 不能丢 |
 | `epic-<N>-context.md` | 取 sprint 分支版本 | bmad-build 编译出的缓存，下次 build 会重新生成 |
-| `deferred-work.md` | 三方 union 合并 | 追加型账本，两边新增的条目都要留 |
+| `deferred-work.md` | 按 FU 三方合并 | 追加型账本，两边新增的条目都要留，历史行要留在原来的 FU 下面 |
+
+`deferred-work.md` 不能只做行级 union。lane 给账本最后一条 FU 加历史行，sprint 分支在文件末尾追加了新的一节，两边都是在文件末尾插入，union 会把 lane 的历史行接在 sprint 分支新节的最后一条 FU 后面（issue #30）。所以先做行级 union 保留整体布局和 FU 以外的行，再把每条 FU 的块（头行加上它下面缩进的行）换成这一条单独三方合并的结果：只有一边改了就取那一边，两边都改了就对这一块做三方合并，冲突时对这一块做 union。账本里有重复的 FU id 时没法按 id 对应，退回整份文件的 union。
+
+rebase 结束后还要逐条比对 FU，git 自己无冲突地合错位置的情况也能查出来。比对用 rebase 前的 lane（`rebase_from`）、sprint 分支（`onto`）和两者的 merge-base：lane 改过、sprint 分支没改的 FU 要和 lane 的版本一致；lane 没改的 FU 要和 sprint 分支一致；两边都改的要等于这一块的三方合并结果，合并有冲突时两边各自新增的行都要在、也不能有别处来的行。对不上就挂起（`hold_kind=ledger`），输出 `LEDGER_FU=` 列出这些 FU，sprint 分支不动。人在 lane 里改好并 commit 后重跑 integrate；lane 有了新提交就以人改的为准，不再比对。
 
 其他文件的冲突一律交给合流冲突子 agent，修不了就留在 conflict 状态等人。rebase 期间禁用 hooks（`core.hooksPath=/dev/null`）：被重放的提交在 lane 里提交时已经过了一遍 pre-commit。
 

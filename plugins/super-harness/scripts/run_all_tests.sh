@@ -44,14 +44,11 @@ fi
 # all rc=0 source-tree-direct after the test-lane rewrites → removed (they now
 # gate in the `source-tests` job like every other test).
 #
+# simulate_clone_test.sh was the last entry; since it deploys the plugin into a
+# temp project when run from the source tree, it passes here too → removed.
+#
 # Anything NOT in this list runs source-tree-direct and must pass.
-KNOWN_STALE=(
-    # Clones the host repo's deployed .claude/ tree — that IS its test
-    # subject, so it can never pass from the bare plugin source. Gated by
-    # ci.yml `bootstrap-tests` job, step "Run deployed *_test.sh suite
-    # inside fixture" (runs the deployed copy inside the bootstrap fixture).
-    "simulate_clone_test.sh"
-)
+KNOWN_STALE=()
 
 is_known_stale() {
     local name="$1"

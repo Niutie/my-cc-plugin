@@ -125,7 +125,7 @@ python3 .claude/harness/scripts/superh.py tick
 python3 .claude/harness/scripts/superh.py integrate <KEY> 2>&1; echo "SUPERH_EXIT=$?"
 ```
 
-脚本会把 lane 分支 rebase 到 sprint 分支最新提交上，自动消解账本类冲突（`sprint-status.yaml` 和 `epic-N-context.md` 取 sprint 分支版本，`deferred-work.md` 做 union 合并），把 `harness/<KEY>/{start,built,followup-start,followup}` 这几个 tag 搬到 rebase 之后的提交上，在 lane worktree 里重跑 `build-verify`。`parallel.yaml` 配了 `verify_command`、并且这一路确实被 rebase 过时，接着在 lane worktree 里跑它（输出 `VERIFY=passed|failed|skipped-unset|skipped-not-rebased`）。都通过后 ff 合并进主 worktree。
+脚本会把 lane 分支 rebase 到 sprint 分支最新提交上，自动消解账本类冲突（`sprint-status.yaml` 和 `epic-N-context.md` 取 sprint 分支版本，`deferred-work.md` 按 FU 合并，每条 FU 的状态和历史行留在原来的 FU 下面），把 `harness/<KEY>/{start,built,followup-start,followup}` 这几个 tag 搬到 rebase 之后的提交上，在 lane worktree 里重跑 `build-verify`。`parallel.yaml` 配了 `verify_command`、并且这一路确实被 rebase 过时，接着在 lane worktree 里跑它（输出 `VERIFY=passed|failed|skipped-unset|skipped-not-rebased`）。都通过后 ff 合并进主 worktree。
 
 输出里有 `NOTE=上次 integrate 在运行中被打断` 时，说明上一次合流被杀掉了（会话结束等），这次从断点继续，不用处理。同一路被打断超过 2 次，脚本会把它挂起（`HOLD_KIND=interrupted`），不会无限重跑。
 
@@ -146,6 +146,7 @@ python3 .claude/harness/scripts/superh.py integrate <KEY> 2>&1; echo "SUPERH_EXI
      | `build-verify` | rebase 之后 build-verify 不通过 |
      | `lane-dirty` | lane worktree 里有未提交或未跟踪的文件（例如测试留下的 coverage 文件） |
      | `rebase` | rebase 没能启动、`rebase --continue` 失败，或推进步数超限 |
+     | `ledger` | rebase 之后 `deferred-work.md` 里有 FU 的内容和 lane、sprint 分支各自写的对不上（例如历史行挂到了别的 FU 下面），`LEDGER_FU=` 列出这些 FU |
      | `branch-missing` / `worktree-missing` | lane 分支或 worktree 不在了 |
      | `interrupted` | integrate 连续被打断超过 2 次 |
      | `retry-limit` | sprint 分支在合流期间被改动，连续 3 次重试都没成功 |

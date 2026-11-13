@@ -106,7 +106,8 @@ EXIT_BUSY = 4   # STATUS=busy (this lane's prepare/integrate is already running)
 # hold_kind values integrate sets; a lane held with one of these is accepted by a
 # manual `integrate` re-run once the person has fixed the cause.
 INTEGRATE_HOLD_KINDS = ("verify", "verify-env", "build-verify", "lane-dirty", "rebase", "branch-missing",
-                        "worktree-missing", "interrupted", "ff", "retry-limit", "git-error", "error")
+                        "worktree-missing", "interrupted", "ff", "retry-limit", "git-error", "error",
+                        "ledger")
 # Lane stages a person (or `resume`) has to act on before the lane moves again.
 # With blocked_policy=continue they stop holding back the serial order and the
 # epic / retro barriers; explicit depends_on still waits for them.
@@ -1139,6 +1140,8 @@ HOLD_HINTS = {
     "worktree-missing": "lane worktree 已不存在；确认这一路不要了就 " + SH_CMD + " abandon {key} --yes，story 会重新排队",
     "interrupted": ("integrate 运行中被打断了多次（会话结束或命令被杀）。确认 verify_command 能在 "
                     "verify_timeout_sec 内跑完" + _REINTEGRATE + "，会从断点继续"),
+    "ledger": ("cd {wt}，打开 hold_reason 里的 deferred-work.md，对照 lane 原来的版本把列出的 FU 的状态和历史行"
+               "挪回各自名下并 commit" + _REINTEGRATE + "（lane 有了新提交就不再比对）"),
     "ff": "ff 合并失败，按 hold_reason 处理" + _REINTEGRATE,
     "retry-limit": "合流连续重试仍不成功，按 hold_reason 核对 sprint 分支和 lane 分支" + _REINTEGRATE,
     "git-error": "合流时 git 命令出错，按 hold_reason 处理" + _REINTEGRATE,
@@ -2072,11 +2075,191 @@ def _stage_blob(wt: Path, n: int, path: str):
     return r.stdout if r.returncode == 0 else None
 
 
+# issue #30: deferred-work.md is append-only per FU, not per file. A lane that adds
+# a history line to the ledger's last FU and a sprint branch that appended a new
+# section both insert at the end of the file; a line-level union then puts the
+# lane's history line under the sprint branch's last FU. The ledger is therefore
+# merged FU by FU: the union keeps the layout and every non-FU line, then each FU
+# block is replaced by the 3-way merge of that one block. After the rebase the
+# same per-FU rule checks the result (it also catches a clean git merge that
+# placed a line wrongly) and holds the lane on any mismatch.
+_FU_HEAD_RE = re.compile(r"^- \*\*(FU-[^*\s]+)\*\*")
+
+
+def _fu_segments(text: str) -> list:
+    """Split a ledger into ['text', None, lines] / ['fu', id, lines] segments. A FU
+    block is its head line plus the indented and blank lines after it; trailing
+    blank lines belong to the text that follows, not to the block."""
+    segs, cur = [], None
+    for ln in text.splitlines(keepends=True):
+        m = _FU_HEAD_RE.match(ln)
+        if m:
+            cur = ["fu", m.group(1), [ln]]
+            segs.append(cur)
+        elif cur is not None and (not ln.strip() or ln[:1] in (" ", "\t")):
+            cur[2].append(ln)
+        else:
+            cur = None
+            if segs and segs[-1][0] == "text":
+                segs[-1][2].append(ln)
+            else:
+                segs.append(["text", None, [ln]])
+    out = []
+    for kind, fid, lines in segs:
+        if kind == "fu":
+            k = len(lines)
+            while k > 1 and not lines[k - 1].strip():
+                k -= 1
+            out.append(["fu", fid, lines[:k]])
+            if lines[k:]:
+                out.append(["text", None, lines[k:]])
+        else:
+            out.append([kind, fid, lines])
+    return out
+
+
+def _fu_blocks(text: str) -> tuple[dict, set]:
+    """FU id → block lines (without line endings), and the ids that occur twice."""
+    blocks, dups = {}, set()
+    for kind, fid, lines in _fu_segments(text):
+        if kind != "fu":
+            continue
+        if fid in blocks:
+            dups.add(fid)
+        blocks[fid] = tuple(ln.rstrip("\r\n") for ln in lines)
+    return blocks, dups
+
+
+def _merge_file(base: bytes, ours: bytes, theirs: bytes, union: bool = False) -> tuple[bytes, int]:
+    with tempfile.TemporaryDirectory() as td:
+        paths = []
+        for nm, data in (("ours", ours), ("base", base), ("theirs", theirs)):
+            p = Path(td) / nm
+            p.write_bytes(data)
+            paths.append(str(p))
+        mr = subprocess.run(["git", "merge-file", "-p", *(["--union"] if union else []), *paths],
+                            capture_output=True)
+    return mr.stdout, mr.returncode
+
+
+def _merge_fu_block(b, o, t):
+    """3-way merge of one FU block (tuples of lines, None = absent).
+    Returns (merged lines or None, clean)."""
+    if o == t:
+        return o, True
+    if b == o:
+        return t, True
+    if b == t:
+        return o, True
+    if o is None or t is None:  # one side dropped it, the other changed it
+        return (t if o is None else o), False
+
+    def enc(x):
+        return "".join(ln + "\n" for ln in (x or ())).encode()
+    out, rc = _merge_file(enc(b), enc(o), enc(t))
+    if rc != 0:
+        out, _ = _merge_file(enc(b), enc(o), enc(t), union=True)
+    return tuple(out.decode().splitlines()), rc == 0
+
+
+def _merge_ledger(base: bytes, ours: bytes, theirs: bytes) -> tuple[bytes, str]:
+    """Merge deferred-work.md FU by FU (see the comment above _FU_HEAD_RE).
+    Returns (content, how) — how is 'per-FU' or, when the ledger cannot be keyed
+    by FU id (not UTF-8, an id that occurs twice), 'union' (plain line union)."""
+    union, _ = _merge_file(base, ours, theirs, union=True)
+    try:
+        bt, ot, tt, ut = (x.decode() for x in (base, ours, theirs, union))
+    except UnicodeDecodeError:
+        return union, "union"
+    (bb, d1), (ob, d2), (tb, d3) = _fu_blocks(bt), _fu_blocks(ot), _fu_blocks(tt)
+    if d1 or d2 or d3:
+        return union, "union"
+    out, seen = [], set()
+    for kind, fid, lines in _fu_segments(ut):
+        if kind != "fu":
+            out.extend(lines)
+            continue
+        if fid in seen:  # both sides changed the head line: the union wrote it twice
+            continue
+        seen.add(fid)
+        merged, _clean = _merge_fu_block(bb.get(fid), ob.get(fid), tb.get(fid))
+        if merged is not None:
+            out.extend(ln + "\n" for ln in merged)
+    return "".join(out).encode(), "per-FU"
+
+
+def _ledger_mismatches(base: bytes, lane: bytes, sprint: bytes, result: bytes) -> list:
+    """FU ids whose block in `result` (the rebased lane) is not what the lane and
+    the sprint branch each made of it: a FU only the lane changed must equal the
+    lane's version, a FU the lane did not change must equal the sprint branch's.
+    A FU both changed must equal their clean 3-way merge; when that conflicts,
+    every line either side added must be there and nothing from elsewhere."""
+    try:
+        (bb, d1), (lb, d2), (sb, d3), (rb, d4) = (_fu_blocks(x.decode()) for x in (base, lane, sprint, result))
+    except UnicodeDecodeError:
+        return []
+    bad = sorted(d4 - d1 - d2 - d3)
+    skip = d1 | d2 | d3 | d4
+    for fid in sorted(set(bb) | set(lb) | set(sb) | set(rb)):
+        if fid in skip:
+            continue
+        b, l, s, r = bb.get(fid), lb.get(fid), sb.get(fid), rb.get(fid)
+        if b == l or l == s:
+            exp = s
+        elif b == s:
+            exp = l
+        else:
+            exp, clean = _merge_fu_block(b, s, l)
+            if not clean:
+                have, was = set(r or ()), set(b or ())
+                added = (set(l or ()) - was) | (set(s or ()) - was)
+                if r is None or not added <= have or not have <= was | set(l or ()) | set(s or ()):
+                    bad.append(fid)
+                continue
+        if r != exp:
+            bad.append(fid)
+    return bad
+
+
+def _blob_at(ctx, rev: str, path: str) -> bytes:
+    r = subprocess.run(["git", "show", f"{rev}:{path}"], cwd=ctx.root, capture_output=True)
+    return r.stdout if r.returncode == 0 else b""
+
+
+def _check_ledger(ctx, lane, wt: Path):
+    """After a rebase: every FU in deferred-work.md still carries what the lane and
+    the sprint branch wrote under it (issue #30); otherwise hold the lane."""
+    src, onto = lane.get("rebase_from"), lane.get("onto")
+    if not (lane.get("rebased") and src and onto):
+        return
+    head = git(["rev-parse", lane["branch"]], cwd=ctx.root).stdout.strip()
+    if lane.get("ledger_hold_head") and lane["ledger_hold_head"] != head:
+        # the person committed a fix after the hold: their ledger is the answer
+        lane.setdefault("notes", []).append(f"ledger check skipped: lane changed after the hold ({head[:12]})")
+        lane.pop("ledger_hold_head", None)
+        ctx.save_lane(lane)
+        return
+    base = git(["merge-base", src, onto], cwd=ctx.root).stdout.strip()
+    if not base:
+        return
+    path = ctx.artifacts_rel().rstrip("/") + "/" + LEDGER_UNION[0]
+    bad = _ledger_mismatches(*(_blob_at(ctx, rev, path) for rev in (base, src, onto, head)))
+    if not bad:
+        lane.pop("ledger_hold_head", None)
+        return
+    lane["ledger_hold_head"] = head
+    shown = "、".join(bad[:10]) + (f" 等 {len(bad)} 条" if len(bad) > 10 else "")
+    _hold(ctx, lane, "ledger",
+          f"合流 rebase 后 {path} 里这些 FU 的内容和 lane、sprint 分支各自写的对不上：{shown}；sprint 分支未改动",
+          f"WORKTREE={wt}", f"LEDGER={path}", *[f"LEDGER_FU={f}" for f in bad],
+          f"LANE_VERSION={src}", f"SPRINT_VERSION={onto}")
+
+
 def _auto_resolve(ctx, wt: Path, artifacts_rel: str):
     """Resolve conflicts in the shared ledgers. During a rebase, stage 2 ('ours') is
     the sprint branch being rebased onto, stage 3 ('theirs') the story's commit.
       sprint-status.yaml / epic-N-context.md → sprint 分支版本（build-sync 会把本 story 的状态写回）
-      deferred-work.md                        → 三方 union 合并（追加型账本）
+      deferred-work.md                        → 按 FU 三方合并（追加型账本，issue #30）
     Returns (resolved, remaining)."""
     resolved, remaining = [], []
     prefix = artifacts_rel.rstrip("/") + "/"
@@ -2091,19 +2274,11 @@ def _auto_resolve(ctx, wt: Path, artifacts_rel: str):
                 git(["rm", "-q", "-f", "--", f], cwd=wt)
             resolved.append(f"{f} (取 sprint 分支版本)")
         elif inside and name in LEDGER_UNION:
-            base = _stage_blob(wt, 1, f) or b""
-            ours = _stage_blob(wt, 2, f) or b""
-            theirs = _stage_blob(wt, 3, f) or b""
-            with tempfile.TemporaryDirectory() as td:
-                paths = []
-                for nm, data in (("ours", ours), ("base", base), ("theirs", theirs)):
-                    p = Path(td) / nm
-                    p.write_bytes(data)
-                    paths.append(str(p))
-                mr = subprocess.run(["git", "merge-file", "-p", "--union", *paths], capture_output=True)
-            (wt / f).write_bytes(mr.stdout)
+            merged, how = _merge_ledger(_stage_blob(wt, 1, f) or b"", _stage_blob(wt, 2, f) or b"",
+                                        _stage_blob(wt, 3, f) or b"")
+            (wt / f).write_bytes(merged)
             git(["add", "--", f], cwd=wt)
-            resolved.append(f"{f} (union 合并)")
+            resolved.append(f"{f} (按 FU 合并)" if how == "per-FU" else f"{f} (union 合并，账本里有重复的 FU id)")
         else:
             remaining.append(f)
     return resolved, remaining
@@ -2443,6 +2618,10 @@ def _integrate(ctx, lane):
             # the lane's own commits as the worker left them: spec / codex report
             # cite these hashes, _record_rewrites maps them after the rebase (issue #25)
             lane.setdefault("orig_head", lane_head)
+            # the lane as this rebase found it: _check_ledger compares per FU against it
+            lane["rebase_from"] = lane_head
+            # a new rebase is checked again, even after a person fixed an earlier one
+            lane.pop("ledger_hold_head", None)
             tags = harness_tags(ctx).get(key, set())
             temps = []
             for t in CARRY_TAGS:
@@ -2493,6 +2672,7 @@ def _integrate(ctx, lane):
     lane["conflict_files"] = []
     lane["phase"] = "integrating"
     ctx.save_lane(lane)
+    _check_ledger(ctx, lane, wt)
 
     rc, bv_out = _build_verify(ctx, lane, wt)
     if rc != 0:

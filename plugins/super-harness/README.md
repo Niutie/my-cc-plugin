@@ -303,7 +303,7 @@ python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 | 文件 | 处理 |
 |---|---|
 | `sprint-status.yaml` | 取 sprint 分支版本，本 story 的状态随后由 build-sync 写回 |
-| `deferred-work.md` | 两边新增的条目都保留 |
+| `deferred-work.md` | 按 FU 合并：两边新增的条目都保留，每条 FU 的状态和历史行留在原来的 FU 下面。rebase 后再逐条比对，对不上就挂起这一路（`HOLD_KIND=ledger`） |
 | `epic-<N>-context.md` | 缓存文件，取 sprint 分支版本 |
 
 其他文件的冲突交给一个专门的子 agent 解决。它解决不了，这一路就停在冲突状态等你处理。
@@ -324,6 +324,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.3 | 2026-11-13 | #30：合流 rebase 时 `deferred-work.md` 改为按 FU 合并，lane 给最后一条 FU 加的历史行不会再挂到 sprint 分支新追加的 FU 下面；rebase 后逐条比对 FU，对不上就挂起这一路并列出 FU id。详见 changelog。 |
 | 0.5.2 | 2026-11-10 | #28：codex 修复 agent 立 FU 时写 `covers: frontmatter deferred #N`，build-sync 导入 spec 第 N 条延后项时直接标 superseded，同一问题不再记两条 pending。#29：follow-up review 判 bad_spec 时不回退已提交的代码、不改 `baseline_revision`，回环次数照常累加。详见 changelog。 |
 | 0.5.1 | 2026-11-08 | #27：spec「待用户确认」的条目可以写 `备选：A / B`，导入收件箱后看板多一行备选；`board --full` 显示问题、采用、备选、理由的全文。详见 changelog。 |
 | 0.5.0 | 2026-11-07 | #18～#26 一起处理。子 agent 的 prompt 后缀改成写进文件、prompt 里只放两行引用，launch 检查 worker 的每次派发有没有带上；spec 里列的待确认取舍自动进收件箱；合流 rebase 后在 spec 末尾补一张新旧提交对应表；retro 行动项两本账一起翻，retro 前自动对账；`parallel.yaml` 新增独占资源和两个清理钩子；Codex 处理记录格式不对时 stage 4 提交前就拦下；build-verify 列出区间里的每个提交；配了 `worker_model` 而实际模型对不上时告警。详见 changelog。 |

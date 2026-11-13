@@ -4,9 +4,21 @@
 
 ---
 
-## 未发布
+## v0.5.3 — 2026-11-13 — 合流时 deferred-work.md 按 FU 合并（#30）
 
-- `simulate_clone_test.sh` 在插件源码树里跑会失败，报 `.claude/harness/scripts/ 不存在`。它从脚本位置往上三级找项目根，在源码树里找到的是插件仓库根，那里没有部署产物。现在测试先看上一级有没有 `.claude-plugin/plugin.json`：有就用 `deploy_assets.sh` 部署到临时目录再检查，没有就照旧拷项目的 `.claude/`。两种位置都跑通过。
+一个项目里 Story 8.5 给台账最后一条 FU-8.4.B7 加了 resolved 历史行，Story 8.7 先合入、在文件末尾追加了 FU-8.7.B1～B3 一节。8.5 合流 rebase 之后，这条历史行落在了 FU-8.7.B3 下面：FU-8.4.B7 标着 resolved 却没有历史，FU-8.7.B3 标着 pending 却有一条「resolved by Story 8.5」。格式合规，`lint_deferred_work.sh` 查不出来。
+
+用 issue 给的最小 fixture 回放过：两边都在文件末尾插入，git 是报冲突的，放错位置的是 integrate 自己的冲突消解。它对 `deferred-work.md` 做整份文件的行级 union，sprint 分支那一节在前、lane 的历史行在后，历史行就接到了 FU-8.7.B3 的块里。
+
+- 冲突消解改成按 FU 合并。先照旧做行级 union，保留整体布局和 FU 以外的行；再把每条 FU 的块（头行和它下面缩进的行）换成这一块单独三方合并的结果。只有一边改了就取那一边；两边都改了就对这一块做三方合并，冲突时对这一块做 union。账本里有重复的 FU id 时没法按 id 对应，退回整份 union，NOTE 里会注明。
+- rebase 结束后逐条比对 FU（issue 里的做法 1），git 无冲突地合错位置也能查出来。比对的三方是 rebase 前的 lane、sprint 分支和两者的 merge-base：lane 改过、sprint 分支没改的 FU 要和 lane 的版本一致；lane 没改的要和 sprint 分支一致；两边都改的要等于这一块的三方合并结果，合并有冲突时两边各自新增的行都要在，也不能有别处来的行。对不上就挂起，`HOLD_KIND=ledger`，每条对不上的 FU 输出一行 `LEDGER_FU=`，sprint 分支不动。
+- 挂起后在 lane worktree 里改好账本并 commit，重跑 integrate。lane 有了新提交就以人改的为准，不再比对；如果期间 sprint 分支又动了、需要重新 rebase，新的 rebase 照常比对。
+- lane 的写法不变（issue 里的做法 2 没有采用）。
+- 测试：新增 `ledger_merge_test.sh`，用 8.5、8.7 的形状回放，覆盖按 FU 消解、比对查出旧的 union 结果、两边改同一条 FU、重复 id 退回、挂起和人工修复后重跑。`superh_test.sh` 的 I8 改成检查「按 FU 合并」。
+
+**测试相关**
+
+- `simulate_clone_test.sh` 在插件源码树里跑会失败，报 `.claude/harness/scripts/ 不存在`。它从脚本位置往上三级找项目根，在源码树里找到的是插件仓库根，那里没有部署产物。现在测试先看上一级有没有 `.claude-plugin/plugin.json`：有就用 `deploy_assets.sh` 部署到临时目录再检查，没有就照旧拷项目的 `.claude/`。两种位置都跑通过。它因此从 `run_all_tests.sh` 的 KNOWN_STALE 名单里移除，名单现在是空的。
 
 ## v0.5.2 — 2026-11-10 — 延后项和 codex FU 去重、follow-up 的 bad_spec 回环（#28、#29）
 
