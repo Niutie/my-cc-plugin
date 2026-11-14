@@ -72,6 +72,9 @@ python3 .claude/harness/scripts/superh.py tick
 | `integrate` | 对 `integrate` 里的第一条执行 §3，接着执行 §4 |
 | `retro` | 对 `retro_due` 里的第一个 epic 执行 §5 |
 | `post-epic` | 对 `post_epic` 里的每个 epic 按「后台命令」的方式执行 `SH post-epic <N>`（见 §5 第 5 步） |
+| `disk-cleanup` | 磁盘余量低于 `disk_min_free_gb`，没有 lane 在跑，配了 `disk_cleanup_command`。按「后台命令」的方式执行 `SH disk-cleanup`（见 §6.6） |
+| `disk-low` | 磁盘余量不足，没有 lane 在跑，清理命令没配或已经执行过。按 §8 halt（见 §6.6） |
+| `disk-retry` | 余量回来了，`disk_retry` 里有因磁盘写满停下的 lane。执行 `SH retry --disk-full`，回到本节开头 |
 | `launch` | 执行 §2 |
 | `wait` | 执行 §6 |
 | `stalled` | 执行 §7 |
@@ -89,6 +92,8 @@ python3 .claude/harness/scripts/superh.py tick
 
 每一轮也看 `decisions_pending`。有新编号时（worker 按推荐项代答的，或你自己 `decide` 记的），用一行告诉用户：编号、story、问题、采用了什么，提示「有空时 `SH confirm --all` 或推翻某一条」。不等回复，继续循环。
 - `quota`：tick 已经停止派发新 lane，`launch` 和 `queued` 都是空的（`quota_hold: true`）。等在跑的 lane 全部结束后，按 §8 halt。
+- `disk_full`：这一路因为磁盘写满停下（worker 回报 `disk_full`，或输出里有 `No space left on device` 这类报错，或进程丢失时余量不足），不算代码问题。告诉用户一行，不要自己 retry：余量回来后 tick 给出 `disk-retry`（每路最多自动 2 次）。到了上限的仍在 `attention` 里，留给用户。
+- `disk.ok` 为 false：磁盘余量低于 `disk_min_free_gb`。见 §6.6。
 
 ## 2. 启动 lane
 
@@ -99,6 +104,7 @@ python3 .claude/harness/scripts/superh.py tick
      - `SUPERH_EXIT=0`（`STATUS=ok`）：对这个 key 执行第 3 步的 launch。
      - `SUPERH_EXIT=1`（`STATUS=halt`）：把输出贴给用户，跳过这个 key，继续下一个。lane 已记为 held（输出里有 `HOLD_KIND=`），会出现在 attention 里，tick 不会再把它分派出来。
      - `SUPERH_EXIT=4`、`STATUS=busy`：这一路已经有一个 prepare 在运行（例如上一个会话启动的），不要动它，继续下一个。
+     - `SUPERH_EXIT=5`、`STATUS=disk-low`：磁盘余量刚刚降到阈值以下，什么都没建。剩下的 key 也不要再 prepare，回到 §1。
 3. launch 用 Bash 的后台模式运行，每个 key 单独调用一次：
    ```
    Bash({
@@ -108,6 +114,8 @@ python3 .claude/harness/scripts/superh.py tick
    })
    ```
    worker 跑完时你会收到通知。读这条命令的输出：
+   - 第一行是 `STATUS=disk-low`：磁盘余量不足，worker 没有启动，lane 原样留着。回到 §1，余量回来后 tick 会再把它放进 `queued`。
+   - `SPEC_RESTORED=`：这一路的 spec 只剩很少的字节（多半是磁盘写满时被截断），脚本已经从备份恢复，短版本另存了一份。转告用户一行。`WARN=spec ...` 同样转告。
    - 有 `ORPHAN_CONTAINER=` 行时，把容器 id 和名字转告用户：worker 退出后还挂载着这一路 worktree 的容器，多半是子 agent 起的、没人管了。不要自己停，由用户确认。
    - 第一行是 `STATUS=halt` 且有 `HOLD_KIND=env`：`parallel.yaml` 配了 `env_check_command`，环境没就绪，`env_up_command` 也没能把它起来，worker 没有启动。这一路记为 held，把 `REASON=` 和 `ENV_OUTPUT<<` 段转告用户，环境好了之后 `SH retry <KEY>`。
    - `SELF_HEAL=` 行是脚本自己修好的机械问题（例如环境没起，已经执行 `env_up_command` 起好），给用户一行进度即可。
@@ -136,6 +144,7 @@ python3 .claude/harness/scripts/superh.py integrate <KEY> 2>&1; echo "SUPERH_EXI
   3. 返回的第一行是 `NEEDS_PERSON:` 时，把原因告诉用户，这一路留在 conflict 状态，回到 §1。
   4. 否则按同样的后台方式重跑 `SH integrate <KEY>`。退出码 0 进入 §4；再次返回 3 时不再派第二个子 agent，告诉用户，回到 §1。
 - 退出码 4：`STATUS=busy` 表示这一路已经有一个 integrate 在运行，不要动它，回到 §1；`STATUS=locked` 按 §8 全局 halt。
+- 退出码 5：`STATUS=disk-low` 是磁盘余量不足，合流还没开始；`STATUS=disk-full` 是 build-verify 或 `verify_command` 因为磁盘写满失败，不算代码问题，这一路仍是 integrating，sprint 分支没有被改动。两种都告诉用户一行（`disk-full` 附上 `REASON=`），回到 §1：tick 在余量回来之前不会再给出这一路的合流。同一路连续 3 次 `disk-full` 会被挂起（`HOLD_KIND=disk`）。
 - 退出码 1，按下面的顺序判断：
   1. `REASON` 说的是主 worktree 不干净或不在 sprint 分支：全局 halt（§8）。这一路保持原状。
   2. 输出里有 `HOLD_KIND=`：这一路已经记为 held，sprint 分支没有被改动，tick 会把它放进 `attention`，不会再送回合流。把 `REASON=` 贴给用户，`HOLD_KIND=verify` 时连同 `VERIFY_OUTPUT<<` 段、`build-verify` 时连同 `BUILD_VERIFY<<` 段一起贴。然后回到 §1，不要自己修，也不要自动重试。各种 `HOLD_KIND`：
@@ -146,6 +155,7 @@ python3 .claude/harness/scripts/superh.py integrate <KEY> 2>&1; echo "SUPERH_EXI
      | `build-verify` | rebase 之后 build-verify 不通过 |
      | `lane-dirty` | lane worktree 里有未提交或未跟踪的文件（例如测试留下的 coverage 文件） |
      | `rebase` | rebase 没能启动、`rebase --continue` 失败，或推进步数超限 |
+     | `disk` | 合流验证连续 3 次因磁盘写满失败（前两次是 `STATUS=disk-full`，不挂起） |
      | `ledger` | rebase 之后 `deferred-work.md` 里有 FU 的内容和 lane、sprint 分支各自写的对不上（例如历史行挂到了别的 FU 下面），`LEDGER_FU=` 列出这些 FU |
      | `branch-missing` / `worktree-missing` | lane 分支或 worktree 不在了 |
      | `interrupted` | integrate 连续被打断超过 2 次 |
@@ -213,6 +223,15 @@ worker 按推荐项代答的决定、你用 `SH decide` 记下的决定，都在
 3. `STATUS=halt` 说这一路合流时 rebase 过、或回退点上没有 spec：worktree 没有被动过，把 `REASON=` 转告用户，按看板「接手」处理。`NEXT=manual`：这一路已经合入 sprint 分支回退不了，或者这条决定本来就没有回退点（worker 写在 spec `### 待用户确认` 段的取舍、漏了 harness 后缀的记录）。把 `REASON=` 转告用户，需要按新决定开一条修正 chore / story 或手工改。`NEXT=dispatcher`：这是你自己记的决定，按新答复调整你接下来的做法。
 4. `STATUS=busy`：这一路还在跑，等它停下（看板上变成待合流、受阻或失败）再执行。
 
+## 6.6 磁盘余量（issue #31）
+
+tick 的 `disk` 字段是各分区的可用空间和各自的阈值（`parallel.yaml` 的 `disk_min_free_gb`；默认 auto，10G、但不超过分区容量的 10%）。`disk.ok` 为 false 时，tick 不再给出 `launch`、`queued` 和 `integrate`（被推迟的合流在 `disk.deferred_integrate`），在跑的 lane 照常跑。余量回来后 tick 自动恢复派发，不需要你做什么。
+
+- 第一次看到 `disk.ok` 为 false 时，告诉用户一行：哪个分区剩多少、阈值多少，新 lane 和合流都先停下。
+- `next_action = disk-cleanup`：按「后台命令」的方式执行 `SH disk-cleanup`（`command` 写成 `python3 .claude/harness/scripts/superh.py disk-cleanup 2>&1; echo "SUPERH_EXIT=$?"`）。它只在没有 lane 在跑时执行 `disk_cleanup_command`，同一次余量不足只执行一次。`DISK=ok` 表示清理后余量够了；`DISK_CLEANUP=failed` 或 `DISK=low` 时把 `DISK_FREE=` 行转告用户。`STATUS=deferred`（有 lane 又跑起来了）、`STATUS=skip` 都直接回到 §1。
+- `next_action = disk-low`：没有 lane 在跑，余量还是不够，也没有能自动执行的清理了。按 §8 halt，把 `disk` 字段里低于阈值的分区和余量告诉用户，请用户腾出空间（或调低 `disk_min_free_gb`）后重新执行本命令。
+- 不要自己删文件腾空间，也不要改 `parallel.yaml`。
+
 ## 7. 停滞
 
 `next_action = stalled` 表示没有在跑的 lane，也没有可启动的 story，但 sprint 还没完成。执行 `SH board` 和 `SH plan`，把「需要你处理」的部分和等待原因原样给用户，执行 `SH end-run` 释放调度锁（否则用户在别的终端里执行下面这些命令会得到 `STATUS=locked`）。
@@ -227,6 +246,7 @@ worker 按推荐项代答的决定、你用 `SH decide` 记下的决定，都在
   worker 留下半成品：  python3 .claude/harness/scripts/superh.py retry <KEY> --reset（retry 提示时才用，会丢掉没提交的改动）
   合流冲突手工解决后：git add 解决好的文件，重新执行 /super-harness:run（会从 rebase 现场继续）
   合流挂起（held）的：按看板「接手」一行处理后，python3 .claude/harness/scripts/superh.py integrate <KEY>
+  磁盘写满停下的：    腾出空间后 python3 .claude/harness/scripts/superh.py retry --disk-full
   放弃某一路：        python3 .claude/harness/scripts/superh.py abandon <KEY> --yes
 ```
 
@@ -241,6 +261,7 @@ worker 按推荐项代答的决定、你用 `SH decide` 记下的决定，都在
 | §4 的 build-sync 等 `harness-commit.py` 退出码 1 | 按 P§3 的 halt 模板 |
 | §4 的 `postmerge` 给出 `NEXT=halt`，或报 done tag 不在 sprint 分支上 | 贴脚本输出 |
 | 配额耗尽（`quota_hold` 且没有在跑的 lane） | 按 P§3.1「配额耗尽」那一行写；恢复后执行 `SH retry <KEY>`，再重新执行本命令 |
+| `next_action = disk-low` | 贴 `SH disk` 的输出；腾出空间后重新执行本命令，磁盘写满停下的 lane 会自动重排 |
 | retro verdict 为 rejected | 按 P§1「verdict 门」 |
 | 任何 `SH` 命令输出 `STATUS=locked` | 贴 `REASON=` 和 `HINT=`。锁属于另一个会话，不要执行 `end-run`，也不要自行 `--take-over` |
 

@@ -276,11 +276,10 @@ def auto_resolve_build_artifact(path):
         content = ""
     existing_lines = set(line.strip() for line in content.splitlines())
     if pattern not in existing_lines:
-        with open(gitignore, "a", encoding="utf-8") as f:
-            if content and not content.endswith("\n"):
-                f.write("\n")
-            f.write(f"# Auto-added by harness-commit: build artifact (Go cmd binary)\n")
-            f.write(f"{pattern}\n")
+        if content and not content.endswith("\n"):
+            content += "\n"
+        content += "# Auto-added by harness-commit: build artifact (Go cmd binary)\n" + f"{pattern}\n"
+        _atomic_write_file(gitignore, content)
         run(["git", "add", "--", gitignore])
     return size_mb
 
@@ -2046,8 +2045,13 @@ def filter_junk_paths(paths, dry_run=False):
     return kept
 
 
-def read_cross_story_allowlist(key):
-    """Parse story md frontmatter for `cross_story_artifacts:` field.
+def read_cross_story_allowlist(key, epic=None, stage=None):
+    """Parse spec md frontmatter for `cross_story_artifacts:` field.
+
+    The spec is located with `_resolve_spec_md_path(key, epic, stage)`, the
+    same lookup `planning_artifacts:` uses (issue #31): on stage
+    retro-fulfill `key` is an action item code (J1), and the governing spec
+    is the chore spec `chore-retro-c<epic>-<code>-*.md`, not `spec-J1.md`.
 
     Returns set of allowed cross-story artifact filenames (just the basename
     inside _bmad-output/implementation-artifacts/, not full paths). Empty set
@@ -2069,8 +2073,8 @@ def read_cross_story_allowlist(key):
       already allowed by default — listing redundantly is a smell).
     Invalid entries are silently dropped (the field is best-effort).
     """
-    path = harness_spec.story_md_path(key, ARTIFACTS_DIR)
-    if not os.path.exists(path):
+    path = _resolve_spec_md_path(key, epic, stage)
+    if not path:
         return set()
     allowed = set()
     in_frontmatter = False
@@ -2690,7 +2694,7 @@ def run_build_verify(key, base=None):
     infos.extend(_build_commit_lines(base, spec_path))
 
     planning_allowlist = read_planning_artifacts_allowlist(key, None, "build-verify")
-    cross_allowlist = read_cross_story_allowlist(key)
+    cross_allowlist = read_cross_story_allowlist(key, None, "build-verify")
     for st, p in changed:
         if p in result_files:
             continue  # reported above as BUILD_AUTO_RESULT=
@@ -3004,7 +3008,7 @@ def main():
     # rest (unstaged) for stage 4. Anything stage 4 would refuse keeps the halt.
     split_to_stage4 = []
     if args.stage == "3" and any(p == f"{ARTIFACTS_DIR}{key}.codex-review.md" for _, p in paths):
-        xs4 = read_cross_story_allowlist(key)
+        xs4 = read_cross_story_allowlist(key, epic, args.stage)
         extras = [(xy, p) for xy, p in paths if classify(p, key, epic, spec, xs4) != "expected"]
 
         def _stage4_ok(p):
@@ -3108,7 +3112,7 @@ def main():
 
     # 3 — cross-story isolation (with `cross_story_artifacts:` frontmatter
     # whitelist per harness-changelog 2026-05-03 §B)
-    cross_story_allowlist = read_cross_story_allowlist(key)
+    cross_story_allowlist = read_cross_story_allowlist(key, epic, args.stage)
     chore_retro_flag = bool(spec.get("chore_retro"))
     cross_hits = [p for _, p in paths if not cross_story_ok(p, key, epic, cross_story_allowlist, chore_retro=chore_retro_flag)]
     if cross_hits:

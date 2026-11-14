@@ -16,6 +16,8 @@
 #       sprint 分支不动；在 lane 里修好并 commit 后重跑 integrate 合入
 #   C*  真代码冲突 → exit 3 → 人工解决后 integrate 续跑
 #   X*  mark / cleanup / abandon
+#   K31 磁盘余量（issue #31）：低于阈值停派发 / 暂缓合流、disk-cleanup 一次、
+#       disk_full 阶段与自动重排上限、verify 的 ENOSPC 不记成 hold_kind=verify、spec 备份恢复
 #
 # 用法：bash superh_test.sh   （从 plugin 源码树运行，脚本取同目录的 harness 脚本）
 
@@ -36,6 +38,9 @@ check() { local name="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$name"; else
 # pwd -P: on macOS mktemp lives under /var -> /private/var; git reports the
 # resolved path, so compare against the physical one.
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
+# issue #31: disk_min_free_gb defaults to auto (up to 10G); pin the free space so the suite doesn't
+# depend on the machine (the K31 section lowers it per command)
+export SUPERH_TEST_DISK_FREE_GB=500
 trap 'rm -rf "$TMP"' EXIT
 PROJ="$TMP/proj"
 mkdir -p "$PROJ"
@@ -82,6 +87,9 @@ case "$MODE" in
     echo '{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":[{"type":"text","text":"Async agent launched successfully. agentId: a1"}]}]}}'
     echo '{"type":"result","result":"waiting for the build agent to finish","is_error":false,"num_turns":8}'
     exit 0 ;;
+  diskfull) # issue #31: cargo dies on a full disk, the worker never reports
+    echo '{"type":"user","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"tu2","content":"error: could not write output: No space left on device (os error 28)"}]}}'
+    exit 1 ;;
   nestedbg) # a nested sub-agent backgrounding a command is not the worker's own turn
     echo '{"type":"user","parent_tool_use_id":"tu9","message":{"content":[{"type":"tool_result","tool_use_id":"tu10","content":"Command running in background with ID: b1"}]}}'
     echo '{"type":"result","result":"forgot to report","is_error":false}'
@@ -1275,6 +1283,121 @@ lane_edit $K 'd["phase"] = "abandoned"'
     && [ "$($SH tick | jget 'd["post_epic"]')" = "[]" ] && echo "$($SH post-epic 7)" | grep -qx 'STATUS=skip' \
     && ok "S22 then tick says post-epic, it runs once, launches resume" || { bad "S22"; echo "$OUT"; }
 cfg_set lane_cleanup_command "''"; cfg_set post_epic_command "''"
+
+echo "== K31: disk space (issue #31)"
+python3 - "$ART/sprint-status.yaml" <<'PY2'
+import sys
+p = sys.argv[1]
+t = open(p, encoding="utf-8").read()
+t = t.replace("development_status:\n", "development_status:\n  9-80-dk-a: backlog\n  9-81-dk-b: backlog\n  9-82-dk-c: backlog\n  9-83-dk-d: backlog\n", 1)
+t = t.replace("story_dependencies:\n", "story_dependencies:\n  9-80-dk-a: []\n  9-81-dk-b: []\n  9-82-dk-c: []\n  9-83-dk-d: []\n", 1)
+open(p, "w", encoding="utf-8").write(t)
+PY2
+git add -A >/dev/null; git commit -qm "fixture: disk stories"
+cfg_set max_slots 4
+# auto (default): 10G, capped at 10% of the partition (a small tmpfs must not read as low forever)
+EXP="$(python3 -c 'import os,sys; st=os.statvfs(sys.argv[1]); print(round(min(10.0, st.f_blocks*st.f_frsize/1024**3*0.1), 1))' "$TMP/wt")"
+GOT="$($SH disk --json | jget 'd["paths"][0]["min_free_gb"]')"
+[ "$($SH disk --json | jget 'd["min_free_gb"]')" = "auto" ] && [ "$GOT" = "$EXP" ] \
+    && ok "K0 disk_min_free_gb auto = min(10G, 10% of the partition) ($GOT)" || bad "K0 got=$GOT want=$EXP"
+cfg_set disk_min_free_gb 10
+LOW() { SUPERH_TEST_DISK_FREE_GB=3 "$@"; }
+T="$($SH tick)"
+echo "$T" | jget 'd["launch"]' | grep -q 9-80-dk-a && [ "$(echo "$T" | jget 'd["disk"]["ok"]')" = "True" ] \
+    && ok "K1 enough space: stories are handed out" || { bad "K1"; echo "$T" | head -20; }
+T="$(LOW $SH tick)"
+[ "$(echo "$T" | jget 'd["launch"]')" = "[]" ] && [ "$(echo "$T" | jget 'd["next_action"]')" = "disk-low" ] \
+    && [ "$(echo "$T" | jget 'd["disk"]["ok"]')" = "False" ] \
+    && ok "K2 below disk_min_free_gb: nothing launched, next_action=disk-low" || { bad "K2"; echo "$T" | head -30; }
+LOW $SH board | grep -q '磁盘余量不足' && ok "K3 board says why" || bad "K3"
+OUT="$(LOW $SH prepare 9-80-dk-a)"; RC=$?
+[ $RC -eq 5 ] && echo "$OUT" | grep -qx 'STATUS=disk-low' && [ ! -f "$LANES/9-80-dk-a.json" ] \
+    && ok "K4 prepare refuses on low disk (exit 5), no lane created" || { bad "K4 rc=$RC"; echo "$OUT"; }
+cfg_set disk_cleanup_command "'echo cleaned >> $TMP/diskclean.log'"
+[ "$(LOW $SH tick | jget 'd["next_action"]')" = "disk-cleanup" ] && ok "K5 cleanup configured, nothing running → disk-cleanup" || bad "K5"
+OUT="$(LOW $SH disk-cleanup)"
+echo "$OUT" | grep -qx 'DISK_CLEANUP=ok' && echo "$OUT" | grep -qx 'DISK=low' && [ "$(cat "$TMP/diskclean.log")" = "cleaned" ] \
+    && ok "K6 disk-cleanup runs the command once" || { bad "K6"; echo "$OUT"; }
+OUT="$(LOW $SH disk-cleanup)"
+echo "$OUT" | grep -qx 'STATUS=skip' && [ "$(wc -l < "$TMP/diskclean.log")" -eq 1 ] \
+    && [ "$(LOW $SH tick | jget 'd["next_action"]')" = "disk-low" ] \
+    && ok "K7 still low after cleanup: not run again, next_action=disk-low" || { bad "K7"; echo "$OUT"; }
+$SH tick >/dev/null   # space is back: the episode ends
+[ "$(LOW $SH tick | jget 'd["next_action"]')" = "disk-cleanup" ] && ok "K8 a new low-space episode may clean again" || bad "K8"
+# a working lane blocks the cleanup and holds back new lanes
+$SH prepare 9-80-dk-a >/dev/null
+sleep 300 & SP=$!
+python3 - "$LANES/9-80-dk-a.proc.json" "$SP" "$(pstart $SP)" <<'PY2'
+import json, sys
+json.dump({"key": "9-80-dk-a", "attempt": 1, "pid": int(sys.argv[2]), "pid_start": sys.argv[3], "exit_code": None}, open(sys.argv[1], "w"))
+PY2
+lane_edit 9-80-dk-a 'd["phase"] = "launched"; d["attempts"] = 1'
+T="$(LOW $SH tick)"; OUT="$(LOW $SH disk-cleanup)"
+[ "$(echo "$T" | jget 'd["next_action"]')" = "wait" ] && echo "$OUT" | grep -qx 'STATUS=deferred' \
+    && [ "$(wc -l < "$TMP/diskclean.log")" -eq 1 ] \
+    && ok "K9 a working lane: wait, cleanup deferred" || { bad "K9"; echo "$OUT"; echo "$T" | head -5; }
+kill $SP; wait $SP 2>/dev/null
+$SH abandon 9-80-dk-a --yes >/dev/null
+cfg_set disk_cleanup_command "''"
+# a worker that dies on ENOSPC without reporting → disk_full, retried when space is back
+echo diskfull > .fake-mode-9-81-dk-b
+$SH prepare 9-81-dk-b >/dev/null; OUT="$($SH launch 9-81-dk-b)"
+echo "$OUT" | grep -qx 'STAGE=disk_full' && ok "K10 ENOSPC in the worker's output → stage disk_full, not failed" || { bad "K10"; echo "$OUT"; }
+T="$($SH tick)"
+[ "$(echo "$T" | jget 'd["disk_retry"]')" = "['9-81-dk-b']" ] && [ "$(echo "$T" | jget 'd["next_action"]')" = "disk-retry" ] \
+    && ok "K11 space is back: tick offers the lane for retry" || { bad "K11"; echo "$T" | head -40; }
+[ "$(LOW $SH tick | jget 'd["disk_retry"]')" = "[]" ] && ok "K12 not while space is still low" || bad "K12"
+OUT="$($SH retry --disk-full)"
+echo "$OUT" | grep -qx 'LANE=9-81-dk-b' && [ "$(lane_get 9-81-dk-b 'd["phase"]')" = "prepared" ] \
+    && [ "$(lane_get 9-81-dk-b 'd["disk_retries"]')" = "1" ] \
+    && ok "K13 retry --disk-full requeues it and counts the retry" || { bad "K13"; echo "$OUT"; }
+lane_edit 9-81-dk-b 'd["phase"] = "launched"; d["disk_retries"] = 2'
+[ "$($SH tick | jget 'd["disk_retry"]')" = "[]" ] && [ "$(stage_of 9-81-dk-b)" = "disk_full" ] \
+    && ok "K14 after MAX_DISK_RETRIES it is left to a person" || bad "K14"
+$SH abandon 9-81-dk-b --yes >/dev/null; rm -f .fake-mode-9-81-dk-b
+# the worker's own words: report --status disk_full, or ENOSPC in a blocked report
+echo blocked > .fake-mode-9-82-dk-c
+$SH prepare 9-82-dk-c >/dev/null
+# a spec in the lane before launch: launch backs it up
+SPEC_C="$TMP/wt/9-82-dk-c/$ART/spec-9-82-dk-c.md"
+python3 -c 'import sys; open(sys.argv[1], "w").write("---\nstatus: in-progress\n---\n# spec\n" + "line of spec text\n" * 200)' "$SPEC_C"
+SIZE_C="$(wc -c < "$SPEC_C")"
+$SH launch 9-82-dk-c >/dev/null
+[ "$(stage_of 9-82-dk-c)" = "blocked" ] && [ -f "$LANES/9-82-dk-c.spec-backup.md" ] \
+    && ok "K15 plain blocked report stays blocked; launch backed the spec up" || bad "K15 $(stage_of 9-82-dk-c)"
+result_edit 9-82-dk-c 'd["summary"] = "cargo test: No space left on device (os error 28)"'
+[ "$(stage_of 9-82-dk-c)" = "disk_full" ] && ok "K16 blocked with ENOSPC in the summary → disk_full" || bad "K16"
+result_edit 9-82-dk-c 'd["summary"] = "intent gap"; d["status"] = "disk_full"'
+[ "$(stage_of 9-82-dk-c)" = "disk_full" ] && ok "K17 report --status disk_full" || bad "K17"
+: > "$SPEC_C"
+OUT="$($SH retry 9-82-dk-c)"
+echo "$OUT" | grep -q '^SPEC_RESTORED=' && [ "$(wc -c < "$SPEC_C")" = "$SIZE_C" ] \
+    && ls "$LANES"/9-82-dk-c.spec-short-*.md >/dev/null 2>&1 \
+    && $SH board | grep -q 'spec 从备份恢复过' \
+    && ok "K18 retry puts a 0-byte spec back from the backup, keeps the short one, board says so" || { bad "K18"; echo "$OUT"; }
+$SH abandon 9-82-dk-c --yes >/dev/null; rm -f .fake-mode-9-82-dk-c
+# integrate: deferred on low disk; ENOSPC in verify_command is not a code failure
+ready_lane 9-80-dk-a && ready_lane 9-83-dk-d || bad "K19 setup"
+OUT="$(LOW $SH integrate 9-80-dk-a)"; RC=$?
+[ $RC -eq 5 ] && echo "$OUT" | grep -qx 'STATUS=disk-low' && [ "$(stage_of 9-80-dk-a)" = "ready" ] \
+    && ok "K19 integrate waits on low disk, lane untouched" || { bad "K19 rc=$RC"; echo "$OUT"; }
+T="$(LOW $SH tick)"
+[ "$(echo "$T" | jget 'd["integrate"]')" = "[]" ] && echo "$T" | jget 'd["disk"]["deferred_integrate"]' | grep -q 9-80-dk-a \
+    && ok "K20 tick defers integrate while low" || { bad "K20"; echo "$T" | head -30; }
+$SH integrate 9-80-dk-a >/dev/null || bad "K21 setup integrate a"
+cfg_set verify_command "'echo \"error: failed to write: No space left on device (os error 28)\" >&2; exit 101'"
+OUT="$($SH integrate 9-83-dk-d)"; RC=$?
+[ $RC -eq 5 ] && echo "$OUT" | grep -qx 'STATUS=disk-full' && [ "$(lane_get 9-83-dk-d 'd["phase"]')" = "integrating" ] \
+    && [ "$(lane_get 9-83-dk-d 'd.get("hold_kind")')" = "None" ] \
+    && echo "$($SH tick)" | jget 'd["integrate"]' | grep -q 9-83-dk-d \
+    && ok "K21 ENOSPC in verify_command: not held as verify, back to integrate" || { bad "K21 rc=$RC"; echo "$OUT"; }
+$SH integrate 9-83-dk-d >/dev/null; OUT="$($SH integrate 9-83-dk-d)"
+echo "$OUT" | grep -qx 'HOLD_KIND=disk' && [ "$(stage_of 9-83-dk-d)" = "held" ] \
+    && ok "K22 after MAX_DISK_RETRIES it is held with hold_kind=disk" || { bad "K22"; echo "$OUT"; }
+cfg_set verify_command "''"
+OUT="$($SH integrate 9-83-dk-d)"; RC=$?
+[ $RC -eq 0 ] && ok "K23 room again: a manual integrate merges the held lane" || { bad "K23 rc=$RC"; echo "$OUT"; }
+cfg_set max_slots 2
 
 echo
 echo "superh_test: PASS=$PASS FAIL=$FAIL"

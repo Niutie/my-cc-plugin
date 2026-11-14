@@ -86,7 +86,11 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 | `decisions.json` | worker（`reopen`）、调度者（`decide`、`resume`）、`launch` / `integrate`（漏后缀的派发、spec 里的待确认项）、用户（`confirm`、`override`） | 决策收件箱。这是唯一一个多写入者的文件，所有写入都在同一把 flock 下做完整的读改写。`kind`：`decision`（reopen 代答）、`dispatcher`、`audit`（漏后缀）、`spec`（worker 写在 spec `### 待用户确认` 段的取舍，带 `spec_ref` 和可选的 `merged_into`；`options` 只放没采用的备选，其他 kind 的 `options` 含采用项） |
 | `resources.json` | `launch`（acquire）、`mark done` / `abandon` / `end-run --finished`（release），经 flock | 已经执行过 `resource_acquire`、还没 release 的资源 |
 | `post_epic.json` | `post-epic` | 等 lane 停下再执行的 epic（`pending`）和已执行过的 epic（`done`） |
+| `disk.json` | `disk-cleanup`、`tick` | 这次余量不足时已经执行过的 `disk_cleanup_command`（`cleanup_ran`）；余量回到阈值以上时 tick 把它清掉 |
+| `lanes/<KEY>.spec-backup.md` | `launch`（开始和结束时）、`retry` | 这一路 spec 的上一份正常副本，`lane.spec_backup` 记着路径和大小；从它恢复时原来的短版本另存为 `lanes/<KEY>.spec-short-<时间>.md` |
 | `suffix/<stage>-<hash>.md` | `harness-prompt-suffix.py --file` | 子 agent prompt 后缀全文，按内容 hash 命名，所有 worktree 共用 |
+
+superh 写的文件（上表的状态文件，以及合流时写进 lane worktree 的 `deferred-work.md`、spec 末尾的 hash 对应表、codex 报告的 `head_rebased:`、reopen 改写的 spec）都先写同目录的临时文件再 rename，磁盘写满或进程被杀时旧文件保持原样，不会留下截断的文件（issue #31）。`harness-commit.py`、`sprint-status.py` 写 sprint-status.yaml 和账本时本来就是这样。
 
 流水线自己的状态源（`harness/<KEY>/*` tag、spec frontmatter、sprint-status.yaml）保持不变。tag 是仓库级的，任何 worktree 里打的 tag 主 worktree 都能看到。
 
@@ -99,15 +103,16 @@ launch 时会清掉从调度者会话继承来的 `CLAUDECODE`、`CLAUDE_CODE_SE
 | done / abandoned | phase 为 done / abandoned | |
 | conflict | phase = conflict（rebase 停在代码冲突上） | 是 |
 | preparing / integrating（进行中） | lane 上有 prepare 或 integrate 的进行中标记，且记录的进程还活着（pid 和启动时间都对得上） | |
-| held | phase = held。`hold_kind` 说明原因：`prepare`、`env`（worker 启动前环境没起来）、`resource`（`resource_acquire` 失败）、`verify-env`、`build-verify`、`verify`、`lane-dirty`、`rebase`、`ledger`（rebase 后 deferred-work.md 有 FU 对不上）、`branch-missing`、`worktree-missing`、`foreign`（分支或目录不是 superh 建的）、`interrupted`（prepare / integrate 被杀超过 2 次）、`retry-limit`、`git-error`、`error` | 是 |
+| held | phase = held。`hold_kind` 说明原因：`prepare`、`env`（worker 启动前环境没起来）、`resource`（`resource_acquire` 失败）、`verify-env`、`build-verify`、`verify`、`lane-dirty`、`rebase`、`ledger`（rebase 后 deferred-work.md 有 FU 对不上）、`branch-missing`、`worktree-missing`、`foreign`（分支或目录不是 superh 建的）、`interrupted`（prepare / integrate 被杀超过 2 次）、`retry-limit`、`git-error`、`error`、`disk`（合流验证连续 3 次因磁盘写满失败） | 是 |
 | integrating | phase 为 integrating / merged | |
 | queued | phase 为 prepared，或 preparing 但进程已不在（prepare 被打断，待重做），或这一次 attempt 还没有 proc 记录 | |
 | working | proc 没有退出码，launch 进程或 claude 子进程有一个还活着（pid 和启动时间都对得上，防止 pid 被复用后误判） | |
+| disk_full | 进程丢失或退出时没有回报，并且 stream / stderr 日志末尾、result 文本、日志写入错误里有 `No space left on device`、`os error 28`、`ENOSPC`、`[Errno 28]`，或者退出时（进程丢失的看现在）磁盘余量低于阈值；或者 worker 回报 `disk_full`；或者回报 blocked / failed 而 summary、halt 里有这些报错（这时不看构建日志，story 自己的测试可能就会打印 ENOSPC） | 余量回来后自动 retry，每路最多 2 次 |
 | crashed | proc 没有退出码，两个进程都已不在，worker 也没有回报 | 是（第一次自动 retry） |
 | failed | 退出了，但没有本次 attempt 的 result | 是 |
 | ready / blocked / failed / quota | 按 result.status | blocked / failed / quota 需要人 |
 
-`tick` 的 `next_action` 优先级：post-merge（已合入未收口）> integrate > retro > post-epic > launch > wait > finished / stalled。有 epic 在等 `post_epic_command`（`post_epic` 非空）时不再派发新 worker，等在跑的 lane 都停下才给出 `post-epic`。合流排在启动前面，是为了让依赖它的 story 尽早变成就绪。有 integrate 正在进行时，tick 不再给出别的 integrate、post-merge 或 retro。`quota_hold` 时 launch 和 queued 都不再派发。tick 的 JSON 另有 `preparing`、`integrating`（进行中的 key）和 `orphaned`（launch 进程已退出、claude 子进程还在跑的 key；调度者对它们执行 `superh.py watch <KEY>`，子进程退出时会被唤醒）。
+`tick` 的 `next_action` 优先级：post-merge（已合入未收口）> integrate > retro > post-epic > disk-cleanup / disk-low > disk-retry > launch > wait > finished / stalled。磁盘余量低于 `disk_min_free_gb` 时（issue #31）不再派发新 lane，也不给出 integrate（推迟的在 `disk.deferred_integrate`），在跑的 lane 不受影响；等没有 lane 在跑时，配了 `disk_cleanup_command` 且这次还没执行过就给出 `disk-cleanup`，否则给出 `disk-low`（调度者 halt，等人腾空间）。余量够用时，`disk_retry` 里有磁盘写满停下、自动重试还没到上限的 lane 就给出 `disk-retry`。有 epic 在等 `post_epic_command`（`post_epic` 非空）时不再派发新 worker，等在跑的 lane 都停下才给出 `post-epic`。合流排在启动前面，是为了让依赖它的 story 尽早变成就绪。有 integrate 正在进行时，tick 不再给出别的 integrate、post-merge 或 retro。`quota_hold` 时 launch 和 queued 都不再派发。tick 的 JSON 另有 `preparing`、`integrating`（进行中的 key）和 `orphaned`（launch 进程已退出、claude 子进程还在跑的 key；调度者对它们执行 `superh.py watch <KEY>`，子进程退出时会被唤醒）。
 
 ### 4.3 调度锁
 
@@ -235,6 +240,10 @@ marker 只在文件不存在时写，避免重跑时 `skipped_at` 变化把文�
 | worker 退出后还有容器挂载着 lane worktree | launch 和 retry 输出 `ORPHAN_CONTAINER=` | 确认是子 agent 留下的后 `docker stop <id>` |
 | 调度者会话结束 | 在跑的 worker 随之结束，显示为 crashed | 下次 `/super-harness:run` 自动 retry 一次 |
 | 配额耗尽 | 不再派发新 lane，等在跑的结束后 halt | 额度恢复后 retry |
+| 磁盘余量低于 `disk_min_free_gb`（issue #31） | 不再派发新 lane，合流推迟；prepare / launch / integrate 自己也会检查，输出 `STATUS=disk-low`、退出码 5，lane 不动。没有 lane 在跑时执行一次 `disk_cleanup_command`（配了的话），仍不够就 halt | 腾出空间后重新执行 `/super-harness:run`，派发和合流自动恢复 |
+| worker 因磁盘写满失败 | disk_full，不并进 blocked / crashed / failed | 余量回来后 tick 给出 `disk-retry`，调度者执行 `superh retry --disk-full`；每路最多自动 2 次，之后留给人 |
+| build-verify 或 `verify_command` 因磁盘写满失败 | 输出 `STATUS=disk-full`、退出码 5，lane 仍是 integrating，不记成 `hold_kind=verify`；余量回来后重新合流。连续 3 次记为 held（`disk`） | 腾出空间后重跑 `superh integrate <KEY>` |
+| spec 被截断（磁盘写满时只剩 0 字节或不到备份的一半） | launch 结束时输出 `WARN=`；下一次 retry 或 launch 前从 `lanes/<KEY>.spec-backup.md` 恢复，输出 `SPEC_RESTORED=`，看板也会列出 | 核对恢复后的 spec；短版本留在 `lanes/<KEY>.spec-short-*.md` |
 | 合流代码冲突 | conflict，rebase 现场保留在 lane worktree | 子 agent 处理；不行就人工解决冲突并 `git add`，再跑 `/super-harness:run`。tick 发现冲突文件都已解决，会把这一路送回 integrate，由它完成 `rebase --continue` |
 | 合流过程中调度者被打断 | lane 停在 integrating，或 ff 已完成但状态没记下 | 下次 tick 把它送回 integrate：先结束上次留下的进程组，按 §7.4 续上。被打断超过 2 次记为 held（`interrupted`） |
 | prepare 中途被打断（例如 `prepare_command` 运行时会话被关） | lane 停在 preparing | 进程还活着就显示为进行中，不动它。进程已不在时 tick 把它放回 launch 列表；prepare 先结束残留进程组，确认分支没有新提交、没有 harness tag，再清理现场重做；确认不了，或被打断超过 2 次，就记为 held |

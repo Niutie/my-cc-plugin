@@ -46,7 +46,7 @@
 **(c′) lane 模式的额外约束**：
 - 只在自己的 worktree 里工作。不 `cd` 到主 worktree 或其他 lane 的目录，不切分支，不 merge / rebase / reset，不删除或移动任何 tag（新打本 story 的 tag 除外）。
 - 不碰 `sprint-status.yaml` 里本 story 的状态。账本由调度者在合流后统一写。
-- 本手册要求「halt 并把 §3 模板贴给用户」的地方，lane 模式先看 §3.3：intent gap 这类有推荐读法的问题、验证命令超时，可以自己接着走。§3.3 不适用时，按 worker prompt 的回报命令报 `blocked`（配额耗尽报 `quota`），把 halt 原因和脚本完整输出写进 `--halt`，然后结束。§3.3 之外不尝试自愈，也不重跑失败的子 agent。
+- 本手册要求「halt 并把 §3 模板贴给用户」的地方，lane 模式先看 §3.3：intent gap 这类有推荐读法的问题、验证命令超时，可以自己接着走。§3.3 不适用时，按 worker prompt 的回报命令报 `blocked`（配额耗尽报 `quota`，磁盘写满报 `disk_full`），把 halt 原因和脚本完整输出写进 `--halt`，然后结束。§3.3 之外不尝试自愈，也不重跑失败的子 agent。
 - 不移动、不删除 tag 的唯一例外是 `superh.py reopen`：它重开 spec 时会把 `followup-start` 挪到新提交上，由脚本完成，worker 自己不动 tag。
 
 **(d) Commit 协议**：

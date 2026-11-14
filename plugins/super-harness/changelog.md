@@ -4,6 +4,43 @@
 
 ---
 
+## v0.5.4 — 2026-11-14 — 磁盘余量和磁盘写满（#31）、retro-fulfill 认 chore spec 的 cross_story_artifacts、init 认 BMad 6.12 运行目录（#32）
+
+**磁盘写满（#31）**
+
+一个项目 3 路并行、共用一个 cargo target 目录，Epic 10 期间根分区被写满三次，10.3、10.5、10.6 的第一次 attempt 都中途失败。看板上它们是 `blocked` 和 `crashed`，分不出哪一路是磁盘满；10.3 的 spec 在 worker 工作树里被截成 0 字节；合流验证前的磁盘守卫退出 1，又被记成 `hold_kind=verify`。余量全靠调度者记得去看。
+
+- `parallel.yaml` 新增三项。`disk_check_paths`：要看的路径，留空时看 `worktree_root` 和主 worktree 所在的分区，同一分区只算一次。`disk_min_free_gb`：最低余量（GB），默认 `auto`，即 10G、但不超过该分区容量的 10%；写数字就按数字算，0 表示不检查。`disk_cleanup_command`：清理命令，默认留空。一开始默认是固定的 10G，跑全量测试时发现本机 /tmp 是 9.8G 的 tmpfs，空着也低于 10G，放在这种分区上的项目会一直停着，所以改成按容量封顶。一路产物几十 G 的项目要按「一路大小 × 并行路数」写一个数字，模板注释里写了。
+- 任何一个分区低于阈值，tick 不再给出 launch、queued 和 integrate，推迟的合流列在 `disk.deferred_integrate`，在跑的 lane 不动。prepare、launch、integrate 自己也检查，余量不够就输出 `STATUS=disk-low`、退出码 5，lane 不改。余量回来后自动恢复。
+- 等到没有 lane 在跑（working、prepare、integrate 都没有），配了 `disk_cleanup_command` 的，tick 给出 `next_action=disk-cleanup`，调度者执行 `superh.py disk-cleanup`。同一次余量不足只执行一次；执行后仍不够，tick 给出 `disk-low`，调度者 halt 等人腾空间。余量回到阈值以上之后，下一次不足时可以再执行。时机按 #26 的 `post_epic_command` 处理，有 lane 在跑就推迟。
+- 新的 lane 阶段 `disk_full`，不再并进 blocked、crashed、failed。判定依据有这几种：worker 回报 `--status disk_full`（worker prompt 和 pipeline.md 的 lane 约束都加了这个状态）；worker 退出或丢失时没有回报，而 stream 日志、stderr 日志末尾、result 文本里有 `No space left on device`、`os error 28`、`ENOSPC`、`[Errno 28]`；launch 自己写日志时报了磁盘写满；退出时（进程丢失的看现在）余量低于阈值；worker 回报 blocked / failed，summary 或 halt 里有这些报错。worker 自己回报的不看构建日志，因为 story 自己的测试可能就会打印 ENOSPC。
+- 余量够了以后，tick 的 `disk_retry` 列出这些 lane，`next_action=disk-retry`，调度者执行新的 `superh.py retry --disk-full`，一次重排全部。每路最多自动重试 2 次，之后留在看板上等人。
+- integrate 里 build-verify 或 `verify_command` 的输出有上面那些报错（或者失败时余量已经低于阈值），输出 `STATUS=disk-full`、退出码 5，lane 仍是 integrating，不记成 `hold_kind=verify`，余量回来后重新合流。连续 3 次才挂起，`hold_kind=disk`。
+- 看板顶上写明哪个分区剩多少、阈值多少，清理命令是否已经执行过；磁盘写满的几路列在「需要你处理」，附批量 retry 命令。新命令 `superh.py disk` 打印各分区余量。
+- launch 开始和结束、retry 时给这一路的 spec 留一份副本（`lanes/<KEY>.spec-backup.md`）。retry 或下一次 launch 前发现 spec 是 0 字节，或者不到备份的一半（备份至少 1KB），就从副本恢复，原来的短版本另存为 `lanes/<KEY>.spec-short-<时间>.md`，输出 `SPEC_RESTORED=`，看板也会列出。launch 结束时只告警，不恢复。
+- superh 自己写的文件统一先写同目录临时文件再 rename：状态 JSON 本来就是，这次补上合流时写进 lane 的 `deferred-work.md`、spec 末尾的 hash 对应表、codex 报告的 `head_rebased:`、reopen 改写的 spec 和 worker prompt。写失败时临时文件会删掉。`git merge-file` 报错（不是冲突）时不再把它可能为空的输出当成合并结果。`harness-commit.py` 往 `.gitignore` 追加 Go 二进制时也改成整体替换。sprint-status.yaml 和账本原来就是这样写的。
+- launch 写日志遇到磁盘写满时不再直接崩掉：停止写日志，继续读完 worker 的输出，把错误记进 proc 记录，作为判定 `disk_full` 的依据。
+
+**retro-fulfill 不认 chore spec 的 `cross_story_artifacts:`（#31 附带）**
+
+chore J1 的 spec 在 frontmatter 声明了要改 `spec-10-10-*.md`，`harness-commit.py retro-fulfill J1 --epic 10` 照样被 cross-story isolation 拦下。`read_cross_story_allowlist` 按 story key 找 spec，retro-fulfill 的 key 是行动项代码 J1，找的是不存在的 `spec-J1.md`。现在它和 `read_planning_artifacts_allowlist` 一样走 `_resolve_spec_md_path`：retro-fulfill 时先按 sprint-status.yaml 里这条行动项的 `chore_spec:` 找，找不到再按 `chore-retro-c<epic>-<code>-*.md` 兜底。三处调用都传了 epic 和 stage。`harness_commit_planning_artifacts_test.sh` 加 P8（声明了就放行）、P9（没声明仍然拦）。
+
+**init 不认 BMad 6.12 的运行目录（#32）**
+
+BMad 6.12.4 的 `bmad-prd`、`bmad-architecture`、`bmad-product-brief` 默认把产物写进带日期的运行目录，例如 `prds/prd-myproj-2026-11-07/prd.md`。`run_sprint_init_check_prereq.sh` 只认 `prd.md` / `prd/`，PRD 判为缺失，init 在 §A.5 提前结束；architecture 能过只是因为 `architecture/` 目录存在，被当成了 sharded 布局，§2 提取时找不到子文件，字段全走 fallback。
+
+- 三项产物各按顺序认三种布局：单文件、运行目录、sharded。PRD 认 `<prd_output_path>/<运行目录>/prd.md`，architecture 认 `<spine_output_path>/<运行目录>/ARCHITECTURE-SPINE.md`，product-brief（可选）认 `<brief_output_path>/<运行目录>/brief.md`。
+- 输出位置不写死：读各 skill 的 `<x>_output_path` 和 `run_folder_pattern`，覆盖顺序是 `_bmad/custom/<skill>.user.toml` > `_bmad/custom/<skill>.toml` > `.claude/skills/<skill>/customize.toml` > 内置默认值。`run_folder_pattern` 里的占位符换成通配。
+- 有多个运行目录时，frontmatter `status: final` 的优先，再按目录名里的日期取最新的。
+- sharded 判定收紧：`architecture/`、`prd/` 目录下要直接有 `.md` 文件才算，只有运行目录的不算。
+- helper JSON 加了 `prd_path`、`architecture_path`、`product_brief_path` 和各自的 `*_form`（`single` / `run-folder` / `sharded`）。init.md §2 直接用这些路径，运行目录按单文件处理、按章节语义找。
+- init.md §A.5、§A.7、§1、§2 和 architecture.md 的说明同步改了，早结束块里的 BMad 产物路径也换成 6.12 的写法。
+- 测试：`run_sprint_init_test.sh` 加 F10～F14（默认运行目录、多个运行目录的选择、customize.toml 和 `_bmad/custom` 覆盖、只有运行目录的 `architecture/` 不算 sharded、单文件优先和 brief 运行目录）。F7 原来靠空的 `architecture/` 目录通过，现在补了一个子文件。用 issue 现场的项目（BMad 6.12.4）实跑过，PRD 和 architecture 都命中运行目录。
+
+**测试**
+
+- `superh_test.sh` 加 K31 一节（K0～K23）：auto 阈值按分区容量封顶、低于阈值不派发、看板说明、prepare 拒绝且不建 lane、disk-cleanup 只执行一次、有 lane 在跑时推迟、新一轮不足可以再清理、ENOSPC 退出判为 disk_full、余量回来后 `disk_retry` 和 `retry --disk-full`、重试上限、worker 回报 disk_full 和 blocked 里带 ENOSPC、retry 从备份恢复 0 字节的 spec、余量不足时推迟合流、`verify_command` 的 ENOSPC 不挂成 verify、连续 3 次挂成 `hold_kind=disk`、腾出空间后手工 integrate 合入。整套测试用 `SUPERH_TEST_DISK_FREE_GB` 固定余量，不受机器实际磁盘影响；K31 里需要「余量不足」的用例显式把阈值设成 10。
+
 ## v0.5.3 — 2026-11-13 — 合流时 deferred-work.md 按 FU 合并（#30）
 
 一个项目里 Story 8.5 给台账最后一条 FU-8.4.B7 加了 resolved 历史行，Story 8.7 先合入、在文件末尾追加了 FU-8.7.B1～B3 一节。8.5 合流 rebase 之后，这条历史行落在了 FU-8.7.B3 下面：FU-8.4.B7 标着 resolved 却没有历史，FU-8.7.B3 标着 pending 却有一条「resolved by Story 8.5」。格式合规，`lint_deferred_work.sh` 查不出来。

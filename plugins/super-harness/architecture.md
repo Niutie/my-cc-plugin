@@ -671,22 +671,22 @@ C-path-externalization 落地后，三类项目特定值从脚本硬编码移出
 /super-harness:init --force       # 覆盖既有值（含手改字段）；先列 "field: old → new" + 二次确认
 ```
 
-**Prerequisite gate（3 必需 + 1 可选 — 单文件 / sharded 任一形式都接受）**：
+**Prerequisite gate（3 必需 + 1 可选；单文件、BMad 6.12+ 运行目录、sharded 三种布局都接受）**：
 
-| 概念产物 | 必需性 | 接受的形式 | 引导 BMad skill |
+| 概念产物 | 必需性 | 接受的形式（按顺序认） | 引导 BMad skill |
 |---|---|---|---|
-| prd | **必需** | 单文件 `prd.md` 或 sharded `prd/` 目录 | `/bmad-create-prd`（亦 `/bmad:prd`） |
-| architecture | **必需** | 单文件 `architecture.md` 或 sharded `architecture/` 目录 | `/bmad-create-architecture`（亦 `/bmad:architecture`） |
-| sprint-status | **必需** | `_bmad-output/implementation-artifacts/sprint-status.yaml`（路径固定） | `/bmad-sprint-planning` |
-| product-brief | **可选**（缺仅 WARN，不阻流）| `product-brief*.md`（glob — 上游含项目名后缀） | `/bmad-product-brief` |
+| prd | **必需** | `prd.md` → `prds/prd-<项目>-<日期>/prd.md` → sharded `prd/` | `/bmad-prd` |
+| architecture | **必需** | `architecture.md` → `architecture/architecture-<项目>-<日期>/ARCHITECTURE-SPINE.md` → sharded `architecture/`（目录下要直接有 `.md`） | `/bmad-architecture` |
+| sprint-status | **必需** | `<implementation_dir>/sprint-status.yaml` | `/bmad-sprint-planning` |
+| product-brief | **可选**（缺仅 WARN，不阻流）| `product-brief*.md`（glob，上游含项目名后缀）→ `briefs/brief-<项目>-<日期>/brief.md` | `/bmad-product-brief` |
 
-> **单文件 vs sharded 都是 BMad 上游合法布局**：BMad 默认产单文件 `prd.md` / `architecture.md`；用户跑 `/bmad-shard-doc` 后切到 sharded 形式。super-harness 对二者无偏好。
+> **三种布局都是 BMad 上游合法布局**：BMad 6.12 起这三个 skill 默认写进带日期的运行目录，位置由各自 `customize.toml` 的 `<x>_output_path`、`run_folder_pattern` 决定（`_bmad/custom/` 可覆盖），helper 照这些配置找；更早的版本产单文件；用户跑过旧版 `/bmad-shard-doc` 的是 sharded 形式。有多个运行目录时 `status: final` 优先，再取日期最新的。super-harness 对三者无偏好。
 >
-> ux-design / epics 等其他 BMad 产物（`ux-design-specification.md` 单文件 vs `ux-design-specification/` sharded、`epics.md` vs `epics/`）当前**未在 harness-zh 任何运行时路径引用**（不在 §A.5 检测、不在 §2 字段提取、不在 retro 审计）；信息从 sprint-status.yaml + prd.md + architecture.md 间接获取，未来若加 hard ref 需同步加 dual-form 检测。
+> ux-design / epics 等其他 BMad 产物（`ux-design-specification.md` 单文件 vs `ux-design-specification/` sharded、`epics.md` vs `epics/`）当前**未在 harness-zh 任何运行时路径引用**（不在 §A.5 检测、不在 §2 字段提取、不在 retro 审计）；信息从 sprint-status.yaml + PRD + architecture 间接获取，未来若加 hard ref 需同步加多布局检测。
 
-helper：[`scripts/run_sprint_init_check_prereq.sh`](scripts/run_sprint_init_check_prereq.sh) — exit `0`（全部 MUST-EXIST 在位）/ `2`（BMad planning artifact 缺失 → stderr 引导）/ `3`（sprint-status.yaml 缺失 → 引导 `/bmad-sprint-planning`）/ `1`（参数 / 内部错误）；JSON stdout（含 `optional_missing` 字段）+ 引导 stderr。
+helper：[`scripts/run_sprint_init_check_prereq.sh`](scripts/run_sprint_init_check_prereq.sh) — exit `0`（全部 MUST-EXIST 在位）/ `2`（BMad planning artifact 缺失 → stderr 引导）/ `3`（sprint-status.yaml 缺失 → 引导 `/bmad-sprint-planning`）/ `1`（参数 / 内部错误）；JSON stdout（含 `optional_missing` 字段，以及实际命中的 `prd_path`、`architecture_path`、`product_brief_path` 和各自的布局 `*_form`）+ 引导 stderr。
 
-**字段 mapping 概要**（详 [`commands/init.md`](commands/init.md) §2 — 表格用 sharded 路径写 source 列，LLM 提取时按"sharded 探测 → 单文件章节 grep" fallback；两形式都是一等公民）：
+**字段 mapping 概要**（详 [`commands/init.md`](commands/init.md) §2 — 表格用 sharded 路径写 source 列，LLM 提取时按 helper 给的 `*_path`、`*_form` 读：sharded 读子文件，单文件和运行目录按章节找）：
 
 | yaml field | BMad source（sharded 形式 / 单文件章节）| 提取语义 |
 |---|---|---|

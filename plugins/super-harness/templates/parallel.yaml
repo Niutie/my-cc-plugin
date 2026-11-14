@@ -110,6 +110,22 @@ lane_cleanup_command: ''
 post_epic_command: ''
 hook_timeout_sec: 1800
 
+# 磁盘余量（issue #31）。几路并行编译、共用构建缓存时，分区可能在一个 epic 里被写满。
+# disk_check_paths 里任何一个分区的可用空间低于 disk_min_free_gb（单位 GB），就不再派发新 lane，
+# 合流也先不做（verify_command 要编译），看板写明原因和当前余量；在跑的 lane 不受影响。
+# 余量回来后自动恢复。0 = 不检查。
+# 默认 auto：10G，但不超过该分区容量的 10%（小分区不会一直被判为不足）。写数字就按数字算，
+# 按「一路产物的大小 × 并行路数」再留点余量来定；Rust / C++ 这类一路产物几十 G 的项目要调高。
+# disk_check_paths 留空 = worktree_root 和主 worktree 所在的分区；构建缓存放在别处（例如共用的
+# CARGO_TARGET_DIR）时把那个目录也写进来。同一分区只算一次。
+# disk_cleanup_command：余量不足、并且没有 lane 在跑（working / prepare / integrate）时执行一次
+# （sh -c，在主 worktree；环境变量 SUPERH_DISK_PATHS、SUPERH_DISK_MIN_FREE_GB）。执行后余量仍不够，
+# 等余量回到阈值以上之前不会再执行，需要人工腾空间。超时用 hook_timeout_sec。留空 = 不自动清理。
+# worker 或合流验证因磁盘写满失败时，这一路记为 disk_full，不算代码问题，余量回来后自动重试（每路最多 2 次）。
+disk_check_paths: []
+disk_min_free_gb: auto
+disk_cleanup_command: ''
+
 # worker（headless claude -p）的权限模式。无人值守需要 bypassPermissions；
 # 改成更严格的模式时，worker 会在需要授权的地方失败退出。
 worker_permission_mode: bypassPermissions

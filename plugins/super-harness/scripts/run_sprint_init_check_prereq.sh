@@ -15,20 +15,33 @@
 #   BMad 配置里的 `{project-root}` 换成项目根，`{output_folder}` 换成同文件（或
 #   _bmad/core/config.yaml）的 output_folder。
 #
-# 检查清单（3 必需 + 1 可选；单文件或 sharded 任一形式接受；与 /super-harness:init §A.5 一致）：
-#   1) prd（必需）: <planning>/prd.md 或 sharded 目录 <planning>/prd/
-#   2) architecture（必需）: <planning>/architecture.md 或 <planning>/architecture/
+# 检查清单（3 必需 + 1 可选；与 /super-harness:init §A.5 一致）。每项按顺序认三种布局，
+# 先命中的算数：single（单文件）→ run-folder（BMad 6.12+ 运行目录）→ sharded（目录）
+#   1) prd（必需）: <planning>/prd.md → <prd_output_path>/<运行目录>/prd.md
+#         （默认 prds/prd-<project>-<date>/prd.md）→ sharded 目录 <planning>/prd/
+#   2) architecture（必需）: <planning>/architecture.md
+#         → <spine_output_path>/<运行目录>/ARCHITECTURE-SPINE.md
+#         （默认 architecture/architecture-<project>-<date>/）→ sharded 目录 <planning>/architecture/
+#         sharded 目录下要直接有 .md 文件；只有运行目录的 architecture/ 不算 sharded。
 #   3) sprint-status（必需）: <implementation>/sprint-status.yaml
 #   4) product-brief（**可选**）: glob <planning>/product-brief*.md
-#         （BMad 上游会带项目名后缀；缺则只 WARN 不 fail，project_display_name 从 prd.md 兜底）
+#         → <brief_output_path>/<运行目录>/brief.md（默认 briefs/brief-<project>-<date>/）
+#         缺则只 WARN 不 fail，project_display_name 从 PRD 兜底
+#   运行目录的 output_path / run_folder_pattern 读 _bmad/custom/<skill>.user.toml、
+#   _bmad/custom/<skill>.toml、.claude/skills/<skill>/customize.toml（前者优先）。
+#   有多个运行目录时 frontmatter `status: final` 的优先，再按目录名里的日期取最新的。
 #
 # 输出：
 #   stdout：JSON 一行
 #     {"all_present": bool, "missing_planning": [...], "missing_sprint_status": bool,
 #      "optional_missing": [...], "planning_dir": "<rel>", "implementation_dir": "<rel>",
 #      "planning_source": "bmad-config|default",
-#      "implementation_source": "bmad-config|harness-yaml|default"}
-#     （*_dir 相对项目根；在项目根之外时为绝对路径）
+#      "implementation_source": "bmad-config|harness-yaml|default",
+#      "prd_path": "<rel>", "prd_form": "single|run-folder|sharded",
+#      "architecture_path": "<rel>", "architecture_form": "...",
+#      "product_brief_path": "<rel>", "product_brief_form": "..."}
+#     （*_dir / *_path 相对项目根；在项目根之外时为绝对路径；没找到时 path、form 为空串。
+#      sharded 时 path 是目录）
 #   stderr：halt 时按 missing 项印引导文本（BMad 6.11+ skill 名，/bmad-<name> 形式）
 #
 # 退出码：
@@ -52,7 +65,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help)
-            sed -nE 's/^# ?//p' "$0" | head -45
+            sed -nE 's/^# ?//p' "$0" | head -60
             exit 0
             ;;
         *)
@@ -155,6 +168,92 @@ fi
 PLANNING_REL="$(_rel "$PLANNING_DIR")"
 IMPL_REL="$(_rel "$IMPL_DIR")"
 
+# ---------------------------------------------------------------------------
+# BMad 6.12+ 运行目录布局
+# ---------------------------------------------------------------------------
+# bmad-prd / bmad-architecture / bmad-product-brief 把产物写进
+# `<output_path>/<run_folder_pattern>/<文件>`，例如 prds/prd-myproj-2026-11-07/prd.md。
+# output_path 和 run_folder_pattern 按 BMad 的覆盖顺序读：
+#   _bmad/custom/<skill>.user.toml > _bmad/custom/<skill>.toml
+#   > .claude/skills/<skill>/customize.toml > 内置默认值
+# 有多个运行目录时：frontmatter `status: final` 的优先，再按目录名里的日期取最新的。
+
+# _toml_scalar <file> <key> — `key = "value"` 一行；无则空串
+_toml_scalar() {
+    [ -f "$1" ] || return 0
+    local v
+    v="$(grep -E "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null | head -1 | sed -E "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//")"
+    case "$v" in
+        \"*) v="${v#\"}"; v="${v%%\"*}" ;;
+        \'*) v="${v#\'}"; v="${v%%\'*}" ;;
+        *)   v="${v%%#*}" ;;
+    esac
+    v="${v%"${v##*[![:space:]]}"}"
+    printf '%s' "$v"
+}
+
+# _skill_setting <skill> <key> <default> — 按覆盖顺序取第一个非空值
+_skill_setting() {
+    local f v
+    for f in "$ROOT/_bmad/custom/$1.user.toml" "$ROOT/_bmad/custom/$1.toml" \
+             "$ROOT/.claude/skills/$1/customize.toml"; do
+        v="$(_toml_scalar "$f" "$2")"
+        if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+    done
+    printf '%s' "$3"
+}
+
+# _frontmatter_final <file> — frontmatter 里 status 是 final 时返回 0
+_frontmatter_final() {
+    awk 'NR==1 && $0!="---" {exit 1}
+         NR>1 && $0=="---" {exit 1}
+         NR>1 && /^status:[[:space:]]*["\x27]?final["\x27]?[[:space:]]*$/ {found=1; exit 0}
+         END {exit found ? 0 : 1}' "$1" 2>/dev/null
+}
+
+# _find_run_artifact <skill> <path_key> <default_path> <default_pattern> <文件名>
+#   输出选中的文件绝对路径；找不到输出空串
+_find_run_artifact() {
+    local out pat of glob f d date rank best="" best_key="" key
+    out="$(_skill_setting "$1" "$2" "$3")"
+    pat="$(_skill_setting "$1" run_folder_pattern "$4")"
+    out="${out//\{planning_artifacts\}/${PLANNING_DIR}}"
+    out="${out//\{project-root\}/${ROOT}}"
+    case "$out" in
+        *"{output_folder}"*)
+            of="$(_bmad_path output_folder)"
+            [ -n "$of" ] || return 0
+            out="${out//\{output_folder\}/${of}}"
+            ;;
+    esac
+    case "$out" in *"{"*"}"*) out="${3//\{planning_artifacts\}/${PLANNING_DIR}}" ;; esac
+    out="$(_to_abs "$out")"
+    [ -d "$out" ] || return 0
+    # 运行目录名模式 → glob：每个 {占位符} 换成 *
+    glob="$(printf '%s' "$pat" | sed -E 's/\{[^}]*\}/*/g')"
+    case "$glob" in ""|*/*) glob="*" ;; esac
+    for f in "$out"/$glob/"$5"; do
+        [ -f "$f" ] || continue
+        d="$(basename "$(dirname "$f")")"
+        date="$(printf '%s' "$d" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -1)"
+        rank=0
+        _frontmatter_final "$f" && rank=1
+        key="$rank ${date:-0000-00-00} $d"
+        if [ -z "$best" ] || [[ "$key" > "$best_key" ]]; then
+            best="$f"; best_key="$key"
+        fi
+    done
+    printf '%s' "$best"
+}
+
+# _has_md_files <dir> — 目录下直接有 .md 文件（sharded 布局）时返回 0。
+# 只有运行目录的 architecture/ 不算 sharded。
+_has_md_files() {
+    local f
+    for f in "$1"/*.md; do [ -f "$f" ] && return 0; done
+    return 1
+}
+
 # 3 必需产物（缺即 fail）+ 1 可选产物（缺仅 WARN）
 # 命令名 = BMad 6.11+ 装进 .claude/skills/bmad-<name>/ 的 skill 名
 # （6.12.4 实测：bmad-prd / bmad-architecture / bmad-create-epics-and-stories /
@@ -164,21 +263,55 @@ declare -a MISSING_GUIDANCE=()
 declare -a OPTIONAL_MISSING=()
 declare -a OPTIONAL_GUIDANCE=()
 
-# 1) prd: 单文件 OR sharded 目录（必需）
-if [ ! -f "$PLANNING_DIR/prd.md" ] && [ ! -d "$PLANNING_DIR/prd" ]; then
-    MISSING_PLANNING+=("${PLANNING_REL}/prd.md (或 prd/ sharded 目录)")
+# 每项产物命中的路径和布局：single（单文件）/ run-folder（6.12+ 运行目录）/ sharded（目录）
+PRD_PATH=""; PRD_FORM=""
+ARCH_PATH=""; ARCH_FORM=""
+BRIEF_PATH=""; BRIEF_FORM=""
+
+# 1) prd（必需）：prd.md → prds/<运行目录>/prd.md → sharded prd/
+if [ -f "$PLANNING_DIR/prd.md" ]; then
+    PRD_PATH="$PLANNING_DIR/prd.md"; PRD_FORM="single"
+else
+    _p="$(_find_run_artifact bmad-prd prd_output_path '{planning_artifacts}/prds' 'prd-{project_name}-{date}' prd.md)"
+    if [ -n "$_p" ]; then
+        PRD_PATH="$_p"; PRD_FORM="run-folder"
+    elif [ -d "$PLANNING_DIR/prd" ] && _has_md_files "$PLANNING_DIR/prd"; then
+        PRD_PATH="$PLANNING_DIR/prd"; PRD_FORM="sharded"
+    fi
+fi
+if [ -z "$PRD_PATH" ]; then
+    MISSING_PLANNING+=("${PLANNING_REL}/prd.md (或 prds/<运行目录>/prd.md、prd/ sharded 目录)")
     MISSING_GUIDANCE+=("/bmad-prd")
 fi
 
-# 2) architecture: 单文件 OR sharded 目录（必需）
-if [ ! -f "$PLANNING_DIR/architecture.md" ] && [ ! -d "$PLANNING_DIR/architecture" ]; then
-    MISSING_PLANNING+=("${PLANNING_REL}/architecture.md (或 architecture/ sharded 目录)")
+# 2) architecture（必需）：architecture.md → architecture/<运行目录>/ARCHITECTURE-SPINE.md
+#    → sharded architecture/（目录下直接有 .md 才算）
+if [ -f "$PLANNING_DIR/architecture.md" ]; then
+    ARCH_PATH="$PLANNING_DIR/architecture.md"; ARCH_FORM="single"
+else
+    _p="$(_find_run_artifact bmad-architecture spine_output_path '{planning_artifacts}/architecture' 'architecture-{project_name}-{date}' ARCHITECTURE-SPINE.md)"
+    if [ -n "$_p" ]; then
+        ARCH_PATH="$_p"; ARCH_FORM="run-folder"
+    elif [ -d "$PLANNING_DIR/architecture" ] && _has_md_files "$PLANNING_DIR/architecture"; then
+        ARCH_PATH="$PLANNING_DIR/architecture"; ARCH_FORM="sharded"
+    fi
+fi
+if [ -z "$ARCH_PATH" ]; then
+    MISSING_PLANNING+=("${PLANNING_REL}/architecture.md (或 architecture/<运行目录>/ARCHITECTURE-SPINE.md、architecture/ sharded 目录)")
     MISSING_GUIDANCE+=("/bmad-architecture")
 fi
 
-# 4) product-brief: glob 匹配（**可选** — 不进 MISSING_PLANNING，只进 OPTIONAL_MISSING）
-if ! ls "$PLANNING_DIR/product-brief"*.md >/dev/null 2>&1; then
-    OPTIONAL_MISSING+=("${PLANNING_REL}/product-brief*.md (可选 — 缺则字段 1/15 从 prd.md 兜底)")
+# 4) product-brief（**可选** — 不进 MISSING_PLANNING，只进 OPTIONAL_MISSING）：
+#    glob product-brief*.md → briefs/<运行目录>/brief.md
+for _f in "$PLANNING_DIR/product-brief"*.md; do
+    if [ -f "$_f" ]; then BRIEF_PATH="$_f"; BRIEF_FORM="single"; break; fi
+done
+if [ -z "$BRIEF_PATH" ]; then
+    _p="$(_find_run_artifact bmad-product-brief brief_output_path '{planning_artifacts}/briefs' 'brief-{project_name}-{date}' brief.md)"
+    if [ -n "$_p" ]; then BRIEF_PATH="$_p"; BRIEF_FORM="run-folder"; fi
+fi
+if [ -z "$BRIEF_PATH" ]; then
+    OPTIONAL_MISSING+=("${PLANNING_REL}/product-brief*.md 或 briefs/<运行目录>/brief.md (可选 — 缺则字段 1/15 从 PRD 兜底)")
     OPTIONAL_GUIDANCE+=("/bmad-product-brief")
 fi
 
@@ -215,7 +348,9 @@ if [ "${#MISSING_PLANNING[@]}" -gt 0 ] || [ "$MISSING_SPRINT_STATUS" = "true" ];
     ALL_PRESENT="false"
 fi
 
-printf '{"all_present": %s, "missing_planning": %s, "missing_sprint_status": %s, "optional_missing": %s, "planning_dir": %s, "implementation_dir": %s, "planning_source": "%s", "implementation_source": "%s"}\n' \
+_rel_or_empty() { [ -z "$1" ] || _rel "$1"; }
+
+printf '{"all_present": %s, "missing_planning": %s, "missing_sprint_status": %s, "optional_missing": %s, "planning_dir": %s, "implementation_dir": %s, "planning_source": "%s", "implementation_source": "%s", "prd_path": %s, "prd_form": "%s", "architecture_path": %s, "architecture_form": "%s", "product_brief_path": %s, "product_brief_form": "%s"}\n' \
     "$ALL_PRESENT" \
     "$(json_array "${MISSING_PLANNING[@]+"${MISSING_PLANNING[@]}"}")" \
     "$MISSING_SPRINT_STATUS" \
@@ -223,7 +358,10 @@ printf '{"all_present": %s, "missing_planning": %s, "missing_sprint_status": %s,
     "$(json_str "$PLANNING_REL")" \
     "$(json_str "$IMPL_REL")" \
     "$PLANNING_SOURCE" \
-    "$IMPL_SOURCE"
+    "$IMPL_SOURCE" \
+    "$(json_str "$(_rel_or_empty "$PRD_PATH")")" "$PRD_FORM" \
+    "$(json_str "$(_rel_or_empty "$ARCH_PATH")")" "$ARCH_FORM" \
+    "$(json_str "$(_rel_or_empty "$BRIEF_PATH")")" "$BRIEF_FORM"
 
 _abs_disp() {  # 引导文本里显示的路径：相对 → 拼项目根
     case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$ROOT" "$1" ;; esac

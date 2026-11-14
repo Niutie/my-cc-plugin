@@ -21,6 +21,10 @@
 #   F5 缺 sprint-status.yaml                                                → exit 3 + stderr 引导
 #   F6-F9（0.3.1）产物目录解析：_bmad/bmm/config.yaml（{project-root} / {output_folder}）
 #      > harness yaml artifacts_root > 默认；引导文本用 BMad 6.12 实际 skill 名
+#   F10-F14（0.5.4，#32）BMad 6.12+ 运行目录：prds/<运行目录>/prd.md、
+#      architecture/<运行目录>/ARCHITECTURE-SPINE.md、briefs/<运行目录>/brief.md；
+#      多个运行目录的选择；customize.toml 与 _bmad/custom 覆盖；只有运行目录的
+#      architecture/ 不算 sharded
 
 set -uo pipefail
 
@@ -122,7 +126,7 @@ if [ "$F3_RC" -eq 0 ] \
    && printf '%s' "$F3_OUT" | grep -q '"all_present": true' \
    && printf '%s' "$F3_OUT" | grep -q '"optional_missing": \[' \
    && printf '%s' "$F3_OUT" | grep -q "product-brief" \
-   && printf '%s' "$F3_OUT" | grep -q "从 prd.md 兜底"; then
+   && printf '%s' "$F3_OUT" | grep -q "从 PRD 兜底"; then
     echo "${GREEN}PASS${RESET}: F3 — exit 0 + optional_missing 含 product-brief（可选不阻流） (rc=$F3_RC)"
     PASS=$((PASS + 1))
 else
@@ -225,7 +229,7 @@ mkdir -p "$F7/_bmad/bmm" "$F7/out/planning-artifacts" "$F7/out/implementation-ar
 printf 'output_folder: "{project-root}/out"\nplanning_artifacts: "{output_folder}/planning-artifacts"\nimplementation_artifacts: "{output_folder}/implementation-artifacts"\n' \
     > "$F7/_bmad/bmm/config.yaml"
 echo "# PRD" > "$F7/out/planning-artifacts/prd.md"
-mkdir -p "$F7/out/planning-artifacts/architecture"
+mkdir -p "$F7/out/planning-artifacts/architecture"; echo "# Arch" > "$F7/out/planning-artifacts/architecture/index.md"
 echo "development_status: {}" > "$F7/out/implementation-artifacts/sprint-status.yaml"
 check_case "F7 {output_folder} resolved" "$F7" 0 '"planning_dir": "out/planning-artifacts"' '"implementation_dir": "out/implementation-artifacts"'
 
@@ -251,6 +255,84 @@ if printf '%s' "$OUT9" | grep -qE '/bmad:|/bmad-create-prd 生成|/bmad-create-a
 else
     echo "${GREEN}PASS${RESET}: F9b — no colon aliases or pre-6.11 names suggested"; PASS=$((PASS + 1))
 fi
+
+# ---------------------------------------------------------------------------
+# F10-F14 — BMad 6.12+ 运行目录布局（#32）
+# ---------------------------------------------------------------------------
+# make_run_folder_fixture — 只有 prds/<运行目录>/prd.md 和 architecture/<运行目录>/ARCHITECTURE-SPINE.md
+make_run_folder_fixture() {
+    local d p
+    d=$(mktemp -d "$WORKDIR/fixture.XXXXXX")
+    p="$d/_bmad-output/planning-artifacts"
+    mkdir -p "$d/_bmad/bmm" "$p/prds/prd-demo-2026-11-07" "$p/architecture/architecture-demo-2026-11-09/reviews" \
+             "$d/_bmad-output/implementation-artifacts"
+    printf 'planning_artifacts: "{project-root}/_bmad-output/planning-artifacts"\nimplementation_artifacts: "{project-root}/_bmad-output/implementation-artifacts"\n' \
+        > "$d/_bmad/bmm/config.yaml"
+    printf -- '---\ntitle: demo\nstatus: final\n---\n# PRD\n' > "$p/prds/prd-demo-2026-11-07/prd.md"
+    printf -- "---\nname: 'demo'\nstatus: final\n---\n# Spine\n" > "$p/architecture/architecture-demo-2026-11-09/ARCHITECTURE-SPINE.md"
+    echo "# review" > "$p/architecture/architecture-demo-2026-11-09/reviews/r.md"
+    echo "development_status: {}" > "$d/_bmad-output/implementation-artifacts/sprint-status.yaml"
+    echo "$d"
+}
+
+echo ""
+echo "=== Fixture 10: BMad 6.12.4 默认运行目录（prds/、architecture/） ==="
+F10=$(make_run_folder_fixture)
+check_case "F10 run folders recognised, paths reported" "$F10" 0 '"all_present": true' \
+    '"prd_path": "_bmad-output/planning-artifacts/prds/prd-demo-2026-11-07/prd.md"' '"prd_form": "run-folder"' \
+    '"architecture_path": "_bmad-output/planning-artifacts/architecture/architecture-demo-2026-11-09/ARCHITECTURE-SPINE.md"' \
+    '"architecture_form": "run-folder"'
+
+echo ""
+echo "=== Fixture 11: 多个运行目录 — status: final 优先，其次日期最新 ==="
+F11=$(make_run_folder_fixture)
+P11="$F11/_bmad-output/planning-artifacts/prds"
+mkdir -p "$P11/prd-demo-2026-11-12" "$P11/prd-demo-2026-11-01"
+printf -- '---\nstatus: draft\n---\n# newer draft\n' > "$P11/prd-demo-2026-11-12/prd.md"
+printf -- '---\nstatus: final\n---\n# older final\n' > "$P11/prd-demo-2026-11-01/prd.md"
+check_case "F11 final beats newer draft; newest final wins" "$F11" 0 \
+    '"prd_path": "_bmad-output/planning-artifacts/prds/prd-demo-2026-11-07/prd.md"'
+sed -i 's/status: final/status: draft/' "$P11/prd-demo-2026-11-07/prd.md" "$P11/prd-demo-2026-11-01/prd.md"
+check_case "F11b no final → newest date wins" "$F11" 0 \
+    '"prd_path": "_bmad-output/planning-artifacts/prds/prd-demo-2026-11-12/prd.md"'
+
+echo ""
+echo "=== Fixture 12: customize.toml / _bmad/custom 覆盖输出位置 ==="
+F12=$(make_run_folder_fixture)
+P12="$F12/_bmad-output/planning-artifacts"
+mkdir -p "$F12/.claude/skills/bmad-prd" "$F12/_bmad/custom" "$P12/docs-prd/x-demo" "$P12/team-prd/run-1"
+printf '[workflow]\nprd_output_path = "{planning_artifacts}/docs-prd"\nrun_folder_pattern = "x-{project_name}"\n' \
+    > "$F12/.claude/skills/bmad-prd/customize.toml"
+rm -rf "$P12/prds"
+echo "# PRD" > "$P12/docs-prd/x-demo/prd.md"
+check_case "F12 customize.toml output path honoured" "$F12" 0 \
+    '"prd_path": "_bmad-output/planning-artifacts/docs-prd/x-demo/prd.md"'
+printf '[workflow]\nprd_output_path = "{planning_artifacts}/team-prd"   # team\nrun_folder_pattern = "run-{n}"\n' \
+    > "$F12/_bmad/custom/bmad-prd.toml"
+echo "# PRD" > "$P12/team-prd/run-1/prd.md"
+check_case "F12b _bmad/custom team override beats customize.toml" "$F12" 0 \
+    '"prd_path": "_bmad-output/planning-artifacts/team-prd/run-1/prd.md"'
+
+echo ""
+echo "=== Fixture 13: architecture/ 里只有运行目录、没有 SPINE → 不算 sharded ==="
+F13=$(make_run_folder_fixture)
+rm "$F13/_bmad-output/planning-artifacts/architecture/architecture-demo-2026-11-09/ARCHITECTURE-SPINE.md"
+check_case "F13 empty-of-md architecture/ is missing" "$F13" 2 '"architecture_path": ""' "/bmad-architecture"
+echo "# Tech" > "$F13/_bmad-output/planning-artifacts/architecture/tech-stack.md"
+check_case "F13b architecture/ with .md files is sharded" "$F13" 0 \
+    '"architecture_path": "_bmad-output/planning-artifacts/architecture"' '"architecture_form": "sharded"'
+
+echo ""
+echo "=== Fixture 14: 单文件优先；brief 运行目录 ==="
+F14=$(make_run_folder_fixture)
+P14="$F14/_bmad-output/planning-artifacts"
+echo "# PRD" > "$P14/prd.md"
+mkdir -p "$P14/briefs/brief-demo-2026-11-05"
+echo "# Brief" > "$P14/briefs/brief-demo-2026-11-05/brief.md"
+check_case "F14 prd.md wins over run folder; brief run folder found" "$F14" 0 \
+    '"prd_path": "_bmad-output/planning-artifacts/prd.md"' '"prd_form": "single"' \
+    '"product_brief_path": "_bmad-output/planning-artifacts/briefs/brief-demo-2026-11-05/brief.md"' \
+    '"optional_missing": []'
 
 # ---------------------------------------------------------------------------
 # Summary

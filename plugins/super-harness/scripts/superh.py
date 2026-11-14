@@ -94,7 +94,7 @@ TERMINAL_FALLBACK = ("done", "wont-do", "cancelled", "canceled")
 CARRY_TAGS = ("built", "followup-start", "followup")
 LEDGER_TAKE_OURS_RE = re.compile(r"^(sprint-status\.yaml|epic-\d+-context\.md)$")
 LEDGER_UNION = ("deferred-work.md",)
-PERSON_STAGES = ("conflict", "held", "blocked", "failed", "quota", "crashed")
+PERSON_STAGES = ("conflict", "held", "blocked", "failed", "quota", "crashed", "disk_full")
 # An integrate / prepare that was killed from outside (the session's Bash call hit
 # its time limit, the session ended) is resumed this many times; one more kill
 # holds the lane instead of looping tick → integrate → kill forever.
@@ -103,11 +103,12 @@ MAX_INTERRUPTS = 2
 # it) are retried this many times in a row before the lane is held.
 MAX_TRANSIENT = 3
 EXIT_BUSY = 4   # STATUS=busy (this lane's prepare/integrate is already running) or STATUS=locked
+EXIT_DISK = 5   # STATUS=disk-low (free space under disk_min_free_gb) or STATUS=disk-full (verify hit ENOSPC)
 # hold_kind values integrate sets; a lane held with one of these is accepted by a
 # manual `integrate` re-run once the person has fixed the cause.
 INTEGRATE_HOLD_KINDS = ("verify", "verify-env", "build-verify", "lane-dirty", "rebase", "branch-missing",
                         "worktree-missing", "interrupted", "ff", "retry-limit", "git-error", "error",
-                        "ledger")
+                        "ledger", "disk")
 # Lane stages a person (or `resume`) has to act on before the lane moves again.
 # With blocked_policy=continue they stop holding back the serial order and the
 # epic / retro barriers; explicit depends_on still waits for them.
@@ -116,6 +117,17 @@ STUCK_STAGES = ("blocked", "failed", "held", "conflict")
 REOPEN_LIMITS = {"decision": 2, "transient": 1}
 SPEC_STATUSES = ("draft", "ready-for-dev", "in-progress", "in-review")
 LOCK_FILE = "dispatcher.lock"
+# issue #31: what a full disk prints. cargo: "No space left on device (os error 28)";
+# Python: "[Errno 28] No space left on device"; node / libuv: "ENOSPC".
+ENOSPC_RE = re.compile(r"No space left on device|os error 28\b|\bENOSPC\b|\[Errno 28\]")
+# A lane that failed on a full disk is retried automatically this many times once
+# space is back; a story whose own tests print ENOSPC can't loop forever.
+MAX_DISK_RETRIES = 2
+DISK_FILE = "disk.json"
+# A spec shorter than this share of its backup (and the backup at least
+# SPEC_SHRINK_MIN bytes) is treated as truncated, like a 0-byte one.
+SPEC_SHRINK_RATIO = 0.5
+SPEC_SHRINK_MIN = 1024
 
 DEFAULT_CONFIG = {
     "max_slots": 2,
@@ -149,6 +161,10 @@ DEFAULT_CONFIG = {
     "lane_cleanup_command": "",          # cleanup / abandon 删 worktree 之前执行（issue #26）
     "post_epic_command": "",             # epic retro 之后、没有 lane 在跑时执行（post-epic）
     "hook_timeout_sec": 1800,            # 上面两个钩子和 resource_* 命令的超时
+    # issue #31：磁盘余量。低于 disk_min_free_gb 时不派发新 lane、暂缓合流；0 = 不检查
+    "disk_check_paths": [],              # 空 = worktree_root 和主 worktree 所在的分区
+    "disk_min_free_gb": "auto",          # auto = 10G，但不超过该分区容量的 10%；0 = 不检查
+    "disk_cleanup_command": "",          # 余量不足、没有 lane 在跑时执行一次（disk-cleanup）
 }
 
 # Env vars a parent Claude Code session leaks into child processes. A worker is
@@ -187,13 +203,33 @@ def read_json(path: Path):
         return None
 
 
-def write_json(path: Path, data) -> None:
+def write_atomic(path: Path, data) -> None:
+    """Write text or bytes through a temp file in the same directory + rename.
+    A full disk (ENOSPC) or a kill mid-write leaves the old file as it was and
+    no temp file behind (issue #31: a spec truncated to 0 bytes)."""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-", suffix=".json")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        mode = None
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data if isinstance(data, bytes) else str(data).encode("utf-8"))
+        if mode is not None:
+            os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_json(path: Path, data) -> None:
+    write_atomic(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
 def pid_alive(pid) -> bool:
@@ -770,6 +806,17 @@ def load_config(path: Path) -> dict:
         cfg["hook_timeout_sec"] = max(1, int(cfg.get("hook_timeout_sec") or 1800))
     except (TypeError, ValueError):
         cfg["hook_timeout_sec"] = 1800
+    v = cfg.get("disk_check_paths")
+    cfg["disk_check_paths"] = [str(x) for x in v if str(x).strip()] if isinstance(v, list) else \
+        ([str(v)] if isinstance(v, str) and v.strip() else [])
+    v = cfg.get("disk_min_free_gb")
+    if str(v).strip().lower() in ("auto", "", "none"):
+        cfg["disk_min_free_gb"] = "auto"
+    else:
+        try:
+            cfg["disk_min_free_gb"] = max(0.0, float(v))
+        except (TypeError, ValueError):
+            cfg["disk_min_free_gb"] = "auto"
     return cfg
 
 
@@ -1061,6 +1108,269 @@ def _post_epic_state(ctx) -> dict:
     return d
 
 
+# --------------------------------------------------------------------- disk space
+#
+# issue #31: three lanes sharing one build cache filled the root partition three
+# times in one epic. Below disk_min_free_gb tick hands out no new lane and no
+# integrate; disk_cleanup_command (if set) runs once per low-space episode while
+# no lane is working; a lane that died on ENOSPC gets its own stage (disk_full)
+# and is retried once space is back.
+
+def _disk_paths(ctx) -> list:
+    raw = ctx.config.get("disk_check_paths") or []
+    out = []
+    for r in raw:
+        p = Path(str(r)).expanduser()
+        out.append(p if p.is_absolute() else ctx.root / p)
+    return out or [ctx.wt_root, ctx.root]
+
+
+def _existing(p: Path) -> Path:
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return p
+
+
+# disk_min_free_gb: auto — 10G, but never more than this share of the partition:
+# an empty 9.8G tmpfs must not read as "low" forever.
+DISK_AUTO_GB = 10.0
+DISK_AUTO_SHARE = 0.10
+
+
+def _free_gb(p: Path) -> tuple[float, float]:
+    """(free, size) in GB."""
+    st = os.statvfs(str(p))
+    size = st.f_blocks * st.f_frsize / 1024 ** 3
+    fake = os.environ.get("SUPERH_TEST_DISK_FREE_GB")  # tests only
+    if fake:
+        return float(fake), size
+    return st.f_bavail * st.f_frsize / 1024 ** 3, size
+
+
+def disk_state(ctx, update: bool = False) -> dict:
+    """Free space on every checked filesystem (one entry per device).
+    update=True (tick): space back above the threshold ends the low-space
+    episode, so disk_cleanup_command may run again the next time it runs low."""
+    conf = ctx.config.get("disk_min_free_gb")
+    auto = conf == "auto"
+    try:
+        fixed = 0.0 if auto else float(conf or 0)
+    except (TypeError, ValueError):
+        fixed = 0.0
+    if not auto and fixed <= 0:
+        return {"enabled": False, "ok": True, "min_free_gb": 0, "paths": [], "low": []}
+    seen, entries = set(), []
+    for p in _disk_paths(ctx):
+        e = _existing(p)
+        try:
+            dev = os.stat(str(e)).st_dev
+            free, size = _free_gb(e)
+        except (OSError, ValueError):
+            continue
+        if dev in seen:
+            continue
+        seen.add(dev)
+        need = round(min(DISK_AUTO_GB, size * DISK_AUTO_SHARE), 1) if auto else fixed
+        entries.append({"path": str(p), "free_gb": round(free, 1), "min_free_gb": need, "low": free < need})
+    low = [x for x in entries if x["low"]]
+    ds = {"enabled": True, "ok": not low, "min_free_gb": conf if auto else fixed, "paths": entries, "low": low}
+    if update and ds["ok"]:
+        st = read_json(ctx.state / DISK_FILE) or {}
+        if st.get("cleanup_ran"):
+            st.pop("cleanup_ran", None)
+            st["recovered_at"] = now_iso()
+            try:
+                write_json(ctx.state / DISK_FILE, st)
+            except OSError:
+                pass
+    return ds
+
+
+def _gb(x) -> str:
+    return f"{x:g}G" if isinstance(x, (int, float)) else str(x)
+
+
+def disk_text(ds) -> str:
+    rows = ds["low"] or ds["paths"]
+    return "、".join(f"{x['path']} 剩 {_gb(x['free_gb'])}（阈值 {_gb(x['min_free_gb'])}）" for x in rows) + \
+        f"，disk_min_free_gb={_gb(ds['min_free_gb'])}"
+
+
+def _disk_gate(ctx, what: str):
+    """None when there is room; otherwise print STATUS=disk-low and return EXIT_DISK.
+    Nothing about the lane is changed: tick hands the step out again once space is back."""
+    ds = disk_state(ctx)
+    if ds["ok"]:
+        return None
+    print("STATUS=disk-low")
+    print(f"REASON=磁盘余量低于阈值：{disk_text(ds)}，{what}")
+    for x in ds["low"]:
+        print(f"DISK_FREE={x['path']} {_gb(x['free_gb'])}")
+    return EXIT_DISK
+
+
+def _tail(path, n: int = 65536) -> str:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - n))
+            return f.read().decode("utf-8", "replace")
+    except (OSError, TypeError):
+        return ""
+
+
+def _disk_evidence(ctx, proc, res, logs: bool) -> str:
+    """Why a failed / lost worker looks like a full disk, or "".
+    logs=False (the worker reported blocked / failed itself): only its own words
+    count, not its build output, which may legitimately print ENOSPC."""
+    texts = [(proc or {}).get("result_text") or "", (proc or {}).get("log_write_error") or ""]
+    if res:
+        texts += [res.get("summary") or "", res.get("halt") or ""]
+    if logs and proc and proc.get("log"):
+        log = str(proc["log"])
+        texts += [_tail(log), _tail(log.replace(".stream.jsonl", ".stderr.log"))]
+    m = ENOSPC_RE.search("\n".join(texts))
+    if m:
+        return f"输出里有「{m.group(0)}」"
+    if (proc or {}).get("disk_low_at_exit"):
+        return f"worker 退出时磁盘余量不足：{proc['disk_low_at_exit']}"
+    if logs:
+        ds = disk_state(ctx)
+        if not ds["ok"]:
+            return f"磁盘余量现在低于阈值：{disk_text(ds)}"
+    return ""
+
+
+def _try_write_json(path: Path, data) -> bool:
+    """write_json that survives a full disk: the caller keeps running and tries again later."""
+    try:
+        write_json(path, data)
+        return True
+    except OSError:
+        return False
+
+
+def cmd_disk(ctx, a):
+    ds = disk_state(ctx)
+    if a.json:
+        print(json.dumps(ds, ensure_ascii=False, indent=2))
+        return 0
+    if not ds["enabled"]:
+        print("DISK=off（disk_min_free_gb=0，不检查）")
+        return 0
+    print(f"DISK={'ok' if ds['ok'] else 'low'}")
+    for x in ds["paths"]:
+        print(f"DISK_FREE={x['path']} {_gb(x['free_gb'])} 阈值 {_gb(x['min_free_gb'])}{' (低于阈值)' if x['low'] else ''}")
+    print(f"MIN_FREE={_gb(ds['min_free_gb'])}")
+    return 0
+
+
+def cmd_disk_cleanup(ctx, _a):
+    """Run disk_cleanup_command once while space is low and no lane is working
+    (a cleanup that deletes a shared build cache under a compiling lane breaks it;
+    issue #31). After one run it waits for space to come back above the threshold
+    before it can run again, so a cleanup that frees too little doesn't loop."""
+    cmd = str(ctx.config.get("disk_cleanup_command") or "").strip()
+    if not cmd:
+        print("STATUS=skip")
+        print("REASON=parallel.yaml 没有配 disk_cleanup_command")
+        return 0
+    ds = disk_state(ctx)
+    if ds["ok"]:
+        print("STATUS=skip")
+        print(f"REASON=磁盘余量够用：{disk_text(ds)}")
+        return 0
+    st = read_json(ctx.state / DISK_FILE) or {}
+    if st.get("cleanup_ran"):
+        print("STATUS=skip")
+        print(f"REASON=这次余量不足已经执行过一次 disk_cleanup_command（{st['cleanup_ran'].get('at', '')}），"
+              "余量仍不够；需要人工腾出空间")
+        return 0
+    lanes = ctx.all_lanes()
+    busy = sorted(k for k, l in lanes.items() if lane_stage(ctx, l)[0] == "working" or op_live(l.get("op")))
+    if busy:
+        print("STATUS=deferred")
+        print(f"REASON=还有 {len(busy)} 路在跑（{', '.join(busy)}），等它们结束再清理")
+        return 0
+    before = disk_text(ds)
+    ok = _run_hook(ctx, "disk_cleanup_command", cmd, None,
+                   {"SUPERH_DISK_PATHS": os.pathsep.join(x["path"] for x in ds["low"]),
+                    "SUPERH_DISK_MIN_FREE_GB": _gb(ds["low"][0]["min_free_gb"]).rstrip("G")})
+    after = disk_state(ctx)
+    st = read_json(ctx.state / DISK_FILE) or {}
+    st["cleanup_ran"] = {"at": now_iso(), "ok": ok, "before": before, "after": disk_text(after)}
+    _try_write_json(ctx.state / DISK_FILE, st)
+    if after["ok"]:
+        st.pop("cleanup_ran", None)
+        st["recovered_at"] = now_iso()
+        _try_write_json(ctx.state / DISK_FILE, st)
+    print("STATUS=ok")
+    print(f"DISK_CLEANUP={'ok' if ok else 'failed'}")
+    print(f"DISK={'ok' if after['ok'] else 'low'}")
+    for x in after["paths"]:
+        print(f"DISK_FREE={x['path']} {_gb(x['free_gb'])}")
+    return 0
+
+
+# ------------------------------------------------------------------ spec backup
+#
+# issue #31: a worker's spec was cut to 0 bytes when the disk filled up. The spec
+# is written by the agent's edit tool, out of the plugin's reach, so launch and
+# retry keep a copy; before a new attempt, a 0-byte or much shorter spec is put
+# back from it (the short one is kept next to the backup).
+
+def _spec_backup_path(ctx, key) -> Path:
+    return ctx.lanes / f"{key}.spec-backup.md"
+
+
+def _spec_guard(ctx, lane, restore: bool) -> list:
+    """Back the lane's spec up, or (restore=True) put a truncated one back.
+    Returns output lines. Updates lane in memory; the caller saves it."""
+    key = lane["key"]
+    wt = Path(lane.get("worktree") or "")
+    if not wt.is_dir():
+        return []
+    rel = _lane_spec(ctx, key, wt)
+    if not rel:
+        return []
+    cur = wt / rel
+    try:
+        size = cur.stat().st_size
+    except OSError:
+        return []
+    bk = _spec_backup_path(ctx, key)
+    meta = lane.get("spec_backup") or {}
+    bsize = None
+    if meta.get("rel") == rel:
+        try:
+            bsize = bk.stat().st_size
+        except OSError:
+            bsize = None
+    short = bool(bsize) and (size == 0 or (bsize >= SPEC_SHRINK_MIN and size < bsize * SPEC_SHRINK_RATIO))
+    if short and not restore:
+        return [f"WARN=spec {rel} 只剩 {size} 字节（上次备份 {bsize} 字节），可能是磁盘写满时被截断；"
+                f"下次 retry 或 launch 前会从备份恢复"]
+    if short:
+        aside = ctx.lanes / f"{key}.spec-short-{time.strftime('%Y%m%d-%H%M%S')}.md"
+        try:
+            write_atomic(aside, cur.read_bytes())
+            write_atomic(cur, bk.read_bytes())
+        except OSError as e:
+            return [f"WARN=spec {rel} 只剩 {size} 字节，从备份恢复失败：{e}"]
+        lane["spec_restored"] = {"rel": rel, "at": now_iso(), "size": size, "backup_size": bsize,
+                                 "short_copy": str(aside)}
+        lane.setdefault("notes", []).append(f"spec restored from backup ({size} -> {bsize} bytes)")
+        return [f"SPEC_RESTORED={rel}（{size} 字节 → 备份的 {bsize} 字节；原来的短版本存到 {aside}）"]
+    if size == 0:
+        return [f"WARN=spec {rel} 是 0 字节，没有可用的备份"]
+    try:
+        write_atomic(bk, cur.read_bytes())
+    except OSError as e:
+        return [f"WARN=spec 备份没写成（{e}），沿用上一份备份"]
+    lane["spec_backup"] = {"rel": rel, "size": size, "at": now_iso()}
+    return []
+
+
 # ----------------------------------------------------------------------- analysis
 
 def lane_stage(ctx, lane) -> tuple[str, str]:
@@ -1103,9 +1413,15 @@ def lane_stage(ctx, lane) -> tuple[str, str]:
             return "working", (f"worker 运行中（第 {proc.get('attempt')} 次{model}；launch 进程已退出，"
                                f"claude 进程 {proc.get('child_pid')} 仍在运行）")
         if not res or res.get("attempt") != proc.get("attempt"):
+            ev = _disk_evidence(ctx, proc, None, logs=True)
+            if ev:
+                return "disk_full", f"worker 进程已消失但没有落盘退出码，像是磁盘写满：{ev}"
             return "crashed", "worker 进程已消失但没有落盘退出码（宿主会话结束或被杀）"
         # the worker reported before it went away: its report stands
     if not res or res.get("attempt") != proc.get("attempt"):
+        ev = _disk_evidence(ctx, proc, None, logs=True)
+        if ev:
+            return "disk_full", f"worker 退出（exit={proc.get('exit_code')}）但没有回报，像是磁盘写满：{ev}"
         tail = (proc.get("result_text") or "").strip().splitlines()[-1:] or [""]
         bg = proc.get("bg_launches") or {}
         if bg:
@@ -1117,6 +1433,12 @@ def lane_stage(ctx, lane) -> tuple[str, str]:
     st = res.get("status")
     if st == "ready":
         return "ready", res.get("summary", "")
+    if st == "disk_full":
+        return "disk_full", res.get("summary", "") or "worker 回报磁盘写满"
+    if st in ("blocked", "failed"):
+        ev = _disk_evidence(ctx, proc, res, logs=False)
+        if ev:
+            return "disk_full", f"worker 回报 {st}，像是磁盘写满（{ev}）：{res.get('summary', '')}"
     if st in ("blocked", "failed", "quota"):
         return st, res.get("summary", "")
     return "failed", f"未知回报状态 {st!r}"
@@ -1143,6 +1465,7 @@ HOLD_HINTS = {
     "ledger": ("cd {wt}，打开 hold_reason 里的 deferred-work.md，对照 lane 原来的版本把列出的 FU 的状态和历史行"
                "挪回各自名下并 commit" + _REINTEGRATE + "（lane 有了新提交就不再比对）"),
     "ff": "ff 合并失败，按 hold_reason 处理" + _REINTEGRATE,
+    "disk": ("合流验证连续几次因为磁盘写满失败，先腾出空间（" + SH_CMD + " disk 看余量）" + _REINTEGRATE),
     "retry-limit": "合流连续重试仍不成功，按 hold_reason 核对 sprint 分支和 lane 分支" + _REINTEGRATE,
     "git-error": "合流时 git 命令出错，按 hold_reason 处理" + _REINTEGRATE,
     "error": "合流时脚本出错，按 hold_reason 处理" + _REINTEGRATE,
@@ -1164,6 +1487,12 @@ def resume_hint(ctx, lane) -> str:
     wt = lane.get("worktree", "")
     if lane.get("phase") == "held" and lane.get("hold_kind") in HOLD_HINTS:
         return HOLD_HINTS[lane["hold_kind"]].format(wt=wt, key=lane["key"])
+    if lane.get("phase") not in ("held", "conflict", "done", "abandoned") and lane_stage(ctx, lane)[0] == "disk_full":
+        n = int(lane.get("disk_retries") or 0)
+        auto = (f"余量回到阈值以上后调度者会自动 retry（还剩 {MAX_DISK_RETRIES - n} 次）"
+                if n < MAX_DISK_RETRIES else f"已自动重试 {n} 次")
+        return (f"腾出磁盘空间（{SH_CMD} disk 看余量），{auto}；手工重排：{SH_CMD} retry {lane['key']}，"
+                f"或 {SH_CMD} retry --disk-full 一次重排所有磁盘写满的 lane")
     if sid:
         return f"cd {wt} && claude --resume {sid}"
     return f"cd {wt} && claude"
@@ -1338,6 +1667,18 @@ def cmd_tick(ctx, _a):
             attention.append({"key": k, "stage": s, "detail": d, "worktree": lanes[k].get("worktree"),
                               "takeover": resume_hint(ctx, lanes[k])})
     quota_hold = any(a["stage"] == "quota" for a in attention)
+    # issue #31: below disk_min_free_gb no new lane starts and no integrate runs
+    # (verify_command compiles); lanes already working are left alone.
+    disk = disk_state(ctx, update=True)
+    disk_low = not disk["ok"]
+    deferred_integrate = integrate if disk_low else []
+    if disk_low:
+        integrate = []
+    disk_full = sorted(k for k, (s, _) in stages.items() if s == "disk_full")
+    disk_retry = [] if disk_low else [k for k in disk_full
+                                      if int(lanes[k].get("disk_retries") or 0) < MAX_DISK_RETRIES]
+    cleanup_cmd = str(ctx.config.get("disk_cleanup_command") or "").strip()
+    cleanup_due = bool(disk_low and cleanup_cmd and not (read_json(ctx.state / DISK_FILE) or {}).get("cleanup_ran"))
     busy = len(running) + len(queued) + len(reprepare) + len(live_prepare)
     free = max(0, ctx.config["max_slots"] - busy)
     ready = [r["key"] for r in rows if r["state"] == "ready"]
@@ -1355,7 +1696,7 @@ def cmd_tick(ctx, _a):
     # post_epic_command must not run under a working lane: no new workers until it ran
     post_epic = [] if not str(ctx.config.get("post_epic_command") or "").strip() else _post_epic_state(ctx)["pending"]
     # an interrupted prepare already holds its slot; prepare rolls it back and redoes it
-    launch = [] if quota_hold or post_epic else reprepare + picked
+    launch = [] if quota_hold or post_epic or disk_low else reprepare + picked
     # a live integrate owns the main worktree until it exits: nothing else that
     # writes there (another integrate, close-out, retro) is handed out meanwhile
     main_busy = bool(live_integrate)
@@ -1374,7 +1715,13 @@ def cmd_tick(ctx, _a):
         nxt = "retro"
     elif post_epic and not (running or live_prepare or live_integrate):
         nxt = "post-epic"
-    elif (launch or queued) and not quota_hold and not post_epic:
+    elif disk_low and not (running or live_prepare or live_integrate) and (
+            deferred_integrate or queued or ready or reprepare or pending):
+        # nothing is compiling: the one moment a cleanup can't pull a cache from under a lane
+        nxt = "disk-cleanup" if cleanup_due else "disk-low"
+    elif disk_retry and not quota_hold:
+        nxt = "disk-retry"
+    elif (launch or queued) and not quota_hold and not post_epic and not disk_low:
         nxt = "launch"
     elif running or live_prepare or live_integrate or merged or integrate or retro_due or post_epic:
         nxt = "wait"
@@ -1390,7 +1737,7 @@ def cmd_tick(ctx, _a):
         "post_merge": merged,
         "integrate": integrate,
         "launch": launch,
-        "queued": queued if not quota_hold and not post_epic else [],
+        "queued": queued if not quota_hold and not post_epic and not disk_low else [],
         "post_epic": post_epic,
         "epic_start": epic_start,
         "retro_due": retro_due,
@@ -1400,6 +1747,9 @@ def cmd_tick(ctx, _a):
         "orphaned": orphaned,
         "attention": attention,
         "quota_hold": quota_hold,
+        "disk": {**disk, "cleanup_due": cleanup_due, "deferred_integrate": deferred_integrate},
+        "disk_full": disk_full,
+        "disk_retry": disk_retry,
         "pending_count": len(pending),
         "waiting": [{"key": r["key"], "reasons": r["reasons"]} for r in rows if r["state"] == "waiting"][:20],
         "external": [{"key": r["key"], "conditions": r["external"]} for r in rows if r["external"]],
@@ -1424,14 +1774,24 @@ def cmd_board(ctx, a):
                           for k, (s, d) in items], ensure_ascii=False, indent=2))
         return 0
     zh = {"conflict": "合流冲突", "held": "已挂起", "blocked": "受阻", "failed": "失败", "quota": "配额耗尽",
-          "crashed": "进程丢失", "ready": "待合流", "integrating": "合流中", "working": "执行中",
+          "crashed": "进程丢失", "disk_full": "磁盘写满", "ready": "待合流", "integrating": "合流中", "working": "执行中",
           "preparing": "准备中", "queued": "排队", "done": "完成", "abandoned": "已放弃"}
+    ds = disk_state(ctx)
+    if not ds["ok"]:
+        st = read_json(ctx.state / DISK_FILE) or {}
+        print(f"磁盘余量不足：{disk_text(ds)}。不派发新 lane，合流暂缓，在跑的 lane 不受影响；余量回来后自动恢复。")
+        if st.get("cleanup_ran"):
+            print(f"  disk_cleanup_command 已在 {st['cleanup_ran'].get('at', '')} 执行过一次，余量仍不够，需要人工腾出空间")
+        elif str(ctx.config.get("disk_cleanup_command") or "").strip():
+            print("  在跑的 lane 都结束后会执行一次 disk_cleanup_command")
     person = [(k, s, d) for k, (s, d) in items if s in PERSON_STAGES]
     if person:
         print("需要你处理：")
         for k, s, d in person:
             print(f"  [{zh.get(s, s)}] {k}  {d}")
             print(f"      接手：{resume_hint(ctx, lanes[k])}")
+        if any(s == "disk_full" for _k, s, _d in person):
+            print(f"  磁盘写满的几路一次重排：{SH_CMD} retry --disk-full")
         if ctx.config.get("blocked_policy") == "continue" and any(s in STUCK_STAGES for _k, s, _d in person):
             print("  （blocked_policy=continue：受阻、失败、挂起、冲突的这几路不挡串行顺序和 epic 屏障，依赖它们的 story 仍在等）")
     else:
@@ -1455,6 +1815,13 @@ def cmd_board(ctx, a):
         print("进行中：")
         for k, s, d in live:
             print(f"  [{zh.get(s, s)}] {k}  {d}")
+    restored = [(k, lanes[k]["spec_restored"]) for k, (s, _d) in items
+                if lanes[k].get("spec_restored") and s not in ("done", "abandoned")]
+    if restored:
+        print("spec 从备份恢复过（发现时只剩很少的字节，可能是磁盘写满时被截断）：")
+        for k, r in restored:
+            print(f"  {k}  {r.get('rel')}：{r.get('size')} → {r.get('backup_size')} 字节（{r.get('at', '')}），"
+                  f"短版本留在 {r.get('short_copy')}")
     n_ready = sum(1 for r in rows if r["state"] == "ready")
     n_wait = sum(1 for r in rows if r["state"] == "waiting")
     n_done = sum(1 for r in rows if r["state"] == "done")
@@ -1632,6 +1999,9 @@ def _rollback_interrupted_prepare(ctx, lane):
 
 def cmd_prepare(ctx, a):
     key = a.key
+    gate = _disk_gate(ctx, "这一路先不开 worktree")
+    if gate is not None:
+        return gate
     lane = ctx.lane(key)
     interrupts = 0
     if lane and lane.get("phase") == "preparing":
@@ -1891,6 +2261,9 @@ def cmd_launch(ctx, a):
     claude = shutil.which(str(ctx.config.get("claude_bin") or "claude"))
     if not claude:
         die("找不到 claude CLI（config.claude_bin）")
+    gate = _disk_gate(ctx, "worker 先不启动")
+    if gate is not None:
+        return gate
     # The env check can take minutes while the lane still reads as `queued`; a
     # launch marker (shown as `preparing`) keeps tick from handing it out again,
     # and a second launch of the same key backs off.
@@ -1921,11 +2294,13 @@ def cmd_launch(ctx, a):
     if not res_state["ok"]:
         _hold(ctx, lane, "resource", f"worker 没有启动：{res_state['detail']}", f"WORKTREE={wt}",
               "RESOURCE_OUTPUT<<", res_state["output"], ">>")
+    for ln in _spec_guard(ctx, lane, restore=True):
+        print(ln)
     attempt = int(lane.get("attempts") or 0) + 1
     prompt = render_worker_prompt(ctx, lane, attempt)
     ctx.logs.mkdir(parents=True, exist_ok=True)
     stem = ctx.logs / f"{key}.attempt-{attempt}"
-    Path(f"{stem}.prompt.md").write_text(prompt, encoding="utf-8")
+    write_atomic(Path(f"{stem}.prompt.md"), prompt)
     lane["attempts"] = attempt
     lane["phase"] = "launched"
     ctx.save_lane(lane)
@@ -1949,9 +2324,18 @@ def cmd_launch(ctx, a):
         proc_rec["child_pid"] = p.pid
         proc_rec["child_start"] = proc_start_time(p.pid)
         write_json(ctx.lane_path(key, "proc"), proc_rec)
+        log_ok = True
         for line in p.stdout:
-            flog.write(line)
-            flog.flush()
+            if log_ok:
+                try:
+                    flog.write(line)
+                    flog.flush()
+                except OSError as e:
+                    # disk full (issue #31): keep draining the worker's output so it isn't
+                    # blocked on a full pipe; the error itself is the evidence for disk_full
+                    log_ok = False
+                    proc_rec["log_write_error"] = str(e)
+                    _try_write_json(ctx.lane_path(key, "proc"), proc_rec)
             try:
                 evt = json.loads(line)
             except ValueError:
@@ -1960,24 +2344,24 @@ def cmd_launch(ctx, a):
                 continue
             if evt.get("session_id") and not proc_rec.get("session_id"):
                 proc_rec["session_id"] = evt["session_id"]
-                write_json(ctx.lane_path(key, "proc"), proc_rec)
+                _try_write_json(ctx.lane_path(key, "proc"), proc_rec)
             if evt.get("type") == "system" and evt.get("subtype") == "init" and evt.get("model") \
                     and not proc_rec.get("model"):
                 # the model the worker really runs on (issue #17: an empty worker_model
                 # follows ~/.claude/settings.json, which any other session's /model changes)
                 proc_rec["model"] = str(evt["model"])
-                write_json(ctx.lane_path(key, "proc"), proc_rec)
+                _try_write_json(ctx.lane_path(key, "proc"), proc_rec)
             if evt.get("type") == "result":
                 result_evt = evt
             miss = _suffix_audit(ctx, evt)
             if miss:
                 proc_rec.setdefault("suffix_missing", []).extend(miss)
-                write_json(ctx.lane_path(key, "proc"), proc_rec)
+                _try_write_json(ctx.lane_path(key, "proc"), proc_rec)
             kind = _bg_launch_kind(evt)
             if kind:
                 bg = proc_rec.setdefault("bg_launches", {})
                 bg[kind] = bg.get(kind, 0) + 1
-                write_json(ctx.lane_path(key, "proc"), proc_rec)
+                _try_write_json(ctx.lane_path(key, "proc"), proc_rec)
         rc = p.wait()
     proc_rec["exit_code"] = rc
     proc_rec["ended_at"] = now_iso()
@@ -1986,7 +2370,19 @@ def cmd_launch(ctx, a):
         proc_rec["is_error"] = bool(result_evt.get("is_error"))
         proc_rec["cost_usd"] = result_evt.get("total_cost_usd")
         proc_rec["num_turns"] = result_evt.get("num_turns")
-    write_json(ctx.lane_path(key, "proc"), proc_rec)
+    ds = disk_state(ctx)
+    if not ds["ok"]:
+        proc_rec["disk_low_at_exit"] = disk_text(ds)
+    if not _try_write_json(ctx.lane_path(key, "proc"), proc_rec):
+        # nothing left to record it with: lane_stage reads the missing exit code as
+        # a lost worker and, with the disk still low, as disk_full
+        print("WARN=退出记录没写成（磁盘满？），这一路会显示为进程丢失或磁盘写满")
+    cur = ctx.lane(key) or lane
+    before = cur.get("spec_backup")
+    guard = _spec_guard(ctx, cur, restore=False)
+    if cur.get("spec_backup") != before:
+        cur["updated_at"] = now_iso()
+        _try_write_json(ctx.lane_path(key), cur)
     stage, detail = lane_stage(ctx, ctx.lane(key))
     print(f"LANE={key}")
     print(f"EXIT_CODE={rc}")
@@ -1997,6 +2393,10 @@ def cmd_launch(ctx, a):
     if _model_mismatch(configured, proc_rec.get("model") or ""):
         print(f"WARN=worker 实际用的模型 {proc_rec.get('model')} 和 parallel.yaml 的 worker_model {configured} 对不上，"
               "检查 claude 版本是否认得这个模型名，或者 ANTHROPIC_MODEL 之类的环境变量是否改掉了它")
+    for ln in guard:
+        print(ln)
+    if stage == "disk_full":
+        print(f"DISK=low（{disk_text(ds)}）" if not ds["ok"] else "DISK=ok")
     for m in proc_rec.get("suffix_missing") or []:
         print(f"PROMPT_SUFFIX_MISSING={m['stage']} {m['description']}（prompt {m['length']} 字，结尾：{m['tail']}）")
     if proc_rec.get("suffix_missing"):
@@ -2139,6 +2539,10 @@ def _merge_file(base: bytes, ours: bytes, theirs: bytes, union: bool = False) ->
             paths.append(str(p))
         mr = subprocess.run(["git", "merge-file", "-p", *(["--union"] if union else []), *paths],
                             capture_output=True)
+    if mr.returncode < 0 or mr.returncode > 127:
+        # an error, not a conflict count: its stdout may be empty or cut short
+        # (e.g. the temp dir hit a full disk) and must never become the ledger
+        raise RuntimeError(f"git merge-file 出错（exit={mr.returncode}）：{mr.stderr.decode('utf-8', 'replace').strip()[:300]}")
     return mr.stdout, mr.returncode
 
 
@@ -2276,7 +2680,7 @@ def _auto_resolve(ctx, wt: Path, artifacts_rel: str):
         elif inside and name in LEDGER_UNION:
             merged, how = _merge_ledger(_stage_blob(wt, 1, f) or b"", _stage_blob(wt, 2, f) or b"",
                                         _stage_blob(wt, 3, f) or b"")
-            (wt / f).write_bytes(merged)
+            write_atomic(wt / f, merged)
             git(["add", "--", f], cwd=wt)
             resolved.append(f"{f} (按 FU 合并)" if how == "per-FU" else f"{f} (union 合并，账本里有重复的 FU id)")
         else:
@@ -2383,7 +2787,7 @@ def _record_rewrites(ctx, lane, wt: Path):
                     "| lane 内的旧 hash | sprint 分支上的新 hash | 提交说明 |", "|---|---|---|"]
             for p in pairs:
                 rows.append(f"| {p['old'][:12]} | {p['new'][:12]} | {p['subject'].replace('|', '/')[:120]} |")
-            (wt / rel).write_text(_with_block(text, "\n".join(rows), inside_contract=False), encoding="utf-8")
+            write_atomic(wt / rel, _with_block(text, "\n".join(rows), inside_contract=False))
             touched.append(rel)
     rep = f"{ctx.artifacts_rel().rstrip('/')}/{key}.codex-review.md"
     if (wt / rep).is_file():
@@ -2394,7 +2798,7 @@ def _record_rewrites(ctx, lane, wt: Path):
         if moved and not re.search(r"(?m)^head_rebased:", fm.group(1)):
             at = fm.start(1) + hm.end()
             text = text[:at] + f"\nhead_rebased: {moved}" + (hm.group(2) or "") + text[at:]
-            (wt / rep).write_text(text, encoding="utf-8")
+            write_atomic(wt / rep, text)
             touched.append(rep)
     for p in pairs:
         print(f"REWRITTEN={p['old'][:12]} → {p['new'][:12]} {p['subject'][:80]}")
@@ -2539,6 +2943,9 @@ def cmd_integrate(ctx, a):
         die(f"主 worktree 不在 sprint 分支（当前 {head!r}，应为 {sb!r}）")
     if dirty:
         die("主 worktree 不干净，合流前先处理", *[f"DIRTY={d}" for d in dirty[:20]])
+    gate = _disk_gate(ctx, "合流先不做（verify_command 要编译）")
+    if gate is not None:
+        return gate
     if held_by_integrate:
         # a person re-runs it after fixing the cause: start counting afresh
         lane.pop("interrupted", None)
@@ -2569,6 +2976,34 @@ def _transient(ctx, lane, reason: str):
     lane["phase"] = "integrating"
     ctx.save_lane(lane)
     die(reason, "RETRYABLE=yes")
+
+
+def _verify_disk_full(ctx, lane, wt: Path, what: str, output: str, block: str):
+    """build-verify / verify_command failed: if it was the disk, don't hold the
+    lane as a code failure (issue #31). It stays `integrating` and is merged
+    again once there is room; after MAX_DISK_RETRIES such failures it is held
+    with hold_kind=disk. Returns None when the failure doesn't look like ENOSPC."""
+    m = ENOSPC_RE.search(output or "")
+    ds = disk_state(ctx)
+    if not m and ds["ok"]:
+        return None
+    why = f"输出里有「{m.group(0)}」" if m else f"磁盘余量低于阈值：{disk_text(ds)}"
+    n = int(lane.get("disk_verify_failures") or 0) + 1
+    lane["disk_verify_failures"] = n
+    lane.setdefault("notes", []).append(f"{what} failed on a full disk ({n})")
+    if n > MAX_DISK_RETRIES:
+        lane.pop("disk_verify_failures", None)
+        _hold(ctx, lane, "disk", f"{what}连续 {n} 次因磁盘写满失败（{why}）；sprint 分支未改动",
+              f"WORKTREE={wt}", f"{block}<<", output, ">>")
+    lane["phase"] = "integrating"
+    ctx.save_lane(lane)
+    print("STATUS=disk-full")
+    print(f"REASON={what}因磁盘写满失败（{why}），不算代码问题；sprint 分支未改动，余量回来后重新合流")
+    print(f"WORKTREE={wt}")
+    print(f"{block}<<")
+    print(output)
+    print(">>")
+    return EXIT_DISK
 
 
 def _integrate(ctx, lane):
@@ -2676,6 +3111,9 @@ def _integrate(ctx, lane):
 
     rc, bv_out = _build_verify(ctx, lane, wt)
     if rc != 0:
+        r = _verify_disk_full(ctx, lane, wt, "rebase 后的 build-verify ", bv_out, "BUILD_VERIFY")
+        if r is not None:
+            return r
         lane["phase"] = "held"
         lane["hold_reason"] = "合流 rebase 后 build-verify 不通过"
         lane["hold_kind"] = "build-verify"
@@ -2694,6 +3132,9 @@ def _integrate(ctx, lane):
         _hold(ctx, lane, "verify-env", verify["detail"] + "；sprint 分支未改动", f"WORKTREE={wt}",
               "ENV_OUTPUT<<", verify["output"], ">>")
     if verify["status"] == "failed":
+        r = _verify_disk_full(ctx, lane, wt, "合流验证（verify_command）", verify["output"], "VERIFY_OUTPUT")
+        if r is not None:
+            return r
         lane["phase"] = "held"
         lane["hold_kind"] = "verify"
         lane["hold_reason"] = f"合流后验证不通过（{verify['detail']}）"
@@ -2710,6 +3151,7 @@ def _integrate(ctx, lane):
         return 1
     lane.pop("hold_kind", None)
     lane.pop("hold_reason", None)
+    lane.pop("disk_verify_failures", None)
     if lane.get("rebased") and lane.get("orig_head"):
         # last step before the ff: a held / retried integrate never leaves a
         # table behind that a later rebase would make stale
@@ -3091,7 +3533,7 @@ def _reopen(ctx, lane, *, title: str, entries, status, subject: str, log_line: s
             text = _with_block(text, f"### Harness resume（{_today()}）\n\n- {log_line}", inside_contract=False)
         if target and target != cur:
             text = _with_status(text, target)
-        sp.write_text(text, encoding="utf-8")
+        write_atomic(sp, text)
         tracked_results = [r for r in results if git(["ls-files", "--error-unmatch", "--", r], cwd=wt).returncode == 0]
         for r in results:
             if r not in tracked_results:
@@ -3595,24 +4037,61 @@ def cmd_mark(ctx, a):
 
 
 def cmd_retry(ctx, a):
-    lane = ctx.lane(a.key)
+    if a.disk_full:
+        # board's batch command for every lane that died on a full disk (issue #31)
+        if a.key:
+            die("retry --disk-full 不带 KEY")
+        keys = sorted(k for k, l in ctx.all_lanes().items()
+                      if l.get("phase") not in ("done", "abandoned") and lane_stage(ctx, l)[0] == "disk_full")
+        if not keys:
+            print("STATUS=skip")
+            print("REASON=没有磁盘写满的 lane")
+            return 0
+        gate = _disk_gate(ctx, "先腾出空间再重排")
+        if gate is not None:
+            return gate
+        rc = 0
+        for k in keys:
+            print(f"LANE={k}")
+            try:
+                r = _retry_one(ctx, k, a.reset)
+            except SystemExit as e:  # die() for this lane: report it and go on with the rest
+                r = e.code if isinstance(e.code, int) else 1
+            rc = rc or r
+        return rc
+    if not a.key:
+        die("retry 需要 KEY（或 --disk-full）")
+    return _retry_one(ctx, a.key, a.reset)
+
+
+def _retry_one(ctx, key, reset: bool) -> int:
+    lane = ctx.lane(key)
     if not lane:
-        die(f"lane {a.key} 不存在")
+        die(f"lane {key} 不存在")
     stage, _ = lane_stage(ctx, lane)
-    if stage not in ("blocked", "failed", "quota", "crashed", "held") or lane.get("phase") in ("merged", "conflict", "integrating"):
-        die(f"lane {a.key} 阶段 {stage}（phase={lane.get('phase')}），不能 retry worker")
+    if stage not in ("blocked", "failed", "quota", "crashed", "held", "disk_full") or \
+            lane.get("phase") in ("merged", "conflict", "integrating"):
+        die(f"lane {key} 阶段 {stage}（phase={lane.get('phase')}），不能 retry worker")
     if not Path(lane["worktree"]).is_dir():
         die("worktree 已不存在，无法续作；用 abandon 后重新 prepare")
     if lane.get("hold_kind") in ("prepare", "foreign") or str(lane.get("hold_reason", "")).startswith("prepare 失败"):
         die("这一路卡在 prepare 阶段，retry 不会重跑 prepare；修好原因后 abandon --yes 再重新 prepare")
     if lane.get("phase") != "held":
-        _retry_check_worktree(ctx, lane, a.reset)
-    elif a.reset:
+        # a spec cut short by a full disk would otherwise send the worker off on half a spec
+        guard = _spec_guard(ctx, lane, restore=True)
+        for ln in guard:
+            print(ln)
+        if guard or lane.get("spec_backup"):
+            ctx.save_lane(lane)
+        _retry_check_worktree(ctx, lane, reset)
+    elif reset:
         die("held 的 lane 已经有 commit 等着合流，--reset 不适用；按看板「接手」一行处理")
     _print_orphans(Path(lane["worktree"]))
     lane["phase"] = "prepared"
     lane.pop("hold_reason", None)
     lane.pop("hold_kind", None)
+    if stage == "disk_full":
+        lane["disk_retries"] = int(lane.get("disk_retries") or 0) + 1
     lane.setdefault("notes", []).append(f"retry after {stage}")
     ctx.save_lane(lane)
     print("STATUS=ok")
@@ -3936,7 +4415,7 @@ def cmd_start_run(ctx, a):
 # (`report` and `reopen` are the worker's and stay open; `decide` / `confirm` only
 # touch the decisions inbox, which has its own flock)
 MUTATING = ("prepare", "launch", "integrate", "retry", "resume", "override", "mark", "cleanup", "abandon",
-            "post-epic")
+            "post-epic", "disk-cleanup")
 
 
 def main(argv=None) -> int:
@@ -3955,15 +4434,18 @@ def main(argv=None) -> int:
     p.add_argument("--take-over", action="store_true", help="接管另一个仍然活着的会话持有的调度锁（先征得用户同意）")
     p = sub.add_parser("end-run")
     p.add_argument("--finished", action="store_true", help="sprint 跑完了：释放锁后执行 env_down_command")
-    for name in ("prepare", "launch", "integrate", "postmerge", "retry", "cleanup"):
+    for name in ("prepare", "launch", "integrate", "postmerge", "cleanup"):
         p = sub.add_parser(name); p.add_argument("key")
-        if name == "retry":
-            p.add_argument("--reset", action="store_true",
-                           help="lane 没有 commit 也没有 spec 时，丢掉 worktree 里没提交的半成品再重排")
+    p = sub.add_parser("retry"); p.add_argument("key", nargs="?", default="")
+    p.add_argument("--reset", action="store_true",
+                   help="lane 没有 commit 也没有 spec 时，丢掉 worktree 里没提交的半成品再重排")
+    p.add_argument("--disk-full", action="store_true", help="重排所有磁盘写满的 lane")
+    p = sub.add_parser("disk", help="各分区的余量和 disk_min_free_gb"); p.add_argument("--json", action="store_true")
+    sub.add_parser("disk-cleanup", help="余量不足、没有 lane 在跑时执行一次 disk_cleanup_command")
     p = sub.add_parser("watch"); p.add_argument("key"); p.add_argument("--interval", default="5")
     p = sub.add_parser("report")
     p.add_argument("key")
-    p.add_argument("--status", required=True, choices=["ready", "blocked", "failed", "quota"])
+    p.add_argument("--status", required=True, choices=["ready", "blocked", "failed", "quota", "disk_full"])
     p.add_argument("--summary", default="")
     p.add_argument("--codex-skip-reason", default="")
     p.add_argument("--followup-note", default="")
@@ -4021,6 +4503,7 @@ def main(argv=None) -> int:
         "end-run": cmd_end_run, "watch": cmd_watch, "reopen": cmd_reopen, "resume": cmd_resume,
         "decide": cmd_decide, "decisions": cmd_decisions, "confirm": cmd_confirm, "override": cmd_override,
         "spec-decisions": cmd_spec_decisions, "post-epic": cmd_post_epic,
+        "disk": cmd_disk, "disk-cleanup": cmd_disk_cleanup,
     }[a.cmd]
     try:
         return fn(ctx, a)

@@ -66,14 +66,14 @@ sequenceDiagram
 
 ```mermaid
 stateDiagram-v2
-  state "blocked · failed · quota · crashed" as trouble
+  state "blocked · failed · quota · crashed · disk_full" as trouble
   [*] --> preparing
   preparing --> prepared: 完成
   preparing --> held: prepare 失败或被打断超过 2 次
   prepared --> working: launch
   working --> ready: report ready
   working --> trouble: worker 出问题
-  trouble --> prepared: retry（crashed 自动一次）
+  trouble --> prepared: retry（crashed 自动一次，disk_full 余量回来后自动最多两次）
   ready --> integrating: integrate
   integrating --> conflict: 代码冲突
   conflict --> integrating: 子 agent 或你解决后
@@ -262,6 +262,7 @@ python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 - 一路停住不拖整个 epic：设 `blocked_policy: continue` 后，停住的那一路不再挡串行顺序、epic 屏障和 retro 屏障，不依赖它的 story 照常派发。
 - 0.5.0 起收件箱还会收两类条目：worker 写在 spec `### 待用户确认` 段里的取舍（以前只有停下来的 intent gap 才进收件箱），以及 worker 派子 agent 时漏了代答政策后缀的记录。这两类推翻时没有回退点，按新决定另开 chore 或 story。
 - 共享构建缓存这类会越积越大的东西，用 `lane_cleanup_command`（每一路删 worktree 前）和 `post_epic_command`（epic retro 之后、没有 lane 在跑时）清理，默认留空。
+- 0.5.4 起调度器看磁盘余量：任何一个检查的分区低于 `disk_min_free_gb`（默认 10G，小分区按容量的 10% 算）就不再派发新 lane、合流也先不做，看板写明哪个分区剩多少。配了 `disk_cleanup_command` 的，等没有 lane 在跑时执行一次。worker 或合流验证因为磁盘写满失败的，记成 `disk_full`，不和受阻、失败、进程丢失混在一起，余量回来后自动重试。spec 被写满的磁盘截断时，下次 retry 或 launch 前会从备份恢复。
 
 ## 并行配置
 
@@ -283,6 +284,8 @@ python3 .claude/harness/scripts/superh.py abandon <KEY> --yes  # 放弃这一路
 | `blocked_policy` | wait | 一路停住时：`wait` 照样挡后面的 story；`continue` 只挡写明依赖它的 |
 | `worker_model` | 空 | worker 用的模型。建议写死，留空会跟随全机共享的 `~/.claude/settings.json`，别的会话执行 `/model` 就会改掉它；launch 输出和看板会显示实际用的模型 |
 | `worker_permission_mode` | bypassPermissions | worker 的权限模式 |
+| `disk_min_free_gb` / `disk_check_paths` | auto / 空 | 余量低于阈值时停派发、暂缓合流。auto = 10G，但不超过分区容量的 10%；写数字按数字算；0 = 不检查。路径留空时查 `worktree_root` 和主 worktree 所在的分区，构建缓存放在别处的要加上。一路产物几十 G 的项目按「一路大小 × 并行路数」调高 |
+| `disk_cleanup_command` | 空 | 余量不足、没有 lane 在跑时执行一次的清理命令；执行后仍不够就停下等你 |
 
 ### 合流验证门
 
@@ -324,6 +327,7 @@ bash plugins/super-harness/scripts/run_all_tests.sh
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| 0.5.4 | 2026-11-14 | #31：派发和合流前看磁盘余量（`disk_min_free_gb`、`disk_check_paths`、`disk_cleanup_command`）；磁盘写满单独记成 `disk_full`，余量回来后自动重试，合流验证里的 ENOSPC 不再记成 `hold_kind=verify`；launch / retry 给 spec 留备份，截断的 spec 自动恢复；superh 写文件全部先写临时文件再 rename。retro-fulfill 认 chore spec 的 `cross_story_artifacts:`。#32：init 认 BMad 6.12 的运行目录布局（`prds/prd-<项目>-<日期>/prd.md`、`architecture/<运行目录>/ARCHITECTURE-SPINE.md`、`briefs/<运行目录>/brief.md`），helper JSON 给出实际命中的路径。详见 changelog。 |
 | 0.5.3 | 2026-11-13 | #30：合流 rebase 时 `deferred-work.md` 改为按 FU 合并，lane 给最后一条 FU 加的历史行不会再挂到 sprint 分支新追加的 FU 下面；rebase 后逐条比对 FU，对不上就挂起这一路并列出 FU id。详见 changelog。 |
 | 0.5.2 | 2026-11-10 | #28：codex 修复 agent 立 FU 时写 `covers: frontmatter deferred #N`，build-sync 导入 spec 第 N 条延后项时直接标 superseded，同一问题不再记两条 pending。#29：follow-up review 判 bad_spec 时不回退已提交的代码、不改 `baseline_revision`，回环次数照常累加。详见 changelog。 |
 | 0.5.1 | 2026-11-08 | #27：spec「待用户确认」的条目可以写 `备选：A / B`，导入收件箱后看板多一行备选；`board --full` 显示问题、采用、备选、理由的全文。详见 changelog。 |

@@ -27,6 +27,10 @@
 #        `chore_spec:` field: two prefix-sharing lowercase-kebab codes
 #        (E-flyway / E-flyway-extra) make the glob ambiguous, but the yaml
 #        field resolves the right spec and the declared writeback passes.
+#   P8 — retro-fulfill: the chore spec's `cross_story_artifacts:` is honoured
+#        too (issue #31) — editing another story's spec passes.
+#   P9 — retro-fulfill: the same edit without the declaration still halts
+#        with CROSS_STORY=.
 #
 # Runs against the PLUGIN SOURCE harness-commit.py directly (no deployed
 # .claude/harness/ needed) via tmp git repos + --dry-run, like
@@ -260,6 +264,56 @@ if printf '%s' "$out" | grep -qE "^STATUS=ok$" \
     echo "PASS [P7-yaml chore_spec beats ambiguous glob]"
 else
     echo "FAIL [P7-yaml-first]: out=$out" >&2; failed=$((failed+1))
+fi
+
+# ============================================================================
+# P8 — retro-fulfill: chore spec declares cross_story_artifacts → editing
+#      another story's spec passes (issue #31: J1 editing spec-10-10-*.md
+#      used to hit cross-story isolation because the allowlist was read from
+#      the non-existent spec-J1.md)
+# ============================================================================
+dir="$(seed_repo)"
+(
+    cd "$dir"
+    printf 'development_status:\n  10-10-error-codes: done\n\nretro_action_items:\n  epic-10-retro:\n    J1: pending\n      chore_spec: '\''chore-retro-c10-J1-record-epic-ten.md'\''\n' \
+        > _bmad-output/implementation-artifacts/sprint-status.yaml
+    printf -- '---\ntitle: '\''Chore J1'\''\ntype: '\''chore'\''\ncross_story_artifacts:\n  - spec-10-10-error-codes.md\n---\n## Tasks & Acceptance\n- [ ] fix question numbers in spec-10-10\n' \
+        > _bmad-output/implementation-artifacts/chore-retro-c10-J1-record-epic-ten.md
+    printf -- '---\nstatus: done\n---\n# 10.10\nQ111\n' \
+        > _bmad-output/implementation-artifacts/spec-10-10-error-codes.md
+    git add -A; git commit -q -m seed-j1
+    sed -i 's/Q111/Q112/' _bmad-output/implementation-artifacts/spec-10-10-error-codes.md
+)
+out="$(cd "$dir" && python3 "$HARNESS_PY" retro-fulfill J1 --epic 10 --dry-run 2>&1)"
+rm -rf "$dir"
+if printf '%s' "$out" | grep -qE "^STATUS=ok$" \
+   && ! printf '%s' "$out" | grep -qE "^CROSS_STORY="; then
+    echo "PASS [P8-retro-fulfill chore spec cross_story_artifacts honoured]"
+else
+    echo "FAIL [P8-retro-fulfill cross_story_artifacts]: out=$out" >&2; failed=$((failed+1))
+fi
+
+# ============================================================================
+# P9 — retro-fulfill: same edit without the declaration still halts
+# ============================================================================
+dir="$(seed_repo)"
+(
+    cd "$dir"
+    printf -- '---\ntitle: '\''Chore J2'\''\ntype: '\''chore'\''\n---\n## Tasks & Acceptance\n- [ ] something\n' \
+        > _bmad-output/implementation-artifacts/chore-retro-c10-J2-measure-disk.md
+    printf -- '---\nstatus: done\n---\n# 10.10\nQ111\n' \
+        > _bmad-output/implementation-artifacts/spec-10-10-error-codes.md
+    git add -A; git commit -q -m seed-j2
+    sed -i 's/Q111/Q112/' _bmad-output/implementation-artifacts/spec-10-10-error-codes.md
+)
+ex=0; out="$(cd "$dir" && python3 "$HARNESS_PY" retro-fulfill J2 --epic 10 --dry-run 2>&1)" || ex=$?
+rm -rf "$dir"
+if [ "$ex" != 0 ] \
+   && printf '%s' "$out" | grep -qE "^STATUS=halt$" \
+   && printf '%s' "$out" | grep -qE "^CROSS_STORY=_bmad-output/implementation-artifacts/spec-10-10-error-codes.md$"; then
+    echo "PASS [P9-retro-fulfill undeclared cross-story edit still halts]"
+else
+    echo "FAIL [P9-retro-fulfill undeclared]: ex=$ex out=$out" >&2; failed=$((failed+1))
 fi
 
 echo "-------------------------------------------------------------------"
